@@ -1,0 +1,5 @@
+# Core state machine and offline runner are stdlib-only.
+# These dependencies are needed only for the live runtime services.
+paho-mqtt>=2.0
+opencv-python>=4.9
+mediapipe>=0.10

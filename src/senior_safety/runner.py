@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+from .alerts import build_alert_payload
+from .clock import synthesize_ticks, tick_interval_s
 from .event_io import read_sensor_events, write_decisions_csv
 from .omnifall_replay import read_omnifall_segments_csv
 from .state_machine import NightSafetyStateMachine, load_rules
@@ -16,6 +18,7 @@ def main() -> None:
     parser.add_argument("--omnifall-segments", help="OmniFall-like segment CSV export.")
     parser.add_argument("--output", default="detector_runs/decisions.csv")
     parser.add_argument("--metrics", default="detector_runs/metrics.json")
+    parser.add_argument("--no-ticks", action="store_true", help="Replay raw events without synthesized clock ticks.")
     args = parser.parse_args()
 
     if not args.events and not args.omnifall_segments:
@@ -24,6 +27,8 @@ def main() -> None:
     rules = load_rules(args.rules)
     machine = NightSafetyStateMachine(rules)
     events = read_omnifall_segments_csv(args.omnifall_segments) if args.omnifall_segments else read_sensor_events(args.events)
+    if not args.no_ticks:
+        events = synthesize_ticks(events, tick_interval_s(rules) * 1000)
     decisions = [machine.process(event) for event in events]
 
     write_decisions_csv(args.output, decisions)
@@ -32,6 +37,12 @@ def main() -> None:
         "decisions": len(decisions),
         "urgent_alerts": sum(1 for decision in decisions if decision.severity == "urgent"),
         "low_alerts": sum(1 for decision in decisions if decision.severity == "low"),
+        "delivered_urgent_alerts": sum(
+            1 for decision in decisions if decision.severity == "urgent" and build_alert_payload(decision)
+        ),
+        "delivered_low_alerts": sum(
+            1 for decision in decisions if decision.severity == "low" and build_alert_payload(decision)
+        ),
         "final_state": decisions[-1].state if decisions else machine.state,
     }
     metrics_path = Path(args.metrics)

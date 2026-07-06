@@ -1,6 +1,9 @@
 {
   "version": "0.1",
   "purpose": "assistive_safety_monitor_not_medical_device",
+  "runtime": {
+    "tick_interval_s": 15
+  },
   "night_window": {
     "start_local": "21:00",
     "end_local": "07:30"
@@ -71,6 +74,7 @@
     "single_frame_alerts_allowed": false,
     "minimum_urgent_persistence_s": 30,
     "cooldown_after_ack_s": 900,
+    "realert_cooldown_s": 600,
     "normal_bed_lie_down_suppression": true,
     "normal_chair_sit_suppression": true
   }

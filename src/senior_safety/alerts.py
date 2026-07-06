@@ -30,6 +30,8 @@ class AlertPayload:
 def build_alert_payload(decision: DetectorDecision) -> AlertPayload | None:
     if decision.severity not in {"low", "urgent"}:
         return None
+    if "alert_cooldown" in decision.suppressions:
+        return None
 
     title = "Urgent senior night check" if decision.severity == "urgent" else "Senior night check"
     duration_bits = []

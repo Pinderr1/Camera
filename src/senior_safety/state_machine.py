@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .clock import TICK_EVENT_NAME, is_night_window, parse_local_datetime
 from .schemas import DetectorDecision, NormalizedEvent
 
 
@@ -50,10 +51,14 @@ class NightSafetyStateMachine:
     floor_level_since_ms: int | None = None
     no_motion_since_ms: int | None = None
     last_motion_ms: int | None = None
+    night_window_active: bool = True
     sensor_health: dict[str, SensorHealth] = field(default_factory=dict)
+    last_alert_ms: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def process(self, event: NormalizedEvent) -> DetectorDecision:
-        self._record_sensor_health(event)
+        self._update_night_window(event)
+        if event.event_name != TICK_EVENT_NAME:
+            self._record_sensor_health(event)
 
         reason_codes: list[str] = []
         suppressions: list[str] = []
@@ -61,15 +66,7 @@ class NightSafetyStateMachine:
         action = "observe"
         score = 0.0
 
-        stale_decision = self._stale_sensor_decision(event.timestamp_ms)
-        if stale_decision:
-            return stale_decision
-
-        if event.event_name == "manual_cancel_pressed" and bool(event.value):
-            self._reset_active_incident()
-            self.state = "returned_to_bed" if self._bed_occupied_known() else "out_of_bed_unknown"
-            return self._decision(event, severity, score, ["manual_cancel_pressed"], "observe", suppressions)
-
+        # Manual signals must work even while sensors look stale or offline.
         if event.event_name == "manual_help_pressed" and bool(event.value):
             self.state = "urgent_alert"
             return self._decision(
@@ -80,6 +77,16 @@ class NightSafetyStateMachine:
                 "urgent_caregiver_check",
                 suppressions,
             )
+
+        if event.event_name == "manual_cancel_pressed" and bool(event.value):
+            self._reset_active_incident()
+            self.last_alert_ms.clear()
+            self.state = "returned_to_bed" if self._bed_occupied_known() else "out_of_bed_unknown"
+            return self._decision(event, severity, score, ["manual_cancel_pressed"], "observe", suppressions)
+
+        stale_decision = self._stale_sensor_decision(event.timestamp_ms)
+        if stale_decision:
+            return stale_decision
 
         if event.event_name == "sensor_offline" and bool(event.value):
             self.state = "offline_or_blind"
@@ -109,6 +116,7 @@ class NightSafetyStateMachine:
                     self.active_trip_start_ms = None
                     self.bathroom_occupied_since_ms = None
                     self._reset_active_incident()
+                    self.last_alert_ms.clear()
                     severity = "info"
                 else:
                     self.state = "asleep_in_bed"
@@ -183,6 +191,19 @@ class NightSafetyStateMachine:
         reason_codes = _dedupe(reason_codes)
         return self._decision(event, severity, score, reason_codes, action, suppressions)
 
+    def _update_night_window(self, event: NormalizedEvent) -> None:
+        local_dt = parse_local_datetime(event.event_time_local)
+        if local_dt is None:
+            return
+        active = is_night_window(self.rules, local_dt)
+        if active != self.night_window_active:
+            # Entering/leaving the night window restarts routine timers so a
+            # normal daytime bed exit does not instantly count as no-return.
+            self.bed_unoccupied_since_ms = None
+            self.active_trip_start_ms = None
+            self.bathroom_occupied_since_ms = None
+        self.night_window_active = active
+
     def _record_sensor_health(self, event: NormalizedEvent) -> None:
         critical = event.sensor_id in self.critical_sensor_ids
         online = event.network_ok and event.battery_ok and not (
@@ -207,9 +228,21 @@ class NightSafetyStateMachine:
                     confidence=0.8,
                     reason_codes=["sensor_offline"],
                     recommended_action="notify_caregiver",
+                    suppressions=self._cooldown_suppressions("low", now_ms, []),
                     debug=self._debug(now_ms) | {"offline_sensor_id": sensor_id},
                 )
         return None
+
+    def _cooldown_suppressions(self, severity: str, now_ms: int, suppressions: list[str]) -> list[str]:
+        if severity not in {"low", "urgent"}:
+            return suppressions
+        cooldown_s = self.rules.get("suppression", {}).get("realert_cooldown_s", 600)
+        key = (self.state, severity)
+        last = self.last_alert_ms.get(key)
+        if last is not None and now_ms - last < cooldown_s * 1000:
+            return suppressions + ["alert_cooldown"]
+        self.last_alert_ms[key] = now_ms
+        return suppressions
 
     def _apply_fall_persistence(self, now_ms: int) -> tuple[str, str, str, float] | None:
         if self.floor_level_since_ms is None or self.no_motion_since_ms is None:
@@ -234,7 +267,7 @@ class NightSafetyStateMachine:
             if duration_s >= thresholds["low_notice_default_s"]:
                 return "bathroom_overstay", "low", "notify_caregiver", 0.65, ["bathroom_overstay"]
 
-        if self.bed_unoccupied_since_ms is not None:
+        if self.bed_unoccupied_since_ms is not None and self.night_window_active:
             duration_s = _elapsed_s(self.bed_unoccupied_since_ms, now_ms)
             thresholds = self.rules["thresholds"]["bed_exit_no_return"]
             if duration_s >= thresholds["urgent_after_s"]:
@@ -266,6 +299,8 @@ class NightSafetyStateMachine:
         action: str,
         suppressions: list[str],
     ) -> DetectorDecision:
+        if event.event_name != "manual_help_pressed":
+            suppressions = self._cooldown_suppressions(severity, event.timestamp_ms, suppressions)
         return DetectorDecision(
             timestamp_ms=event.timestamp_ms,
             state=self.state,
