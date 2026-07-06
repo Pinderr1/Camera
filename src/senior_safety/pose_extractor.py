@@ -4,9 +4,10 @@ import argparse
 import json
 import os
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .pose_events import FrameFeatures, PoseEventEngine
 
@@ -14,6 +15,11 @@ CORE_LANDMARKS = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
 MOTION_LANDMARKS = ("nose", "left_shoulder", "right_shoulder", "left_hip", "right_hip", "left_ankle", "right_ankle")
 VISIBILITY_MIN = 0.5
 HEARTBEAT_INTERVAL_S = 30
+DEFAULT_MODEL_PATH = "models/pose_landmarker_full.task"
+DEFAULT_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_full/float16/latest/pose_landmarker_full.task"
+)
 
 
 def load_zones_config(path: str | Path) -> dict[str, Any]:
@@ -92,6 +98,145 @@ class PoseJsonlWriter:
         self._handle.close()
 
 
+def ensure_model(pose_config: dict[str, Any]) -> Path:
+    path = Path(pose_config.get("model_path", DEFAULT_MODEL_PATH))
+    if not path.exists():
+        url = pose_config.get("model_url", DEFAULT_MODEL_URL)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading pose model to {path} ...")
+        urllib.request.urlretrieve(url, path)
+        print("Model downloaded.")
+    return path
+
+
+def create_landmarker(pose_config: dict[str, Any]):
+    from mediapipe.tasks.python import vision
+    from mediapipe.tasks.python.core.base_options import BaseOptions
+
+    options = vision.PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(ensure_model(pose_config))),
+        running_mode=vision.RunningMode.VIDEO,
+        min_pose_detection_confidence=float(pose_config.get("min_detection_confidence", 0.5)),
+        min_pose_presence_confidence=float(pose_config.get("min_presence_confidence", 0.5)),
+        min_tracking_confidence=float(pose_config.get("min_tracking_confidence", 0.5)),
+    )
+    landmark_names = [name.name.lower() for name in vision.PoseLandmark]
+    return vision.PoseLandmarker.create_from_options(options), landmark_names
+
+
+def health_payload(config: dict[str, Any], event_name: str, timestamp_ms: int) -> dict[str, Any]:
+    return {
+        "sensor_id": f"pose_{config.get('camera_id', 'cam01')}",
+        "sensor_type": "camera_pose",
+        "room": config.get("room", ""),
+        "zone_id": "",
+        "event_name": event_name,
+        "value": True,
+        "timestamp_ms": timestamp_ms,
+        "confidence": 1.0,
+    }
+
+
+def run_camera_loop(
+    config: dict[str, Any],
+    emit: Callable[[dict[str, Any]], None],
+    show: bool = False,
+    jsonl_writer: PoseJsonlWriter | None = None,
+    on_key: Callable[[str], None] | None = None,
+) -> None:
+    """Capture frames, run pose landmarking, and emit derived sensor events.
+
+    Runs until KeyboardInterrupt or the q key in the preview window.
+    """
+    import cv2
+    import mediapipe as mp
+
+    engine = PoseEventEngine(config)
+    fps_limit = float(config.get("fps_limit", 10))
+    landmarker, landmark_names = create_landmarker(config.get("pose", {}))
+    source = config.get("source", 0)
+    capture = cv2.VideoCapture(source)
+    if not capture.isOpened() and isinstance(source, int):
+        capture = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    if not capture.isOpened():
+        raise SystemExit(
+            f"Could not open camera source {source!r}. "
+            "Use a USB webcam index (0, 1, ...) or an RTSP/HTTP URL for an IP camera in the zones config."
+        )
+
+    print(f"Pose extractor running on source {source!r} as {config.get('camera_id', 'cam01')}. Ctrl+C to stop.")
+    last_heartbeat = 0.0
+    detector_start = time.monotonic()
+    frame_interval = 1.0 / fps_limit if fps_limit > 0 else 0.0
+    try:
+        while True:
+            started = time.time()
+            ok, frame_bgr = capture.read()
+            if not ok:
+                emit(health_payload(config, "sensor_offline", int(time.time() * 1000)))
+                time.sleep(2)
+                continue
+
+            timestamp_ms = int(time.time() * 1000)
+            detector_ms = int((time.monotonic() - detector_start) * 1000)
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            result = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), detector_ms)
+
+            landmark_map: dict[str, tuple[float, float, float, float]] = {}
+            if result.pose_landmarks:
+                for name, landmark in zip(landmark_names, result.pose_landmarks[0]):
+                    landmark_map[name] = (landmark.x, landmark.y, landmark.z, landmark.visibility or 0.0)
+
+            features = extract_features(landmark_map, timestamp_ms)
+            for payload in engine.update(features):
+                emit(payload)
+
+            if jsonl_writer and landmark_map:
+                jsonl_writer.write(timestamp_ms, landmark_map, features)
+
+            if started - last_heartbeat >= HEARTBEAT_INTERVAL_S:
+                last_heartbeat = started
+                emit(health_payload(config, "sensor_online", timestamp_ms))
+
+            if show:
+                height, width = frame_bgr.shape[:2]
+                for zone in config.get("zones", []):
+                    points = [(int(x * width), int(y * height)) for x, y in zone["polygon"]]
+                    for i in range(len(points)):
+                        cv2.line(frame_bgr, points[i], points[(i + 1) % len(points)], (0, 200, 255), 2)
+                    cv2.putText(frame_bgr, zone["id"], points[0], cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
+                if features.hip:
+                    cv2.circle(frame_bgr, (int(features.hip[0] * width), int(features.hip[1] * height)), 6, (0, 0, 255), -1)
+                cv2.imshow("senior-night pose", frame_bgr)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
+                if key != 255 and on_key:
+                    on_key(chr(key))
+
+            elapsed = time.time() - started
+            if frame_interval > elapsed:
+                time.sleep(frame_interval - elapsed)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        capture.release()
+        landmarker.close()
+        if jsonl_writer:
+            jsonl_writer.close()
+        if show:
+            cv2.destroyAllWindows()
+
+
+def make_jsonl_writer(config: dict[str, Any]) -> PoseJsonlWriter:
+    camera_id = config.get("camera_id", "cam01")
+    return PoseJsonlWriter(
+        Path(config.get("pose_jsonl_dir", f"data/processed/pose/{camera_id}")),
+        camera_id,
+        "mediapipe_pose_landmarker_full",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Camera pose extractor: publishes derived sensor events over MQTT.")
     parser.add_argument("--zones", default="config/zones.example.json")
@@ -100,14 +245,7 @@ def main() -> None:
     parser.add_argument("--no-jsonl", action="store_true", help="Skip writing pose JSONL records.")
     args = parser.parse_args()
 
-    import cv2
-    import mediapipe as mp
-
     config = load_zones_config(args.zones)
-    engine = PoseEventEngine(config)
-    camera_id = config.get("camera_id", "cam01")
-    pose_config = config.get("pose", {})
-    fps_limit = float(config.get("fps_limit", 10))
 
     client = None
     topic = None
@@ -129,100 +267,13 @@ def main() -> None:
             client.publish(topic, json.dumps(payload), qos=1)
         print(f"{payload['event_name']}={payload['value']} zone={payload.get('zone_id', '')}")
 
-    writer = None
-    if not args.no_jsonl:
-        writer = PoseJsonlWriter(Path(config.get("pose_jsonl_dir", f"data/processed/pose/{camera_id}")), camera_id, "mediapipe_pose")
-
-    landmark_names = [name.name.lower() for name in mp.solutions.pose.PoseLandmark]
-    pose = mp.solutions.pose.Pose(
-        model_complexity=int(pose_config.get("model_complexity", 1)),
-        min_detection_confidence=float(pose_config.get("min_detection_confidence", 0.5)),
-        min_tracking_confidence=float(pose_config.get("min_tracking_confidence", 0.5)),
-    )
-    source = config.get("source", 0)
-    capture = cv2.VideoCapture(source)
-    if not capture.isOpened():
-        raise SystemExit(f"Could not open camera source {source!r}")
-
-    print(f"Pose extractor running on source {source!r} as {camera_id}. Ctrl+C to stop.")
-    last_heartbeat = 0.0
-    frame_interval = 1.0 / fps_limit if fps_limit > 0 else 0.0
+    writer = None if args.no_jsonl else make_jsonl_writer(config)
     try:
-        while True:
-            started = time.time()
-            ok, frame_bgr = capture.read()
-            if not ok:
-                emit_offline = {
-                    "sensor_id": f"pose_{camera_id}",
-                    "sensor_type": "camera_pose",
-                    "room": config.get("room", ""),
-                    "zone_id": "",
-                    "event_name": "sensor_offline",
-                    "value": True,
-                    "timestamp_ms": int(time.time() * 1000),
-                    "confidence": 1.0,
-                }
-                emit(emit_offline)
-                time.sleep(2)
-                continue
-
-            timestamp_ms = int(time.time() * 1000)
-            results = pose.process(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-            landmark_map: dict[str, tuple[float, float, float, float]] = {}
-            if results.pose_landmarks:
-                for name, landmark in zip(landmark_names, results.pose_landmarks.landmark):
-                    landmark_map[name] = (landmark.x, landmark.y, landmark.z, landmark.visibility)
-
-            features = extract_features(landmark_map, timestamp_ms)
-            for payload in engine.update(features):
-                emit(payload)
-
-            if writer and landmark_map:
-                writer.write(timestamp_ms, landmark_map, features)
-
-            if started - last_heartbeat >= HEARTBEAT_INTERVAL_S:
-                last_heartbeat = started
-                emit(
-                    {
-                        "sensor_id": f"pose_{camera_id}",
-                        "sensor_type": "camera_pose",
-                        "room": config.get("room", ""),
-                        "zone_id": "",
-                        "event_name": "sensor_online",
-                        "value": True,
-                        "timestamp_ms": timestamp_ms,
-                        "confidence": 1.0,
-                    }
-                )
-
-            if args.show:
-                height, width = frame_bgr.shape[:2]
-                for zone in config.get("zones", []):
-                    points = [(int(x * width), int(y * height)) for x, y in zone["polygon"]]
-                    for i in range(len(points)):
-                        cv2.line(frame_bgr, points[i], points[(i + 1) % len(points)], (0, 200, 255), 2)
-                    cv2.putText(frame_bgr, zone["id"], points[0], cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
-                if features.hip:
-                    cv2.circle(frame_bgr, (int(features.hip[0] * width), int(features.hip[1] * height)), 6, (0, 0, 255), -1)
-                cv2.imshow("senior-night pose", frame_bgr)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
-
-            elapsed = time.time() - started
-            if frame_interval > elapsed:
-                time.sleep(frame_interval - elapsed)
-    except KeyboardInterrupt:
-        pass
+        run_camera_loop(config, emit, show=args.show, jsonl_writer=writer)
     finally:
-        capture.release()
-        pose.close()
-        if writer:
-            writer.close()
         if client:
             client.loop_stop()
             client.disconnect()
-        if args.show:
-            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

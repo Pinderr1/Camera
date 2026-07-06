@@ -1,5 +1,7 @@
 # Core state machine and offline runner are stdlib-only.
 # These dependencies are needed only for the live runtime services.
 paho-mqtt>=2.0
-opencv-python>=4.9
+# OpenCV 5.0 Windows wheels cannot capture from cameras by index; stay on 4.x.
+# contrib variant because mediapipe depends on it (avoids two cv2 installs).
+opencv-contrib-python>=4.9,<5
 mediapipe>=0.10

@@ -22,6 +22,23 @@ The state machine and offline runner are standard-library Python. The live servi
 pip install -r requirements.txt
 ```
 
+## Local Pilot (no broker needed)
+
+The fastest way to validate the camera pipeline end to end on one machine — camera events feed the state machine directly, decisions print to the console, and logs land in `detector_runs/pilot/`:
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.local_pilot --show --fast-test
+```
+
+- Set `source` in the zones config to a USB webcam index (`0`) or an IP camera URL (`"rtsp://user:pass@ip:554/stream"`).
+- The MediaPipe pose model (~9 MB) downloads automatically to `models/` on first run.
+- In the preview window: `q` quits, `h` presses the virtual help button, `c` cancels.
+- `--fast-test` shortens thresholds (urgent after ~20 s of floor-level stillness) so staged scenarios do not require lying still for a minute.
+- Review a pilot session afterwards: `python -m senior_safety.morning_review --log-dir detector_runs/pilot`.
+
+Staged validation checklist (safe scenarios only, mats/cushions, no real falls): empty room, walk through the route zone, sit on a chair and stay still, controlled lie-down on a mat, get up again, press `h` then `c`, cover the camera. Only the lie-down and `h` should alert.
+
 ## Live Runtime
 
 Run the MQTT bridge (subscribes to `senior-night/events`, publishes `senior-night/state` and `senior-night/alerts`, logs daily decision/transition CSVs to `detector_runs/live/`):

@@ -22,6 +22,9 @@ secrets/
 logs/
 detector_runs/
 
+# Downloaded model binaries
+models/
+
 # Python / JS / OS noise
 __pycache__/
 *.pyc
