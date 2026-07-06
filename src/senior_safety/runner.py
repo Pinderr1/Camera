@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .alerts import build_alert_payload
+from .baselines import apply_baselines
 from .clock import synthesize_ticks, tick_interval_s
 from .event_io import read_sensor_events, write_decisions_csv
 from .omnifall_replay import read_omnifall_segments_csv
@@ -19,12 +20,13 @@ def main() -> None:
     parser.add_argument("--output", default="detector_runs/decisions.csv")
     parser.add_argument("--metrics", default="detector_runs/metrics.json")
     parser.add_argument("--no-ticks", action="store_true", help="Replay raw events without synthesized clock ticks.")
+    parser.add_argument("--baselines", default="data/baselines", help="Directory with personal baseline JSON files.")
     args = parser.parse_args()
 
     if not args.events and not args.omnifall_segments:
         raise SystemExit("Provide --events or --omnifall-segments.")
 
-    rules = load_rules(args.rules)
+    rules = apply_baselines(load_rules(args.rules), args.baselines)
     machine = NightSafetyStateMachine(rules)
     events = read_omnifall_segments_csv(args.omnifall_segments) if args.omnifall_segments else read_sensor_events(args.events)
     if not args.no_ticks:

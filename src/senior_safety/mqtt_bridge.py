@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .alerts import build_alert_payload
+from .baselines import apply_baselines
 from .clock import TICK_EVENT_NAME, make_tick, tick_interval_s
 from .event_io import append_csv_row, append_decision_csv, parse_boolish
 from .schemas import DetectorDecision, NormalizedEvent
@@ -131,7 +132,7 @@ class LiveSession:
 def run_bridge(args: argparse.Namespace) -> None:
     import paho.mqtt.client as mqtt
 
-    rules = load_rules(args.rules)
+    rules = apply_baselines(load_rules(args.rules), args.baselines)
     machine = NightSafetyStateMachine(rules, critical_sensor_ids=set(args.critical_sensor or []))
     prefix = args.topic_prefix
 
@@ -189,6 +190,7 @@ def main() -> None:
     parser.add_argument("--password", help="MQTT password; falls back to MQTT_PASSWORD env var.")
     parser.add_argument("--topic-prefix", default="senior-night")
     parser.add_argument("--log-dir", default="detector_runs/live")
+    parser.add_argument("--baselines", default="data/baselines", help="Directory with personal baseline JSON files.")
     parser.add_argument("--critical-sensor", action="append", help="Sensor id that must stay fresh; repeatable.")
     args = parser.parse_args()
     run_bridge(args)

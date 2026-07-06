@@ -14,6 +14,46 @@ Start with [claude.md](./claude.md). It defines the product goal, safety boundar
 6. Use [data/labels/label_schema.json](./data/labels/label_schema.json) for clips, sensor events, routine transitions, and alert reviews.
 7. Run observation-only for 7 to 14 nights before waking caregivers with automated alerts.
 
+## Setup
+
+The state machine and offline runner are standard-library Python. The live services need:
+
+```powershell
+pip install -r requirements.txt
+```
+
+## Live Runtime
+
+Run the MQTT bridge (subscribes to `senior-night/events`, publishes `senior-night/state` and `senior-night/alerts`, logs daily decision/transition CSVs to `detector_runs/live/`):
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.mqtt_bridge --host <broker-ip> --critical-sensor pose_cam01
+```
+
+Run the camera pose extractor (publishes derived events over MQTT; `--dry-run` prints instead, `--show` opens a preview for zone calibration):
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.pose_extractor --zones config/zones.example.json --dry-run --show
+```
+
+Copy `config/zones.example.json` to a local config and adjust the zone polygons to your camera view before real use.
+
+Morning review of last night:
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.morning_review --date 20260706 --append-review-log
+```
+
+Compute personal baselines after 7+ nights of observation (the runner and bridge pick them up automatically from `data/baselines/`):
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.baselines --transitions detector_runs/live
+```
+
 ## Prototype Commands
 
 Run the state-machine tests:
@@ -49,9 +89,12 @@ python -m senior_safety.runner --omnifall-segments data/examples/omnifall_segmen
 - License/reuse audit in [sources.md](./sources.md).
 - Event and detector schema docs in [docs/event-schema.md](./docs/event-schema.md).
 - Home Assistant and ESPHome examples under [integrations/](./integrations/).
-- Standard-library Python state machine under [src/senior_safety/](./src/senior_safety/).
+- Standard-library Python state machine under [src/senior_safety/](./src/senior_safety/) with clock ticks, night-window gating, and alert cooldowns.
 - Offline runner for sensor-event CSVs and OmniFall-like segment exports.
-- Unit tests covering normal trip, overstay, fall/no-motion, no-return, manual help, and sensor offline.
+- Live MQTT bridge with retained state topic, alert topic, and daily decision/transition logs.
+- Camera pose extractor (OpenCV + MediaPipe) emitting zone-based sensor events and pose-only JSONL.
+- Personal baseline computation and morning review tooling.
+- Unit tests covering normal trip, overstay, fall/no-motion, no-return, manual help, sensor offline, ticks, cooldowns, night window, pose events, and baselines.
 
 ## Safety Note
 

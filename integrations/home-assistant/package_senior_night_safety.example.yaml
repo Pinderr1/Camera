@@ -1,6 +1,17 @@
 # Example Home Assistant package.
 # Copy into your HA config only after replacing entity ids and notification services.
 
+mqtt:
+  sensor:
+    - name: Senior night state
+      unique_id: senior_night_state
+      state_topic: senior-night/state
+      value_template: "{{ value_json.state }}"
+      json_attributes_topic: senior-night/state
+      availability_topic: senior-night/bridge/status
+      payload_available: "online"
+      payload_not_available: "offline"
+
 template:
   - binary_sensor:
       - name: Senior Night Monitoring Ready
@@ -80,6 +91,100 @@ automation:
               "battery_ok": true,
               "network_ok": true
             }
+
+  - id: senior_night_publish_door_event
+    alias: Senior night publish bathroom door event
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.bathroom_door
+    action:
+      - service: mqtt.publish
+        data:
+          topic: senior-night/events
+          retain: false
+          payload: >
+            {
+              "sensor_id": "bathdoor_01",
+              "sensor_type": "door_contact",
+              "room": "bathroom",
+              "zone_id": "bathroom_entry_zone",
+              "event_name": "door_open",
+              "value": {{ is_state('binary_sensor.bathroom_door', 'on') | tojson }},
+              "confidence": 1.0,
+              "battery_ok": true,
+              "network_ok": true
+            }
+
+  - id: senior_night_publish_help_event
+    alias: Senior night publish manual help event
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.help_button
+        to: "on"
+    action:
+      - service: mqtt.publish
+        data:
+          topic: senior-night/events
+          retain: false
+          payload: >
+            {
+              "sensor_id": "help_01",
+              "sensor_type": "button",
+              "room": "bedroom",
+              "zone_id": "bed_zone",
+              "event_name": "manual_help_pressed",
+              "value": true,
+              "confidence": 1.0,
+              "battery_ok": true,
+              "network_ok": true
+            }
+
+  - id: senior_night_publish_cancel_event
+    alias: Senior night publish manual cancel event
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.cancel_button
+        to: "on"
+    action:
+      - service: mqtt.publish
+        data:
+          topic: senior-night/events
+          retain: false
+          payload: >
+            {
+              "sensor_id": "cancel_01",
+              "sensor_type": "button",
+              "room": "bedroom",
+              "zone_id": "bed_zone",
+              "event_name": "manual_cancel_pressed",
+              "value": true,
+              "confidence": 1.0,
+              "battery_ok": true,
+              "network_ok": true
+            }
+
+  - id: senior_night_forward_bridge_alerts
+    alias: Senior night forward bridge alerts
+    mode: queued
+    trigger:
+      - platform: mqtt
+        topic: senior-night/alerts
+    condition:
+      - condition: state
+        entity_id: input_boolean.senior_night_observation_only
+        state: "off"
+    action:
+      - service: notify.mobile_app_primary_caregiver
+        data:
+          title: "{{ trigger.payload_json.title }}"
+          message: "{{ trigger.payload_json.message }}"
+          data:
+            push:
+              interruption-level: >-
+                {{ 'critical' if trigger.payload_json.severity == 'urgent' else 'active' }}
 
   - id: senior_night_manual_help_notice
     alias: Senior night manual help notice
