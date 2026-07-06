@@ -1,0 +1,48 @@
+{
+  "camera_id": "cam01",
+  "source": 0,
+  "room": "bedroom",
+  "fps_limit": 10,
+  "floor_line_y": 0.65,
+  "zones": [
+    {
+      "id": "bed_zone",
+      "kind": "bed",
+      "polygon": [[0.0, 0.35], [0.35, 0.35], [0.35, 0.85], [0.0, 0.85]]
+    },
+    {
+      "id": "route_zone",
+      "kind": "path",
+      "polygon": [[0.35, 0.3], [0.85, 0.3], [0.85, 1.0], [0.35, 1.0]]
+    },
+    {
+      "id": "bathroom_door_zone",
+      "kind": "doorway",
+      "polygon": [[0.85, 0.2], [1.0, 0.2], [1.0, 0.9], [0.85, 0.9]]
+    }
+  ],
+  "pose": {
+    "model_complexity": 1,
+    "min_detection_confidence": 0.5,
+    "min_tracking_confidence": 0.5
+  },
+  "events": {
+    "person_present_debounce_s": 1.0,
+    "person_absent_debounce_s": 3.0,
+    "bed_occupied_debounce_s": 5.0,
+    "no_motion_after_s": 10.0,
+    "motion_score_threshold": 0.01,
+    "rapid_drop_min_vy": 0.18,
+    "rapid_drop_window_s": 0.7,
+    "floor_level_torso_angle_deg": 55,
+    "floor_level_min_s": 2.0,
+    "bathroom_infer_absent_s": 5.0,
+    "bathroom_inferred_confidence": 0.6
+  },
+  "mqtt": {
+    "host": "localhost",
+    "port": 1883,
+    "topic_prefix": "senior-night"
+  },
+  "pose_jsonl_dir": "data/processed/pose/cam01"
+}
