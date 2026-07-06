@@ -55,26 +55,47 @@ def read_sensor_events(path: str | Path) -> list[NormalizedEvent]:
     return events
 
 
+DECISION_FIELDNAMES = [
+    "timestamp_ms",
+    "state",
+    "severity",
+    "score",
+    "confidence",
+    "reason_codes",
+    "recommended_action",
+    "suppressions",
+    "debug",
+]
+
+
+def _decision_row(decision: DetectorDecision) -> dict[str, object]:
+    row = decision.as_dict()
+    row["reason_codes"] = "|".join(decision.reason_codes)
+    row["suppressions"] = "|".join(decision.suppressions)
+    row["debug"] = json.dumps(decision.debug, sort_keys=True)
+    return row
+
+
 def write_decisions_csv(path: str | Path, decisions: Iterable[DetectorDecision]) -> None:
-    fieldnames = [
-        "timestamp_ms",
-        "state",
-        "severity",
-        "score",
-        "confidence",
-        "reason_codes",
-        "recommended_action",
-        "suppressions",
-        "debug",
-    ]
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=DECISION_FIELDNAMES)
         writer.writeheader()
         for decision in decisions:
-            row = decision.as_dict()
-            row["reason_codes"] = "|".join(decision.reason_codes)
-            row["suppressions"] = "|".join(decision.suppressions)
-            row["debug"] = json.dumps(decision.debug, sort_keys=True)
-            writer.writerow(row)
+            writer.writerow(_decision_row(decision))
+
+
+def append_csv_row(path: str | Path, fieldnames: list[str], row: dict[str, object]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not target.exists() or target.stat().st_size == 0
+    with target.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def append_decision_csv(path: str | Path, decision: DetectorDecision) -> None:
+    append_csv_row(path, DECISION_FIELDNAMES, _decision_row(decision))
