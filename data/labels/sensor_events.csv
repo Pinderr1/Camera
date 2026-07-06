@@ -1,0 +1,1 @@
+event_id,sensor_id,sensor_type,room,zone_id,event_time_local,event_time_ms,event_name,value,confidence,battery_ok,network_ok,notes

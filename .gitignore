@@ -1,0 +1,30 @@
+# Private media and derived identifying data
+data/raw/
+data/processed/thumbnails/
+data/processed/video/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+
+# Private operations data
+consent/
+private/
+secrets/
+*.local.json
+*.private.json
+.env
+.env.*
+logs/
+detector_runs/
+
+# Python / JS / OS noise
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+Thumbs.db

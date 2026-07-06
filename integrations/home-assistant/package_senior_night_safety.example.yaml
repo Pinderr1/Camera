@@ -1,0 +1,101 @@
+# Example Home Assistant package.
+# Copy into your HA config only after replacing entity ids and notification services.
+
+template:
+  - binary_sensor:
+      - name: Senior Night Monitoring Ready
+        unique_id: senior_night_monitoring_ready
+        state: >
+          {{ is_state('binary_sensor.bed_occupied', 'on')
+             or is_state('binary_sensor.route_presence', 'on')
+             or is_state('binary_sensor.bathroom_presence', 'on') }}
+        attributes:
+          bed_sensor: "{{ states('binary_sensor.bed_occupied') }}"
+          route_sensor: "{{ states('binary_sensor.route_presence') }}"
+          bathroom_sensor: "{{ states('binary_sensor.bathroom_presence') }}"
+
+input_boolean:
+  senior_night_observation_only:
+    name: Senior night observation only
+    initial: true
+  senior_night_soft_check_enabled:
+    name: Senior night soft check enabled
+    initial: true
+
+input_datetime:
+  senior_last_bed_exit:
+    name: Senior last bed exit
+    has_date: true
+    has_time: true
+  senior_last_bed_return:
+    name: Senior last bed return
+    has_date: true
+    has_time: true
+
+automation:
+  - id: senior_night_publish_bed_event
+    alias: Senior night publish bed event
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.bed_occupied
+    action:
+      - service: mqtt.publish
+        data:
+          topic: senior-night/events
+          retain: false
+          payload: >
+            {
+              "sensor_id": "bed_01",
+              "sensor_type": "bed_pressure",
+              "room": "bedroom",
+              "zone_id": "bed_zone",
+              "event_name": "bed_occupied",
+              "value": {{ is_state('binary_sensor.bed_occupied', 'on') | tojson }},
+              "confidence": 1.0,
+              "battery_ok": true,
+              "network_ok": true
+            }
+
+  - id: senior_night_publish_bathroom_event
+    alias: Senior night publish bathroom occupancy event
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.bathroom_presence
+    action:
+      - service: mqtt.publish
+        data:
+          topic: senior-night/events
+          retain: false
+          payload: >
+            {
+              "sensor_id": "bath_mmwave_01",
+              "sensor_type": "mmwave_presence",
+              "room": "bathroom",
+              "zone_id": "bathroom_private_zone",
+              "event_name": "bathroom_occupied",
+              "value": {{ is_state('binary_sensor.bathroom_presence', 'on') | tojson }},
+              "confidence": 1.0,
+              "battery_ok": true,
+              "network_ok": true
+            }
+
+  - id: senior_night_manual_help_notice
+    alias: Senior night manual help notice
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.help_button
+        to: "on"
+    action:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.senior_night_observation_only
+                state: "off"
+            sequence:
+              - service: notify.mobile_app_primary_caregiver
+                data:
+                  title: "Urgent senior night check"
+                  message: "Manual help button was pressed. Please check immediately."

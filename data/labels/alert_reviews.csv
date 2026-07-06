@@ -1,0 +1,1 @@
+alert_id,run_id,start_time_local,ack_time_local,resolved_time_local,severity,state,reason_codes,last_seen_zone,caregiver_acknowledged,responder,review_label,threshold_change_needed,notes

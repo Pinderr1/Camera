@@ -1,0 +1,7 @@
+event_id,sensor_id,sensor_type,room,zone_id,event_time_local,event_time_ms,event_name,value,confidence,battery_ok,network_ok,notes
+evt_001,bed_01,bed_pressure,bedroom,bed_zone,,0,bed_occupied,false,1.0,true,true,bed exit
+evt_002,route_mmwave_01,mmwave_presence,bedroom,route_zone,,5000,route_motion,true,1.0,true,true,route motion
+evt_003,pose_01,camera_pose,bedroom,route_zone,,10000,fall_suspected,true,0.8,true,true,rapid drop from pose baseline
+evt_004,pose_01,camera_pose,bedroom,route_zone,,11000,floor_level_posture,true,0.8,true,true,floor-level posture
+evt_005,pose_01,camera_pose,bedroom,route_zone,,20000,no_motion,true,0.8,true,true,stillness begins
+evt_006,pose_01,camera_pose,bedroom,route_zone,,66000,no_motion,true,0.8,true,true,stillness persisted

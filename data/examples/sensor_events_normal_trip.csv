@@ -1,0 +1,6 @@
+event_id,sensor_id,sensor_type,room,zone_id,event_time_local,event_time_ms,event_name,value,confidence,battery_ok,network_ok,notes
+evt_001,bed_01,bed_pressure,bedroom,bed_zone,,0,bed_occupied,false,1.0,true,true,normal trip starts
+evt_002,route_mmwave_01,mmwave_presence,bedroom,route_zone,,10000,route_motion,true,1.0,true,true,route motion seen
+evt_003,bath_mmwave_01,mmwave_presence,bathroom,bathroom_private_zone,,60000,bathroom_occupied,true,1.0,true,true,bathroom occupied
+evt_004,bath_mmwave_01,mmwave_presence,bathroom,bathroom_private_zone,,180000,bathroom_occupied,false,1.0,true,true,bathroom exited
+evt_005,bed_01,bed_pressure,bedroom,bed_zone,,240000,bed_occupied,true,1.0,true,true,returned to bed

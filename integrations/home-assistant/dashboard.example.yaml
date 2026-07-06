@@ -1,0 +1,24 @@
+title: Senior Night Safety
+views:
+  - title: Night Monitor
+    path: senior-night
+    cards:
+      - type: entities
+        title: Monitoring
+        entities:
+          - input_boolean.senior_night_observation_only
+          - input_boolean.senior_night_soft_check_enabled
+          - binary_sensor.senior_night_monitoring_ready
+      - type: entities
+        title: Sensors
+        entities:
+          - binary_sensor.bed_occupied
+          - binary_sensor.route_presence
+          - binary_sensor.bathroom_presence
+          - binary_sensor.bathroom_door
+          - binary_sensor.help_button
+      - type: entities
+        title: Last Routine Events
+        entities:
+          - input_datetime.senior_last_bed_exit
+          - input_datetime.senior_last_bed_return

@@ -1,0 +1,6 @@
+clip_id,label,start_ms,end_ms,split,dataset
+public_001,walk,0,5000,validation,omnifall
+public_001,fall,5000,6000,validation,omnifall
+public_001,fallen,6000,62000,validation,omnifall
+public_002,walk,0,12000,validation,omnifall
+public_002,sit_down,12000,15000,validation,omnifall

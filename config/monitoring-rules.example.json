@@ -1,0 +1,77 @@
+{
+  "version": "0.1",
+  "purpose": "assistive_safety_monitor_not_medical_device",
+  "night_window": {
+    "start_local": "21:00",
+    "end_local": "07:30"
+  },
+  "privacy": {
+    "process_locally": true,
+    "record_audio": false,
+    "bathroom_video_allowed": false,
+    "default_media_retention_days": 7,
+    "prefer_pose_only_storage": true
+  },
+  "zones": [
+    {
+      "id": "bed_zone",
+      "kind": "bed",
+      "urgent_if_floor_level": false
+    },
+    {
+      "id": "bed_exit_zone",
+      "kind": "transition",
+      "urgent_if_floor_level": true
+    },
+    {
+      "id": "route_zone",
+      "kind": "path",
+      "urgent_if_floor_level": true
+    },
+    {
+      "id": "bathroom_entry_zone",
+      "kind": "doorway",
+      "urgent_if_floor_level": true
+    }
+  ],
+  "thresholds": {
+    "possible_fall": {
+      "rapid_drop_min_center_vy": 0.18,
+      "floor_level_posture_min_s": 3,
+      "watch_before_soft_check_s": 10,
+      "urgent_after_no_motion_s": 45
+    },
+    "bed_exit_no_return": {
+      "low_notice_after_s": 900,
+      "urgent_after_s": 1800
+    },
+    "bathroom_overstay": {
+      "use_personal_baseline": true,
+      "low_notice_default_s": 1200,
+      "low_notice_after_p95_plus_s": 300,
+      "urgent_default_s": 1800
+    },
+    "inactivity": {
+      "outside_bed_low_notice_s": 600,
+      "outside_bed_urgent_if_floor_level_s": 45,
+      "in_bed_breathing_signal_is_weak_only": true
+    },
+    "sensor_health": {
+      "critical_sensor_offline_after_s": 60,
+      "noncritical_sensor_offline_after_s": 300
+    }
+  },
+  "alert_ladder": {
+    "soft_check_enabled": true,
+    "primary_ack_timeout_s": 180,
+    "backup_ack_timeout_s": 300,
+    "automatic_emergency_calls_enabled": false
+  },
+  "suppression": {
+    "single_frame_alerts_allowed": false,
+    "minimum_urgent_persistence_s": 30,
+    "cooldown_after_ack_s": 900,
+    "normal_bed_lie_down_suppression": true,
+    "normal_chair_sit_suppression": true
+  }
+}

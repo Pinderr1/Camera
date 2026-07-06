@@ -1,0 +1,51 @@
+substitutions:
+  device_name: senior-door-buttons
+  friendly_name: Senior Door And Buttons
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+
+logger:
+api:
+ota:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+binary_sensor:
+  - platform: gpio
+    name: Bathroom Door
+    id: bathroom_door
+    device_class: door
+    pin:
+      number: GPIO25
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on_off: 100ms
+
+  - platform: gpio
+    name: Help Button
+    id: help_button
+    device_class: safety
+    pin:
+      number: GPIO26
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+
+  - platform: gpio
+    name: Cancel Button
+    id: cancel_button
+    pin:
+      number: GPIO27
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 20ms

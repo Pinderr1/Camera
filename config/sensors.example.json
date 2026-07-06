@@ -1,0 +1,50 @@
+{
+  "version": "0.1",
+  "sensors": [
+    {
+      "sensor_id": "bed_01",
+      "entity_id": "binary_sensor.bed_occupied",
+      "sensor_type": "bed_pressure",
+      "room": "bedroom",
+      "zone_id": "bed_zone",
+      "critical": true,
+      "event_name": "bed_occupied"
+    },
+    {
+      "sensor_id": "route_mmwave_01",
+      "entity_id": "binary_sensor.route_presence",
+      "sensor_type": "mmwave_presence",
+      "room": "bedroom",
+      "zone_id": "route_zone",
+      "critical": true,
+      "event_name": "person_present"
+    },
+    {
+      "sensor_id": "bathdoor_01",
+      "entity_id": "binary_sensor.bathroom_door",
+      "sensor_type": "door_contact",
+      "room": "bathroom",
+      "zone_id": "bathroom_entry_zone",
+      "critical": false,
+      "event_name": "door_open"
+    },
+    {
+      "sensor_id": "bath_mmwave_01",
+      "entity_id": "binary_sensor.bathroom_presence",
+      "sensor_type": "mmwave_presence",
+      "room": "bathroom",
+      "zone_id": "bathroom_private_zone",
+      "critical": true,
+      "event_name": "bathroom_occupied"
+    },
+    {
+      "sensor_id": "help_button_01",
+      "entity_id": "binary_sensor.help_button",
+      "sensor_type": "button",
+      "room": "bedroom",
+      "zone_id": "bed_zone",
+      "critical": true,
+      "event_name": "manual_help_pressed"
+    }
+  ]
+}
