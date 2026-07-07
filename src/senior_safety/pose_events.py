@@ -21,6 +21,7 @@ class FrameFeatures:
     bbox: tuple[float, float, float, float] | None = None
     keypoints: list[tuple[float, float]] = field(default_factory=list)
     confidence: float = 0.0
+    full_body_confidence: float | None = None
 
 
 def point_in_polygon(x: float, y: float, polygon: list[list[float]]) -> bool:
@@ -56,6 +57,7 @@ class PoseEventEngine:
         self.floor_line_y = float(config.get("floor_line_y", 0.65))
         self.zones = {zone["id"]: zone for zone in config.get("zones", [])}
         self.thresholds = config.get("events", {})
+        self.fall_suppressed_zone_ids = set(self.thresholds.get("fall_suppressed_zone_ids", ["bed_zone"]))
 
         self._person_present = False
         self._presence_candidate_since: int | None = None
@@ -175,7 +177,7 @@ class PoseEventEngine:
             events.append(self._payload("route_motion", moving_on_route, now, zone_id="route_zone"))
 
     def _update_fall_signals(self, frame: FrameFeatures, zone: str | None, now: int, events: list[dict[str, Any]]) -> None:
-        outside_bed = zone != "bed_zone"
+        fall_zone_allowed = not self._fall_suppressed_by_zone(frame, zone)
         hip = frame.hip
         assert hip is not None
 
@@ -183,21 +185,31 @@ class PoseEventEngine:
         window_ms = self._threshold("rapid_drop_window_s", 0.7) * 1000
         while self._hip_history and now - self._hip_history[0][0] > window_ms:
             self._hip_history.popleft()
-        if len(self._hip_history) >= 2 and outside_bed and not self._fall_suspected:
+        full_body_confidence = frame.full_body_confidence if frame.full_body_confidence is not None else frame.confidence
+        full_body_ok = full_body_confidence >= self._threshold("fall_suspected_min_full_body_confidence", 0.65)
+        if len(self._hip_history) >= 2 and fall_zone_allowed and full_body_ok and not self._fall_suspected:
             t0, y0 = self._hip_history[0]
             dt_s = (now - t0) / 1000.0
             if dt_s > 0:
                 vy = (hip[1] - y0) / dt_s
                 if vy >= self._threshold("rapid_drop_min_vy", 0.18):
                     self._fall_suspected = True
-                    events.append(self._payload("fall_suspected", True, now, zone_id=zone or "", confidence=frame.confidence))
+                    events.append(
+                        self._payload(
+                            "fall_suspected",
+                            True,
+                            now,
+                            zone_id=zone or "",
+                            confidence=full_body_confidence,
+                        )
+                    )
 
         horizontal = False
         if frame.shoulder_mid is not None:
             angle = torso_angle_deg(frame.shoulder_mid, hip)
             horizontal = angle >= self._threshold("floor_level_torso_angle_deg", 55)
         wide_bbox = frame.bbox is not None and frame.bbox[3] > 0 and frame.bbox[2] / frame.bbox[3] > 1.4
-        floor_level_now = outside_bed and hip[1] >= self.floor_line_y and (horizontal or wide_bbox)
+        floor_level_now = fall_zone_allowed and hip[1] >= self.floor_line_y and (horizontal or wide_bbox)
 
         if floor_level_now:
             if self._floor_candidate_since is None:
@@ -253,6 +265,23 @@ class PoseEventEngine:
             self._last_keypoints = None
             self._last_frame_ms = None
         return score
+
+    def _fall_suppressed_by_zone(self, frame: FrameFeatures, zone: str | None) -> bool:
+        if zone in self.fall_suppressed_zone_ids:
+            return True
+        min_points = int(self.thresholds.get("fall_suppression_min_points", 2))
+        for zone_id in self.fall_suppressed_zone_ids:
+            zone_config = self.zones.get(zone_id)
+            if not zone_config:
+                continue
+            body_points = []
+            if frame.hip:
+                body_points.append(frame.hip)
+            body_points.extend(frame.keypoints)
+            points_in_zone = sum(1 for x, y in body_points if point_in_polygon(x, y, zone_config["polygon"]))
+            if points_in_zone >= min_points:
+                return True
+        return False
 
     def _reset_motion_state(self) -> None:
         # Losing the pose is not evidence of recovery or of leaving bed:

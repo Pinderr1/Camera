@@ -8,7 +8,8 @@
     {
       "id": "bed_zone",
       "kind": "bed",
-      "polygon": [[0.0, 0.35], [0.35, 0.35], [0.35, 0.85], [0.0, 0.85]]
+      "suppress_fall_alerts": true,
+      "polygon": [[0.0, 0.25], [0.42, 0.25], [0.42, 0.95], [0.0, 0.95]]
     },
     {
       "id": "route_zone",
@@ -35,6 +36,9 @@
     "motion_score_threshold": 0.01,
     "rapid_drop_min_vy": 0.18,
     "rapid_drop_window_s": 0.7,
+    "fall_suspected_min_full_body_confidence": 0.65,
+    "fall_suppressed_zone_ids": ["bed_zone"],
+    "fall_suppression_min_points": 2,
     "floor_level_torso_angle_deg": 55,
     "floor_level_min_s": 2.0,
     "bathroom_infer_absent_s": 5.0,

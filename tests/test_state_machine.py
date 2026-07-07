@@ -9,7 +9,16 @@ from senior_safety.state_machine import NightSafetyStateMachine, load_rules
 RULES = load_rules("config/monitoring-rules.example.json")
 
 
-def event(timestamp_ms, event_name, value=True, sensor_id="sensor", sensor_type="test", zone_id="route_zone", event_time_local=""):
+def event(
+    timestamp_ms,
+    event_name,
+    value=True,
+    sensor_id="sensor",
+    sensor_type="test",
+    zone_id="route_zone",
+    event_time_local="",
+    confidence=1.0,
+):
     return NormalizedEvent(
         event_id=f"{event_name}_{timestamp_ms}",
         sensor_id=sensor_id,
@@ -20,6 +29,7 @@ def event(timestamp_ms, event_name, value=True, sensor_id="sensor", sensor_type=
         event_name=event_name,
         value=value,
         event_time_local=event_time_local,
+        confidence=confidence,
     )
 
 
@@ -58,6 +68,29 @@ class NightSafetyStateMachineTests(unittest.TestCase):
         self.assertEqual(decision.state, "urgent_alert")
         self.assertEqual(decision.severity, "urgent")
         self.assertIn("no_motion_45s", decision.reason_codes)
+
+    def test_bed_zone_fall_signals_are_suppressed(self):
+        machine = NightSafetyStateMachine(RULES)
+        suspected = machine.process(event(5_000, "fall_suspected", True, "pose_01", "camera_pose", "bed_zone"))
+        floor = machine.process(event(6_000, "floor_level_posture", True, "pose_01", "camera_pose", "bed_zone"))
+
+        self.assertEqual(suspected.state, "asleep_in_bed")
+        self.assertEqual(floor.state, "asleep_in_bed")
+        self.assertEqual(suspected.severity, "none")
+        self.assertEqual(floor.severity, "none")
+        self.assertIn("bed_zone_fall_suppressed", suspected.suppressions)
+        self.assertIn("bed_zone_fall_suppressed", floor.suppressions)
+
+    def test_low_full_body_confidence_suppresses_fall_suspected(self):
+        machine = NightSafetyStateMachine(RULES)
+        machine.process(event(0, "bed_occupied", False, "bed_01", "bed_pressure", "bed_zone"))
+        decision = machine.process(
+            event(5_000, "fall_suspected", True, "pose_01", "camera_pose", "route_zone", confidence=0.35)
+        )
+
+        self.assertEqual(decision.state, "bed_exit")
+        self.assertEqual(decision.severity, "none")
+        self.assertIn("low_full_body_pose_confidence", decision.suppressions)
 
     def test_bed_exit_no_return_escalates(self):
         machine = NightSafetyStateMachine(RULES)

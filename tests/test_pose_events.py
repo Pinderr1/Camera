@@ -7,7 +7,7 @@ with open("config/zones.example.json", encoding="utf-8") as handle:
     ZONES_CONFIG = json.load(handle)
 
 
-def frame(timestamp_ms, hip=None, shoulder_mid=None, jitter=0.0, present=None):
+def frame(timestamp_ms, hip=None, shoulder_mid=None, jitter=0.0, present=None, full_body_confidence=0.9):
     if present is None:
         present = hip is not None
     keypoints = []
@@ -22,6 +22,7 @@ def frame(timestamp_ms, hip=None, shoulder_mid=None, jitter=0.0, present=None):
         bbox=(hip[0] - 0.1, hip[1] - 0.3, 0.2, 0.5) if hip else None,
         keypoints=keypoints,
         confidence=0.9 if present else 0.0,
+        full_body_confidence=full_body_confidence if present else 0.0,
     )
 
 
@@ -68,6 +69,25 @@ class PoseEventEngineTests(unittest.TestCase):
         self.assertIn(("fall_suspected", True), events)
         self.assertIn(("floor_level_posture", True), events)
         self.assertIn(("no_motion", True), events)
+
+    def test_partial_body_rapid_drop_does_not_emit_fall_suspected(self):
+        engine = PoseEventEngine(ZONES_CONFIG)
+        frames = [frame(t, hip=(0.6, 0.40), jitter=0.01, full_body_confidence=0.35) for t in range(0, 1100, 100)]
+        frames.append(frame(1100, hip=(0.6, 0.52), full_body_confidence=0.35))
+        frames.append(frame(1200, hip=(0.6, 0.64), full_body_confidence=0.35))
+        events = names_values(run_frames(engine, frames))
+
+        self.assertNotIn(("fall_suspected", True), events)
+
+    def test_bed_zone_suppresses_fall_signals(self):
+        engine = PoseEventEngine(ZONES_CONFIG)
+        frames = [frame(t, hip=(0.2, 0.40), jitter=0.01) for t in range(0, 1100, 100)]
+        frames.append(frame(1100, hip=(0.2, 0.55)))
+        frames.extend(frame(t, hip=(0.2, 0.75), shoulder_mid=(0.35, 0.74)) for t in range(1200, 5000, 100))
+        events = names_values(run_frames(engine, frames))
+
+        self.assertNotIn(("fall_suspected", True), events)
+        self.assertNotIn(("floor_level_posture", True), events)
 
     def test_bathroom_occupancy_inferred_from_doorway_exit(self):
         engine = PoseEventEngine(ZONES_CONFIG)

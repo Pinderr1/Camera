@@ -12,6 +12,16 @@ from typing import Any, Callable
 from .pose_events import FrameFeatures, PoseEventEngine
 
 CORE_LANDMARKS = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
+FULL_BODY_LANDMARKS = (
+    "left_shoulder",
+    "right_shoulder",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+)
 MOTION_LANDMARKS = ("nose", "left_shoulder", "right_shoulder", "left_hip", "right_hip", "left_ankle", "right_ankle")
 VISIBILITY_MIN = 0.5
 HEARTBEAT_INTERVAL_S = 30
@@ -51,6 +61,9 @@ def extract_features(landmark_map: dict[str, tuple[float, float, float, float]],
         if name in landmark_map and landmark_map[name][3] >= VISIBILITY_MIN
     ]
     confidence = sum(lm[3] for lm in core_visible) / len(core_visible)
+    full_body_confidence = sum(_landmark_frame_confidence(landmark_map.get(name)) for name in FULL_BODY_LANDMARKS) / len(
+        FULL_BODY_LANDMARKS
+    )
     return FrameFeatures(
         timestamp_ms=timestamp_ms,
         person_present=True,
@@ -59,7 +72,17 @@ def extract_features(landmark_map: dict[str, tuple[float, float, float, float]],
         bbox=bbox,
         keypoints=keypoints,
         confidence=confidence,
+        full_body_confidence=full_body_confidence,
     )
+
+
+def _landmark_frame_confidence(landmark: tuple[float, float, float, float] | None) -> float:
+    if landmark is None:
+        return 0.0
+    x, y, _, visibility = landmark
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        return 0.0
+    return visibility
 
 
 class PoseJsonlWriter:
@@ -83,12 +106,13 @@ class PoseJsonlWriter:
             "person_id": 0,
             "pose_model": self.pose_model,
             "pose_confidence": round(features.confidence, 3),
+            "full_body_pose_confidence": round(features.full_body_confidence or 0.0, 3),
             "landmarks": [
                 {"name": name, "x": round(lm[0], 4), "y": round(lm[1], 4), "z": round(lm[2], 4), "visibility": round(lm[3], 3)}
                 for name, lm in landmark_map.items()
             ],
             "bbox": bbox,
-            "quality_flags": [] if features.person_present else ["no_person_detected"],
+            "quality_flags": _quality_flags(features),
         }
         self._handle.write(json.dumps(row) + "\n")
         self._handle.flush()
@@ -96,6 +120,15 @@ class PoseJsonlWriter:
 
     def close(self) -> None:
         self._handle.close()
+
+
+def _quality_flags(features: FrameFeatures) -> list[str]:
+    flags = []
+    if not features.person_present:
+        flags.append("no_person_detected")
+    if features.person_present and (features.full_body_confidence or 0.0) < VISIBILITY_MIN:
+        flags.append("partial_body_pose")
+    return flags
 
 
 def ensure_model(pose_config: dict[str, Any]) -> Path:

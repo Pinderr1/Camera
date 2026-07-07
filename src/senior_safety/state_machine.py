@@ -111,11 +111,11 @@ class NightSafetyStateMachine:
         if event.event_name == "bed_occupied":
             if bool(event.value):
                 self.bed_unoccupied_since_ms = None
+                self._reset_active_incident()
                 if self.active_trip_start_ms is not None:
                     self.state = "returned_to_bed"
                     self.active_trip_start_ms = None
                     self.bathroom_occupied_since_ms = None
-                    self._reset_active_incident()
                     self.last_alert_ms.clear()
                     severity = "info"
                 else:
@@ -149,7 +149,15 @@ class NightSafetyStateMachine:
                 self.state = "walking_to_bathroom"
                 severity = "info"
 
-        if event.event_name == "fall_suspected" and bool(event.value):
+        fall_signal_suppression = self._fall_signal_suppression(event)
+        if fall_signal_suppression:
+            suppressions.append(fall_signal_suppression)
+            if fall_signal_suppression in {"bed_zone_fall_suppressed", "fall_zone_suppressed"}:
+                self._reset_active_incident()
+                if self.state in {"possible_fall", "fallen_no_motion"}:
+                    self.state = "asleep_in_bed" if self._bed_occupied_known() else "out_of_bed_unknown"
+
+        if event.event_name == "fall_suspected" and bool(event.value) and not fall_signal_suppression:
             if self.fall_suspected_since_ms is None:
                 self.fall_suspected_since_ms = event.timestamp_ms
             self.state = "possible_fall"
@@ -158,7 +166,7 @@ class NightSafetyStateMachine:
             score = max(score, 0.7)
             reason_codes.append("rapid_drop")
 
-        if event.event_name == "floor_level_posture" and bool(event.value):
+        if event.event_name == "floor_level_posture" and bool(event.value) and not fall_signal_suppression:
             if self.floor_level_since_ms is None:
                 self.floor_level_since_ms = event.timestamp_ms
             if self.state not in {"fallen_no_motion", "urgent_alert"}:
@@ -281,6 +289,32 @@ class NightSafetyStateMachine:
             return "no_motion_30s"
         elapsed_s = _elapsed_s(self.no_motion_since_ms, now_ms)
         return "no_motion_45s" if elapsed_s >= 45 else "no_motion_30s"
+
+    def _fall_signal_suppression(self, event: NormalizedEvent) -> str | None:
+        if event.event_name not in {"fall_suspected", "floor_level_posture"} or not bool(event.value):
+            return None
+        if self._zone_suppresses_falls(event.zone_id):
+            return "bed_zone_fall_suppressed" if event.zone_id == "bed_zone" else "fall_zone_suppressed"
+        if event.event_name == "fall_suspected":
+            threshold = self.rules["thresholds"]["possible_fall"].get("min_full_body_pose_confidence", 0.65)
+            if event.confidence < threshold:
+                return "low_full_body_pose_confidence"
+        return None
+
+    def _zone_suppresses_falls(self, zone_id: str) -> bool:
+        if not zone_id:
+            return False
+        if zone_id in set(self.rules.get("suppression", {}).get("fall_suppressed_zone_ids", [])):
+            return True
+        for zone in self.rules.get("zones", []):
+            if zone.get("id") != zone_id:
+                continue
+            return (
+                bool(zone.get("suppress_fall_alerts"))
+                or zone.get("urgent_if_floor_level") is False
+                or zone.get("kind") in {"bed", "sleep_surface"}
+            )
+        return False
 
     def _reset_active_incident(self) -> None:
         self.fall_suspected_since_ms = None
