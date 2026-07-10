@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .config_validation import ConfigValidationError, read_json_object, reject_example_paths, validate_zones
 from .pose_events import FrameFeatures, PoseEventEngine
 
 CORE_LANDMARKS = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
@@ -34,19 +35,9 @@ DEFAULT_MODEL_URL = (
 )
 
 
-LEGACY_EVENT_KEYS = {
-    "motion_score_threshold": "motion_score_threshold_bl",
-    "rapid_drop_min_vy": "rapid_drop_min_vy_bl",
-    "fall_suppression_min_points": "fall_suppression_min_fraction",
-}
-
-
 def load_zones_config(path: str | Path) -> dict[str, Any]:
-    with Path(path).open(encoding="utf-8") as handle:
-        config = json.load(handle)
-    for legacy, replacement in LEGACY_EVENT_KEYS.items():
-        if legacy in config.get("events", {}):
-            print(f"Warning: zones config key events.{legacy} is no longer read; use events.{replacement}.")
+    config = read_json_object(path, "zones")
+    validate_zones(config)
     if "calibration" not in config:
         calibration_path = Path("config/calibration") / f"{config.get('camera_id', 'cam01')}.json"
         if calibration_path.exists():
@@ -412,7 +403,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = load_zones_config(args.zones)
+    try:
+        config = load_zones_config(args.zones)
+        if args.calibrate or not args.dry_run:
+            reject_example_paths([args.zones])
+            validate_zones(config, require_camera_zones=True)
+    except ConfigValidationError as error:
+        raise SystemExit(str(error)) from error
 
     if args.calibrate:
         calibrate(config, args.calibrate)

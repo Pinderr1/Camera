@@ -46,6 +46,7 @@ def main() -> None:
     log_dir = Path(args.log_dir)
     transitions = read_csv(log_dir / f"transitions_{args.date}.csv")
     decisions = read_csv(log_dir / f"decisions_{args.date}.csv")
+    lifecycle = read_csv(log_dir / f"alert_lifecycle_{args.date}.csv")
 
     print(f"=== Transitions for {args.date} ({len(transitions)}) ===")
     for row in transitions:
@@ -55,14 +56,34 @@ def main() -> None:
             f"{float(row['duration_s'] or 0):7.0f}s  {row['reason_codes']}"
         )
 
-    alerts = [
-        row
-        for row in decisions
-        if row.get("severity") in {"low", "urgent"} and "alert_cooldown" not in (row.get("suppressions") or "")
-    ]
+    if lifecycle:
+        statuses = {row["alert_id"]: row for row in lifecycle if row.get("alert_id")}
+        alerts = []
+        for row in lifecycle:
+            if row.get("event_type") != "alert_opened":
+                continue
+            enriched = dict(row)
+            enriched.update(
+                {
+                    key: value
+                    for key, value in statuses.get(row["alert_id"], {}).items()
+                    if value and key in {"acknowledged_at_ms", "acknowledged_by", "resolved_at_ms", "resolved_by", "resolution"}
+                }
+            )
+            alerts.append(enriched)
+    else:
+        # Backward compatibility for runs produced before alert lifecycle logs existed.
+        alerts = [
+            row
+            for row in decisions
+            if row.get("severity") in {"low", "urgent"}
+            and "alert_cooldown" not in (row.get("suppressions") or "")
+        ]
     print(f"\n=== Delivered alerts ({len(alerts)}) ===")
     for row in alerts:
-        print(f"{row['timestamp_ms']:>15}  {row['severity']:>6}  {row['state']:<20} {row['reason_codes']}")
+        timestamp_ms = row.get("alert_timestamp_ms") or row.get("timestamp_ms") or ""
+        alert_id = row.get("alert_id") or "legacy"
+        print(f"{timestamp_ms:>15}  {row['severity']:>6}  {row['state']:<20} {row['reason_codes']}  {alert_id}")
 
     urgent = sum(1 for row in alerts if row["severity"] == "urgent")
     print(f"\nSummary: {len(transitions)} transitions, {len(alerts)} delivered alerts ({urgent} urgent).")
@@ -82,15 +103,23 @@ def main() -> None:
                     "clip_id": "",
                     "predicted_label": row["state"],
                     "truth_label": "",
-                    "alert_time_ms": row["timestamp_ms"],
+                    "alert_time_ms": row.get("alert_timestamp_ms") or row.get("timestamp_ms", ""),
                     "decision_latency_s": "",
                     "review_label": "uncertain",
                     "severity": row["severity"],
                     "reason_code": row["reason_codes"],
-                    "ack_time_ms": "",
-                    "responder": "",
+                    "ack_time_ms": row.get("acknowledged_at_ms", ""),
+                    "responder": row.get("acknowledged_by") or row.get("resolved_by", ""),
                     "reviewer": "",
-                    "notes": json.dumps({"debug": row.get("debug", "")})[:200],
+                    "notes": json.dumps(
+                        {
+                            "alert_id": row.get("alert_id", ""),
+                            "resolution": row.get("resolution", ""),
+                            "last_zone": row.get("last_zone", ""),
+                            "sensor_health": row.get("sensor_health", ""),
+                            "debug": row.get("debug", ""),
+                        }
+                    )[:200],
                 },
             )
         print(f"Appended {len(alerts)} placeholder rows to {review_path}. Fill in review_label after checking.")

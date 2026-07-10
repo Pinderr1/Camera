@@ -1,5 +1,6 @@
 {
   "version": "0.1",
+  "deployment_ready": false,
   "purpose": "assistive_safety_monitor_not_medical_device",
   "runtime": {
     "tick_interval_s": 15

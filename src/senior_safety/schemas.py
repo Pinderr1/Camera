@@ -19,6 +19,9 @@ class NormalizedEvent:
     network_ok: bool = True
     event_time_local: str = ""
     notes: str = ""
+    alert_id: str = ""
+    actor_id: str = ""
+    outcome: str = ""
 
 
 @dataclass(frozen=True)

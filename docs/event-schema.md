@@ -22,6 +22,27 @@ The state machine consumes normalized events from Home Assistant, ESPHome, MQTT,
 }
 ```
 
+Caregiver lifecycle events use the same envelope and add `alert_id`, `actor_id`,
+and (for resolution) `outcome`:
+
+```json
+{
+  "event_id": "ack_001",
+  "sensor_id": "caregiver_phone",
+  "sensor_type": "caregiver_action",
+  "timestamp_ms": 10000,
+  "event_name": "caregiver_acknowledged",
+  "value": true,
+  "alert_id": "alert_1000_8f15b7c921",
+  "actor_id": "caregiver_primary",
+  "outcome": ""
+}
+```
+
+Use `alert_resolved` with an outcome such as `checked_safe`, `checked_real`,
+`false_alarm`, `nuisance`, or `uncertain` after the caregiver completes the check.
+Acknowledgement stops backup escalation but does not resolve the alert.
+
 ## Detector Output
 
 ```json
@@ -51,3 +72,21 @@ The state machine consumes normalized events from Home Assistant, ESPHome, MQTT,
 ## Implementation Rule
 
 The event normalizer may adapt upstream names, but the state machine should only receive these normalized event names. That keeps Home Assistant, OmniFall replay, pose extraction, and future classifiers interchangeable.
+
+Caregiver lifecycle events are intercepted by the bridge before detector
+processing. Supported lifecycle names are `caregiver_acknowledged` and
+`alert_resolved`.
+
+When the bridge loads a sensor inventory, ordinary events whose `sensor_id` is
+not present in that inventory are rejected before detector processing. Tick and
+caregiver lifecycle events are handled separately.
+
+## Alert Delivery Output
+
+Each delivered alert has a restart-stable `alert_id`, `alert_timestamp_ms`,
+`last_zone`, `sensor_health`, `incident_age_s`, `target`, and
+`escalation_stage`. Urgent alerts start at `target=primary`, move to
+`target=backup` after `primary_ack_timeout_s`, and move to
+`target=all_caregivers` after the backup timeout if still unacknowledged.
+Lifecycle status is published separately on `senior-night/alerts/status`.
+Automatic emergency calling remains disabled.

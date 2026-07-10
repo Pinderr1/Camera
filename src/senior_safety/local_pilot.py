@@ -9,6 +9,7 @@ from typing import Any
 
 from .baselines import apply_baselines
 from .clock import tick_interval_s
+from .config_validation import ConfigValidationError, validate_rules, validate_zones
 from .mqtt_bridge import LiveSession
 from .pose_extractor import load_zones_config, make_jsonl_writer, run_camera_loop
 from .state_machine import NightSafetyStateMachine, load_rules
@@ -51,13 +52,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    rules = apply_baselines(load_rules(args.rules), args.baselines)
+    try:
+        rules = apply_baselines(load_rules(args.rules), args.baselines)
+        validate_rules(rules)
+        config = load_zones_config(args.zones)
+        validate_zones(config, require_camera_zones=True)
+    except ConfigValidationError as error:
+        raise SystemExit(str(error)) from error
     if args.fast_test:
         for section, overrides in FAST_TEST_OVERRIDES.items():
             rules["thresholds"][section].update(overrides)
         print("Fast-test thresholds active: urgent after ~20s of stillness on the floor.")
 
-    config = load_zones_config(args.zones)
     engine_floor_s = config.get("events", {}).get("floor_level_min_s", 2.0)
     rules_floor_s = rules["thresholds"]["possible_fall"]["floor_level_posture_min_s"]
     urgent_floor_s = rules["thresholds"]["possible_fall"].get("urgent_after_floor_level_s", 60)

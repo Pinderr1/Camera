@@ -49,6 +49,9 @@ def read_sensor_events(path: str | Path) -> list[NormalizedEvent]:
                 battery_ok=bool(parse_boolish(row.get("battery_ok", "true"))),
                 network_ok=bool(parse_boolish(row.get("network_ok", "true"))),
                 notes=row.get("notes") or "",
+                alert_id=row.get("alert_id") or "",
+                actor_id=row.get("actor_id") or "",
+                outcome=row.get("outcome") or "",
             )
             events.append(event)
     events.sort(key=lambda event: event.timestamp_ms)

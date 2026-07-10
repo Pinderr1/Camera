@@ -14,6 +14,27 @@ Start with [claude.md](./claude.md). It defines the product goal, safety boundar
 6. Use [data/labels/label_schema.json](./data/labels/label_schema.json) for clips, sensor events, routine transitions, and alert reviews.
 7. Run observation-only for 7 to 14 nights before waking caregivers with automated alerts.
 
+Create ignored household copies before connecting live devices:
+
+```powershell
+Copy-Item config/monitoring-rules.example.json config/monitoring-rules.local.json
+Copy-Item config/sensors.example.json config/sensors.local.json
+Copy-Item config/zones.example.json config/zones.local.json
+```
+
+Replace every placeholder ID and polygon, set `deployment_ready` to `true` in
+all three files after household review, then run the deployment validator. It
+checks safety/privacy invariants, threshold ordering, polygons, sensor IDs,
+critical camera heartbeat coverage, and cross-file zone references:
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.config_validation --deployment `
+  --rules config/monitoring-rules.local.json `
+  --sensors config/sensors.local.json `
+  --zones config/zones.local.json
+```
+
 ## Setup
 
 The state machine and offline runner are standard-library Python. The live services need:
@@ -41,12 +62,32 @@ Staged validation checklist (safe scenarios only, mats/cushions, no real falls):
 
 ## Live Runtime
 
-Run the MQTT bridge (subscribes to `senior-night/events`, publishes `senior-night/state` and `senior-night/alerts`, logs daily decision/transition CSVs to `detector_runs/live/`):
+Run the MQTT bridge in its safe default observation mode (subscribes to
+`senior-night/events`, publishes detector alerts to `senior-night/alerts/observed`,
+and logs decisions, transitions, and alert lifecycle rows to `detector_runs/live/`):
 
 ```powershell
 $env:PYTHONPATH='src'
 python -m senior_safety.mqtt_bridge --host <broker-ip> --critical-sensor pose_cam01
 ```
+
+Only after the notification acceptance gate passes, opt in to the external
+caregiver topic. Notification mode requires a validated, non-example rules,
+sensors, and zones bundle:
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.mqtt_bridge --host <broker-ip> --notifications-enabled `
+  --rules config/monitoring-rules.local.json `
+  --sensors config/sensors.local.json `
+  --zones config/zones.local.json
+```
+
+Urgent alerts carry durable IDs,
+escalate from primary to backup using the configured timeouts, and accept
+`caregiver_acknowledged` / `alert_resolved` events on the normal events topic.
+Acknowledgement and resolution status is published to
+`senior-night/alerts/status`.
 
 Run the camera pose extractor (publishes derived events over MQTT; `--dry-run` prints instead, `--show` opens a preview for zone calibration):
 
@@ -61,8 +102,11 @@ Calibrate the camera once after mounting it (stand fully visible, then walk the 
 
 ```powershell
 $env:PYTHONPATH='src'
-python -m senior_safety.pose_extractor --zones config/zones.example.json --calibrate 30
+python -m senior_safety.pose_extractor --zones config/zones.local.json --calibrate 30
 ```
+
+The pose extractor permits example zones only with `--dry-run`; calibration and
+live MQTT publishing fail closed until a household-specific file is supplied.
 
 Morning review of last night:
 

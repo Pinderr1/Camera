@@ -1,4 +1,5 @@
 {
+  "deployment_ready": false,
   "camera_id": "cam01",
   "source": 0,
   "room": "bedroom",

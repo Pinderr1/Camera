@@ -8,6 +8,7 @@ flowchart LR
   state["NightSafetyStateMachine"]
   logs["CSV/JSONL logs\ntransitions, alerts, reviews"]
   notify["Caregiver notification pilot"]
+  lifecycle["Durable alert lifecycle\nID, ack, resolution, escalation"]
   review["Morning review / threshold tuning"]
   omni["OmniFall replay / public datasets"]
   pose["Optional pose extractor\nMediaPipe or MoveNet"]
@@ -16,7 +17,8 @@ flowchart LR
   omni --> normalizer
   pose --> normalizer
   state --> logs
-  state --> notify
+  state --> lifecycle --> notify
+  notify --> lifecycle
   logs --> review --> state
 ```
 
@@ -36,6 +38,11 @@ flowchart LR
 5. Notification code sends only low/urgent caregiver messages after observation-only acceptance criteria are met.
 6. Every alert is reviewed and fed back into threshold tuning.
 
+Alert lifecycle state is atomically persisted in the live log directory. MQTT
+redelivery or a bridge restart does not re-notify the same detector event.
+Caregiver acknowledgement stops the configured backup timer; resolution records
+the responder and outcome as a separate action.
+
 ## Minimum Event Names
 
 - `bed_occupied`
@@ -50,3 +57,5 @@ flowchart LR
 - `manual_cancel_pressed`
 - `sensor_offline`
 - `sensor_online`
+- `caregiver_acknowledged`
+- `alert_resolved`

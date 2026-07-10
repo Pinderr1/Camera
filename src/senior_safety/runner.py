@@ -7,6 +7,7 @@ from pathlib import Path
 from .alerts import build_alert_payload
 from .baselines import apply_baselines
 from .clock import synthesize_ticks, tick_interval_s
+from .config_validation import validate_rules
 from .event_io import read_sensor_events, write_decisions_csv
 from .omnifall_replay import read_omnifall_segments_csv
 from .state_machine import NightSafetyStateMachine, load_rules
@@ -27,6 +28,7 @@ def main() -> None:
         raise SystemExit("Provide --events or --omnifall-segments.")
 
     rules = apply_baselines(load_rules(args.rules), args.baselines)
+    validate_rules(rules)
     machine = NightSafetyStateMachine(rules)
     events = read_omnifall_segments_csv(args.omnifall_segments) if args.omnifall_segments else read_sensor_events(args.events)
     if not args.no_ticks:

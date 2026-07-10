@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .clock import TICK_EVENT_NAME, is_night_window, parse_local_datetime
+from .config_validation import read_json_object, validate_rules
 from .schemas import DetectorDecision, NormalizedEvent
 
 
@@ -28,8 +28,9 @@ STATES = {
 
 
 def load_rules(path: str | Path) -> dict[str, Any]:
-    with Path(path).open(encoding="utf-8") as handle:
-        return json.load(handle)
+    rules = read_json_object(path, "rules")
+    validate_rules(rules)
+    return rules
 
 
 @dataclass

@@ -130,7 +130,7 @@ automation:
           retain: false
           payload: >
             {
-              "sensor_id": "help_01",
+              "sensor_id": "help_button_01",
               "sensor_type": "button",
               "room": "bedroom",
               "zone_id": "bed_zone",
@@ -155,7 +155,7 @@ automation:
           retain: false
           payload: >
             {
-              "sensor_id": "cancel_01",
+              "sensor_id": "cancel_button_01",
               "sensor_type": "button",
               "room": "bedroom",
               "zone_id": "bed_zone",
@@ -177,14 +177,75 @@ automation:
         entity_id: input_boolean.senior_night_observation_only
         state: "off"
     action:
-      - service: notify.mobile_app_primary_caregiver
-        data:
-          title: "{{ trigger.payload_json.title }}"
-          message: "{{ trigger.payload_json.message }}"
-          data:
+      - variables:
+          alert_id: "{{ trigger.payload_json.alert_id }}"
+          notification_data:
             push:
               interruption-level: >-
                 {{ 'critical' if trigger.payload_json.severity == 'urgent' else 'active' }}
+            actions:
+              - action: "ACK_{{ trigger.payload_json.alert_id }}"
+                title: Acknowledge
+              - action: "SAFE_{{ trigger.payload_json.alert_id }}"
+                title: Checked safe
+      - choose:
+          - conditions: "{{ trigger.payload_json.target == 'backup' }}"
+            sequence:
+              - service: notify.mobile_app_backup_caregiver
+                data:
+                  title: "{{ trigger.payload_json.title }}"
+                  message: "{{ trigger.payload_json.message }}"
+                  data: "{{ notification_data }}"
+          - conditions: "{{ trigger.payload_json.target == 'all_caregivers' }}"
+            sequence:
+              - service: notify.mobile_app_primary_caregiver
+                data:
+                  title: "{{ trigger.payload_json.title }}"
+                  message: "{{ trigger.payload_json.message }}"
+                  data: "{{ notification_data }}"
+              - service: notify.mobile_app_backup_caregiver
+                data:
+                  title: "{{ trigger.payload_json.title }}"
+                  message: "{{ trigger.payload_json.message }}"
+                  data: "{{ notification_data }}"
+        default:
+          - service: notify.mobile_app_primary_caregiver
+            data:
+              title: "{{ trigger.payload_json.title }}"
+              message: "{{ trigger.payload_json.message }}"
+              data: "{{ notification_data }}"
+
+  - id: senior_night_handle_notification_action
+    alias: Senior night handle caregiver action
+    mode: queued
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.event.data.action.startswith('ACK_')
+             or trigger.event.data.action.startswith('SAFE_') }}
+    action:
+      - variables:
+          action_name: "{{ trigger.event.data.action }}"
+          alert_id: "{{ action_name.split('_', 1)[1] }}"
+      - service: mqtt.publish
+        data:
+          topic: senior-night/events
+          retain: false
+          payload: >-
+            {
+              "event_id": "ha_action_{{ now().timestamp() | int }}",
+              "sensor_id": "caregiver_phone",
+              "sensor_type": "caregiver_action",
+              "event_name": "{{ 'caregiver_acknowledged' if action_name.startswith('ACK_') else 'alert_resolved' }}",
+              "value": true,
+              "alert_id": "{{ alert_id }}",
+              "actor_id": "home_assistant_mobile_user",
+              "outcome": "{{ 'checked_safe' if action_name.startswith('SAFE_') else '' }}",
+              "timestamp_ms": {{ (now().timestamp() * 1000) | int }}
+            }
 
   - id: senior_night_manual_help_notice
     alias: Senior night manual help notice

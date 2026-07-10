@@ -1,5 +1,7 @@
 {
   "version": "0.1",
+  "deployment_ready": false,
+  "virtual_zone_ids": ["bathroom_private_zone"],
   "sensors": [
     {
       "sensor_id": "bed_01",
@@ -45,6 +47,24 @@
       "zone_id": "bed_zone",
       "critical": true,
       "event_name": "manual_help_pressed"
+    },
+    {
+      "sensor_id": "cancel_button_01",
+      "entity_id": "binary_sensor.cancel_button",
+      "sensor_type": "button",
+      "room": "bedroom",
+      "zone_id": "bed_zone",
+      "critical": false,
+      "event_name": "manual_cancel_pressed"
+    },
+    {
+      "sensor_id": "pose_cam01",
+      "entity_id": "binary_sensor.pose_cam01_online",
+      "sensor_type": "camera_pose",
+      "room": "bedroom",
+      "zone_id": "route_zone",
+      "critical": true,
+      "event_name": "sensor_online"
     }
   ]
 }

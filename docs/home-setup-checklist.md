@@ -47,6 +47,15 @@ Avoid bathroom video. If a bedroom camera is necessary for bedside falls, prefer
 
 ## Reliability Checks
 
+Before starting either live process:
+
+- Copy the three example JSON files to ignored `*.local.json` household files.
+- Replace every entity ID, sensor ID, camera source, zone polygon, monitoring hour, and timeout.
+- Set `deployment_ready` to `true` in each file only after those values have been reviewed in the actual room.
+- Include the camera heartbeat as a critical `pose_<camera_id>` sensor.
+- Run `python -m senior_safety.config_validation --deployment --rules <rules> --sensors <sensors> --zones <zones>`.
+- Do not enable caregiver notifications unless the deployment validator passes.
+
 Daily during testing:
 
 - Camera online.
