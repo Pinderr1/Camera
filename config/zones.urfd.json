@@ -1,27 +1,9 @@
 {
-  "camera_id": "cam01",
-  "source": 0,
-  "room": "bedroom",
+  "camera_id": "urfd_cam0",
+  "room": "urfd_lab",
   "fps_limit": 10,
   "floor_line_y": 0.65,
-  "zones": [
-    {
-      "id": "bed_zone",
-      "kind": "bed",
-      "suppress_fall_alerts": true,
-      "polygon": [[0.0, 0.25], [0.42, 0.25], [0.42, 0.95], [0.0, 0.95]]
-    },
-    {
-      "id": "route_zone",
-      "kind": "path",
-      "polygon": [[0.35, 0.3], [0.85, 0.3], [0.85, 1.0], [0.35, 1.0]]
-    },
-    {
-      "id": "bathroom_door_zone",
-      "kind": "doorway",
-      "polygon": [[0.85, 0.2], [1.0, 0.2], [1.0, 0.9], [0.85, 0.9]]
-    }
-  ],
+  "zones": [],
   "pose": {
     "model_path": "models/pose_landmarker_full.task",
     "max_poses": 1,
@@ -46,7 +28,7 @@
     "fall_corroborate_window_s": 1.5,
     "fall_corroborate_torso_deg": 45,
     "fall_suspected_min_full_body_confidence": 0.65,
-    "fall_suppressed_zone_ids": ["bed_zone"],
+    "fall_suppressed_zone_ids": [],
     "fall_suppression_min_fraction": 0.5,
     "floor_level_torso_angle_deg": 55,
     "floor_level_bbox_aspect": 1.4,
@@ -59,11 +41,5 @@
     "evidence_retention_s": 30.0,
     "bathroom_infer_absent_s": 5.0,
     "bathroom_inferred_confidence": 0.6
-  },
-  "mqtt": {
-    "host": "localhost",
-    "port": 1883,
-    "topic_prefix": "senior-night"
-  },
-  "pose_jsonl_dir": "data/processed/pose/cam01"
+  }
 }

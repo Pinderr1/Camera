@@ -1,0 +1,71 @@
+clip_id,primary_label,scenario,notes
+fall-01,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-02,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-03,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-04,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-05,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-06,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-07,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-08,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-09,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-10,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-11,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-12,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-13,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-14,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-15,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-16,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-17,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-18,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-19,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-20,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-21,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-22,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-23,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-24,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-25,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-26,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-27,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-28,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-29,fall,fall_urfd_staged,URFD cam0 staged fall
+fall-30,fall,fall_urfd_staged,URFD cam0 staged fall
+adl-01,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-02,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-03,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-04,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-05,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-06,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-07,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-08,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-09,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-10,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-11,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-12,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-13,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-14,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-15,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-16,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-17,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-18,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-19,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-20,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-21,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-22,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-23,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-24,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-25,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-26,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-27,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-28,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-29,no_fall,adl_upright,URFD cam0 activity of daily living
+adl-30,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-31,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-32,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-33,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-34,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-35,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-36,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-37,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-38,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-39,no_fall,lie_down,URFD ADL with lying-labeled frames
+adl-40,no_fall,lie_down,URFD ADL with lying-labeled frames

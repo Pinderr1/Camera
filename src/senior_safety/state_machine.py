@@ -163,7 +163,15 @@ class NightSafetyStateMachine:
             self.state = "possible_fall"
             severity = "low"
             action = "soft_check"
-            score = max(score, 0.7)
+            confidence_floor = self.rules["thresholds"]["possible_fall"].get("min_full_body_pose_confidence", 0.65)
+            if event.confidence < confidence_floor:
+                # Partial-body falls (blanket/furniture occlusion) still open an
+                # incident, at a lower score; they expire unless floor-level
+                # posture corroborates within the watch window.
+                score = max(score, 0.55)
+                reason_codes.append("partial_body_pose")
+            else:
+                score = max(score, 0.7)
             reason_codes.append("rapid_drop")
 
         if event.event_name == "floor_level_posture" and bool(event.value) and not fall_signal_suppression:
@@ -183,13 +191,17 @@ class NightSafetyStateMachine:
                 reason_codes.append(self._no_motion_reason(event.timestamp_ms))
             else:
                 self.no_motion_since_ms = None
-                if self.state in {"possible_fall", "fallen_no_motion"}:
+                # A person moving on the floor is still a fall incident;
+                # de-escalate on motion only when they are no longer floor-level.
+                if self.state in {"possible_fall", "fallen_no_motion"} and self.floor_level_since_ms is None:
                     self.state = "out_of_bed_unknown" if self.active_trip_start_ms is not None else "asleep_in_bed"
+
+        self._expire_uncorroborated_fall(event.timestamp_ms)
 
         fall_alert = self._apply_fall_persistence(event.timestamp_ms)
         if fall_alert:
-            self.state, severity, action, score = fall_alert
-            reason_codes.extend(["floor_level_posture", self._no_motion_reason(event.timestamp_ms), "outside_bed"])
+            self.state, severity, action, score, fall_reasons = fall_alert
+            reason_codes.extend(fall_reasons)
 
         routine_alert = self._apply_routine_timing(event.timestamp_ms)
         if routine_alert and self.state not in {"urgent_alert", "fallen_no_motion"}:
@@ -252,18 +264,39 @@ class NightSafetyStateMachine:
         self.last_alert_ms[key] = now_ms
         return suppressions
 
-    def _apply_fall_persistence(self, now_ms: int) -> tuple[str, str, str, float] | None:
-        if self.floor_level_since_ms is None or self.no_motion_since_ms is None:
+    def _expire_uncorroborated_fall(self, now_ms: int) -> None:
+        # A rapid drop that is never followed by floor-level posture was a
+        # recovery or a tracking artifact; let the incident lapse.
+        if self.state != "possible_fall" or self.floor_level_since_ms is not None or self.fall_suspected_since_ms is None:
+            return
+        watch_s = self.rules["thresholds"]["possible_fall"].get("watch_before_soft_check_s", 10)
+        if _elapsed_s(self.fall_suspected_since_ms, now_ms) > watch_s:
+            self.fall_suspected_since_ms = None
+            self.state = "out_of_bed_unknown" if self.active_trip_start_ms is not None else "asleep_in_bed"
+
+    def _apply_fall_persistence(self, now_ms: int) -> tuple[str, str, str, float, list[str]] | None:
+        if self.floor_level_since_ms is None:
             return None
         fall_threshold = self.rules["thresholds"]["possible_fall"]
         floor_s = _elapsed_s(self.floor_level_since_ms, now_ms)
-        no_motion_s = _elapsed_s(self.no_motion_since_ms, now_ms)
         if floor_s >= fall_threshold["floor_level_posture_min_s"]:
             self.state = "fallen_no_motion"
-        if no_motion_s >= fall_threshold["urgent_after_no_motion_s"]:
-            return "urgent_alert", "urgent", "urgent_caregiver_check", 1.0
+        reasons = ["floor_level_posture", "outside_bed"]
+        no_motion_urgent = (
+            self.no_motion_since_ms is not None
+            and _elapsed_s(self.no_motion_since_ms, now_ms) >= fall_threshold["urgent_after_no_motion_s"]
+        )
+        floor_urgent = floor_s >= fall_threshold.get("urgent_after_floor_level_s", 60)
+        if no_motion_urgent or floor_urgent:
+            if no_motion_urgent:
+                reasons.insert(1, self._no_motion_reason(now_ms))
+            if floor_urgent:
+                reasons.insert(1, f"floor_level_{int(floor_s)}s")
+            return "urgent_alert", "urgent", "urgent_caregiver_check", 1.0, reasons
         if self.state == "fallen_no_motion":
-            return "fallen_no_motion", "low", "soft_check", 0.85
+            if self.no_motion_since_ms is not None:
+                reasons.insert(1, self._no_motion_reason(now_ms))
+            return "fallen_no_motion", "low", "soft_check", 0.85, reasons
         return None
 
     def _apply_routine_timing(self, now_ms: int) -> tuple[str, str, str, float, list[str]] | None:
@@ -295,10 +328,6 @@ class NightSafetyStateMachine:
             return None
         if self._zone_suppresses_falls(event.zone_id):
             return "bed_zone_fall_suppressed" if event.zone_id == "bed_zone" else "fall_zone_suppressed"
-        if event.event_name == "fall_suspected":
-            threshold = self.rules["thresholds"]["possible_fall"].get("min_full_body_pose_confidence", 0.65)
-            if event.confidence < threshold:
-                return "low_full_body_pose_confidence"
         return None
 
     def _zone_suppresses_falls(self, zone_id: str) -> bool:

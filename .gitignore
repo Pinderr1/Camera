@@ -25,6 +25,10 @@ detector_runs/
 # Downloaded model binaries
 models/
 
+# Generated benchmark/cache data (fully regenerable via scripts/urfd_benchmark.py,
+# which downloads the public URFD clips and re-runs pose extraction)
+data/processed/pose/urfd/
+
 # Python / JS / OS noise
 __pycache__/
 *.pyc

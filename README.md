@@ -55,7 +55,14 @@ $env:PYTHONPATH='src'
 python -m senior_safety.pose_extractor --zones config/zones.example.json --dry-run --show
 ```
 
-Copy `config/zones.example.json` to a local config and adjust the zone polygons to your camera view before real use.
+Copy `config/zones.example.json` to a local config and adjust the zone polygons to your camera view before real use. **Zones that do not match the room are a top false-alarm source**: a person lying in an unzoned bed area reads as floor-level and escalates. Use `--show` to see the polygons over the live image and drag-edit the JSON until the bed zone covers the whole sleeping surface.
+
+Calibrate the camera once after mounting it (stand fully visible, then walk the monitored path while it runs). This records your standing size and floor line so thresholds adapt to the camera distance; the config loader picks it up automatically:
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.pose_extractor --zones config/zones.example.json --calibrate 30
+```
 
 Morning review of last night:
 
@@ -69,6 +76,31 @@ Compute personal baselines after 7+ nights of observation (the runner and bridge
 ```powershell
 $env:PYTHONPATH='src'
 python -m senior_safety.baselines --transitions detector_runs/live
+```
+
+## Accuracy Evaluation
+
+Every recorded pose JSONL can be replayed through the exact live pipeline and scored against labels in `data/labels/` (`clips.csv` + `events.csv`). Detection changes re-score old recordings, so improvements are measured, never guessed:
+
+```powershell
+$env:PYTHONPATH='src'
+python -m senior_safety.pose_replay --pose data/processed/pose/cam01 --out detector_runs/replay_today --clip-decisions
+```
+
+Outputs `metrics.json` (fall recall/precision, urgent precision, latency p50/p95, FPs per hour, person coverage) plus `predictions.csv`, `false_positives.csv`, and `false_negatives.csv`.
+
+Benchmark against the public URFD dataset (30 staged falls + 40 daily activities, downloads ~1 GB on first run, cached afterwards):
+
+```powershell
+python scripts/urfd_benchmark.py --out detector_runs/urfd_today
+python scripts/urfd_benchmark.py --skip-pose --out detector_runs/urfd_rescored   # re-score cached poses after code changes
+```
+
+Sweep detection thresholds over the cached corpus and write the best operating point into the configs:
+
+```powershell
+python scripts/sweep_thresholds.py --out detector_runs/tuning
+python scripts/sweep_thresholds.py --apply
 ```
 
 ## Prototype Commands

@@ -81,16 +81,51 @@ class NightSafetyStateMachineTests(unittest.TestCase):
         self.assertIn("bed_zone_fall_suppressed", suspected.suppressions)
         self.assertIn("bed_zone_fall_suppressed", floor.suppressions)
 
-    def test_low_full_body_confidence_suppresses_fall_suspected(self):
+    def test_low_full_body_confidence_fall_opens_incident_at_lower_score(self):
         machine = NightSafetyStateMachine(RULES)
         machine.process(event(0, "bed_occupied", False, "bed_01", "bed_pressure", "bed_zone"))
         decision = machine.process(
             event(5_000, "fall_suspected", True, "pose_01", "camera_pose", "route_zone", confidence=0.35)
         )
 
-        self.assertEqual(decision.state, "bed_exit")
-        self.assertEqual(decision.severity, "none")
-        self.assertIn("low_full_body_pose_confidence", decision.suppressions)
+        self.assertEqual(decision.state, "possible_fall")
+        self.assertEqual(decision.severity, "low")
+        self.assertIn("partial_body_pose", decision.reason_codes)
+        self.assertLess(decision.score, 0.7)
+
+    def test_uncorroborated_fall_suspected_expires(self):
+        machine = NightSafetyStateMachine(RULES)
+        machine.process(event(0, "bed_occupied", False, "bed_01", "bed_pressure", "bed_zone"))
+        suspected = machine.process(event(5_000, "fall_suspected", True, "pose_01", "camera_pose"))
+        expired = machine.process(make_tick(20_000))
+
+        self.assertEqual(suspected.state, "possible_fall")
+        self.assertEqual(expired.state, "out_of_bed_unknown")
+        self.assertNotEqual(expired.severity, "urgent")
+
+    def test_floor_level_alone_escalates_to_urgent(self):
+        machine = NightSafetyStateMachine(RULES)
+        machine.process(event(0, "bed_occupied", False, "bed_01", "bed_pressure", "bed_zone"))
+        machine.process(event(5_000, "floor_level_posture", True, "pose_01", "camera_pose"))
+        fallen = machine.process(make_tick(10_000))
+        urgent = machine.process(make_tick(66_000))
+
+        self.assertEqual(fallen.state, "fallen_no_motion")
+        self.assertEqual(urgent.state, "urgent_alert")
+        self.assertEqual(urgent.severity, "urgent")
+
+    def test_motion_on_floor_does_not_cancel_fall_incident(self):
+        # A person struggling on the floor produces motion; that must not
+        # de-escalate the incident while they remain floor-level.
+        machine = NightSafetyStateMachine(RULES)
+        machine.process(event(0, "bed_occupied", False, "bed_01", "bed_pressure", "bed_zone"))
+        machine.process(event(5_000, "floor_level_posture", True, "pose_01", "camera_pose"))
+        machine.process(event(10_000, "no_motion", True, "pose_01", "camera_pose"))
+        moving = machine.process(event(20_000, "no_motion", False, "pose_01", "camera_pose"))
+        urgent = machine.process(make_tick(66_000))
+
+        self.assertIn(moving.state, {"possible_fall", "fallen_no_motion"})
+        self.assertEqual(urgent.state, "urgent_alert")
 
     def test_bed_exit_no_return_escalates(self):
         machine = NightSafetyStateMachine(RULES)
