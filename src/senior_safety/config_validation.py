@@ -93,16 +93,8 @@ def validate_rules(rules: dict[str, Any]) -> None:
         "floor_level_posture_min_s",
         "watch_before_soft_check_s",
         "urgent_after_no_motion_s",
-        "urgent_after_floor_level_s",
     ):
         _positive(possible, key, errors, "thresholds.possible_fall")
-    _ordered(
-        possible,
-        "floor_level_posture_min_s",
-        "urgent_after_floor_level_s",
-        errors,
-        "thresholds.possible_fall",
-    )
     for key in ("low_notice_after_s", "urgent_after_s"):
         _positive(no_return, key, errors, "thresholds.bed_exit_no_return")
     _ordered(no_return, "low_notice_after_s", "urgent_after_s", errors, "thresholds.bed_exit_no_return")
@@ -342,6 +334,9 @@ def _validate_zone_descriptors(
             zone_ids.add(zone_id)
         if not isinstance(zone.get("kind"), str) or not zone["kind"].strip():
             errors.append(f"{prefix}.kind: must be a non-empty string")
+        zone_type = zone.get("zone_type")
+        if zone_type is not None and zone_type not in {"safe_rest", "fall_risk", "neutral"}:
+            errors.append(f"{prefix}.zone_type: must be safe_rest, fall_risk, or neutral")
         polygon = zone.get("polygon")
         if polygon is None and not polygons_required:
             continue

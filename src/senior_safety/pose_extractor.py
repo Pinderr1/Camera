@@ -236,6 +236,7 @@ def run_camera_loop(
     print(f"Pose extractor running on source {source!r} as {config.get('camera_id', 'cam01')}. Ctrl+C to stop.")
     last_heartbeat = 0.0
     last_hip: tuple[float, float] | None = None
+    last_zone_warning: str | None = None
     detector_start = time.monotonic()
     frame_interval = 1.0 / fps_limit if fps_limit > 0 else 0.0
     try:
@@ -263,6 +264,13 @@ def run_camera_loop(
                 last_hip = features.hip
             for payload in engine.update(features):
                 emit(payload)
+            diagnostics = engine.diagnostics()
+            zone_warning = diagnostics["zone_type"] == "unknown" and features.person_present
+            if zone_warning and last_zone_warning != diagnostics["current_zone"]:
+                print("[warning] Person's hip/body center is outside calibrated zones; lying alone cannot urgent-alert.")
+                last_zone_warning = diagnostics["current_zone"]
+            elif not zone_warning:
+                last_zone_warning = None
 
             if jsonl_writer:
                 # No-person frames are written too so dropouts replay faithfully.
@@ -281,6 +289,24 @@ def run_camera_loop(
                     cv2.putText(frame_bgr, zone["id"], points[0], cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
                 if features.hip:
                     cv2.circle(frame_bgr, (int(features.hip[0] * width), int(features.hip[1] * height)), 6, (0, 0, 255), -1)
+                overlay_lines = (
+                    f"current_zone: {diagnostics['current_zone'] or '<unknown>'}",
+                    f"zone_type: {diagnostics['zone_type']}",
+                    f"full_body_pose_confidence: {diagnostics['full_body_pose_confidence']:.3f}",
+                    f"fall_suspected: {str(diagnostics['fall_suspected']).lower()}",
+                    f"floor_level: {str(diagnostics['floor_level']).lower()}",
+                    f"no_motion: {str(diagnostics['no_motion']).lower()}",
+                )
+                for line_index, text in enumerate(overlay_lines):
+                    cv2.putText(
+                        frame_bgr,
+                        text,
+                        (12, 24 + line_index * 22),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (40, 255, 40),
+                        2,
+                    )
                 cv2.imshow("senior-night pose", frame_bgr)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):

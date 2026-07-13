@@ -15,7 +15,7 @@ from .pose_extractor import load_zones_config, make_jsonl_writer, run_camera_loo
 from .state_machine import NightSafetyStateMachine, load_rules
 
 FAST_TEST_OVERRIDES = {
-    "possible_fall": {"urgent_after_no_motion_s": 20, "floor_level_posture_min_s": 2, "urgent_after_floor_level_s": 30},
+    "possible_fall": {"urgent_after_no_motion_s": 20, "floor_level_posture_min_s": 2},
     "bed_exit_no_return": {"low_notice_after_s": 60, "urgent_after_s": 120},
     "bathroom_overstay": {"low_notice_default_s": 60, "urgent_default_s": 120},
 }
@@ -64,12 +64,13 @@ def main() -> None:
             rules["thresholds"][section].update(overrides)
         print("Fast-test thresholds active: urgent after ~20s of stillness on the floor.")
 
+    print("Calibrate polygons for this camera view; placeholders are not reliable.")
+
     engine_floor_s = config.get("events", {}).get("floor_level_min_s", 2.0)
     rules_floor_s = rules["thresholds"]["possible_fall"]["floor_level_posture_min_s"]
-    urgent_floor_s = rules["thresholds"]["possible_fall"].get("urgent_after_floor_level_s", 60)
     print(
         f"Fall timing: {engine_floor_s}s floor latch (zones config) + {rules_floor_s}s persistence (rules) "
-        f"to fallen_no_motion; urgent after {urgent_floor_s}s floor-level or "
+        "before escalation; urgent requires a confirmed rapid drop or "
         f"{rules['thresholds']['possible_fall']['urgent_after_no_motion_s']}s stillness."
     )
     last_printed_state = {"value": None}

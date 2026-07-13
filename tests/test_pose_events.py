@@ -76,18 +76,18 @@ class PoseEventEngineTests(unittest.TestCase):
         self.assertIn(("floor_level_posture", True), events)
         self.assertIn(("no_motion", True), events)
 
-    def test_partial_body_fall_emits_lower_confidence_fall_suspected(self):
+    def test_low_full_body_confidence_does_not_emit_fall_signals(self):
         engine = PoseEventEngine(ZONES_CONFIG)
         frames = [
             frame(f.timestamp_ms, hip=f.hip, shoulder_mid=f.shoulder_mid, full_body_confidence=0.35)
             for f in fall_sequence(until_ms=5000)
         ]
         events = run_frames(engine, frames)
-        falls = [e for e in events if e["event_name"] == "fall_suspected" and e["value"]]
+        pairs = names_values(events)
 
-        self.assertEqual(len(falls), 1)
-        self.assertLess(falls[0]["confidence"], 0.65)
-        self.assertEqual(falls[0]["notes"], "partial_body")
+        self.assertNotIn(("fall_suspected", True), pairs)
+        self.assertNotIn(("floor_level_posture", True), pairs)
+        self.assertNotIn(("no_motion", True), pairs)
 
     def test_hip_glitch_spike_does_not_trigger_fall(self):
         # Reproduces the 2026-07-06 live false positive: the hip landmark
@@ -180,6 +180,39 @@ class PoseEventEngineTests(unittest.TestCase):
 
         self.assertNotIn(("fall_suspected", True), events)
         self.assertNotIn(("floor_level_posture", True), events)
+        self.assertNotIn(("no_motion", True), events)
+
+    def test_sofa_zone_suppresses_fall_and_no_motion_signals(self):
+        engine = PoseEventEngine(ZONES_CONFIG)
+        frames = [frame(t, hip=(0.5, 0.40), jitter=0.01) for t in range(0, 1100, 100)]
+        frames.append(frame(1100, hip=(0.5, 0.55)))
+        frames.extend(frame(t, hip=(0.5, 0.75), shoulder_mid=(0.55, 0.74)) for t in range(1200, 13000, 100))
+        events = names_values(run_frames(engine, frames))
+
+        self.assertNotIn(("fall_suspected", True), events)
+        self.assertNotIn(("floor_level_posture", True), events)
+        self.assertNotIn(("no_motion", True), events)
+
+    def test_carpet_zone_keeps_fall_and_no_motion_signals_active(self):
+        engine = PoseEventEngine(ZONES_CONFIG)
+        events = names_values(run_frames(engine, fall_sequence()))
+
+        self.assertIn(("fall_suspected", True), events)
+        self.assertIn(("floor_level_posture", True), events)
+        self.assertIn(("no_motion", True), events)
+
+    def test_unknown_zone_lying_still_does_not_emit_fall_signals(self):
+        engine = PoseEventEngine(ZONES_CONFIG)
+        frames = [
+            frame(t, hip=(0.95, 0.95), shoulder_mid=(0.99, 0.94))
+            for t in range(0, 13000, 100)
+        ]
+        events = names_values(run_frames(engine, frames))
+
+        self.assertNotIn(("fall_suspected", True), events)
+        self.assertNotIn(("floor_level_posture", True), events)
+        self.assertNotIn(("no_motion", True), events)
+        self.assertEqual(engine.diagnostics()["zone_type"], "unknown")
 
     def test_bathroom_occupancy_inferred_from_doorway_exit(self):
         engine = PoseEventEngine(ZONES_CONFIG)

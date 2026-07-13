@@ -96,6 +96,13 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigValidationError, "obsolete key"):
             validate_zones(zones)
 
+    def test_zones_reject_unknown_zone_type(self):
+        zones = copy.deepcopy(ZONES)
+        zones["zones"][0]["zone_type"] = "maybe_safe"
+
+        with self.assertRaisesRegex(ConfigValidationError, "zone_type"):
+            validate_zones(zones)
+
     def test_deployment_requires_bed_and_path_camera_zones(self):
         zones = copy.deepcopy(ZONES)
         zones["zones"] = [zone for zone in zones["zones"] if zone["kind"] == "doorway"]

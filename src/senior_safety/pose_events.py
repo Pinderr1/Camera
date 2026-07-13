@@ -69,7 +69,10 @@ class PoseEventEngine:
         self.thresholds = config.get("events", {})
         self.calibration = config.get("calibration", {})
         self.floor_line_y = float(self.calibration.get("floor_line_y", config.get("floor_line_y", 0.65)))
-        self.fall_suppressed_zone_ids = set(self.thresholds.get("fall_suppressed_zone_ids", ["bed_zone"]))
+        self.fall_suppressed_zone_ids = set(self.thresholds.get("fall_suppressed_zone_ids", []))
+        self.fall_suppressed_zone_ids.update(
+            zone_id for zone_id, zone in self.zones.items() if zone.get("suppress_fall_alerts") is True
+        )
 
         self._person_present = False
         self._presence_candidate_since: int | None = None
@@ -91,6 +94,7 @@ class PoseEventEngine:
         self._absent_since: int | None = None
         self._evidence_wiped = False
         self._drop_pending_since: int | None = None
+        self._rapid_drop_confirmed = False
         self._hip_history: deque[tuple[int, float]] = deque()
         self._floor_history: deque[tuple[int, bool]] = deque()
         self._torso_history: deque[tuple[int, float]] = deque()
@@ -102,6 +106,14 @@ class PoseEventEngine:
         self._glitch_streak = 0
         self._prev_keypoints: dict[str, tuple[float, float]] | None = None
         self._prev_keypoints_ms: int | None = None
+        self._debug = {
+            "current_zone": "",
+            "zone_type": "unknown",
+            "full_body_pose_confidence": 0.0,
+            "fall_suspected": False,
+            "floor_level": False,
+            "no_motion": False,
+        }
 
     def update(self, frame: FrameFeatures) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -110,6 +122,7 @@ class PoseEventEngine:
         hip, shoulder_mid, bbox = self._smooth_frame(frame)
         motion_score = self._motion_score_bl(frame)
         self._update_body_model(hip, shoulder_mid, bbox, now, frame.person_present)
+        current_zone = self._zone_for(hip) if frame.person_present and hip else None
         zone = self._update_effective_zone(hip if frame.person_present else None, now)
         if zone:
             self._last_zone = zone
@@ -119,12 +132,42 @@ class PoseEventEngine:
         if self._person_present and hip:
             self._update_bed_occupancy(zone, now, events)
             self._update_route_motion(zone, motion_score, now, events)
-            self._update_fall_signals(frame, hip, shoulder_mid, bbox, zone, now, events)
-            self._update_no_motion(motion_score, now, events)
+            zone_type = self._zone_type(current_zone)
+            fall_suppressed = self._fall_suppressed_by_zone(frame, hip, current_zone)
+            if fall_suppressed:
+                self._clear_fall_evidence(current_zone, now, events)
+            else:
+                if zone_type == "neutral":
+                    self._clear_fall_evidence(current_zone, now, events)
+                self._update_fall_signals(
+                    frame, hip, shoulder_mid, bbox, current_zone, zone_type, now, events
+                )
+                evidence_allowed = zone_type == "fall_risk" or (
+                    zone_type == "unknown" and self._rapid_drop_confirmed
+                )
+                self._update_no_motion(
+                    motion_score, current_zone, now, events, evidence_allowed, self._full_body_confidence(frame)
+                )
+        self._debug = {
+            "current_zone": current_zone or "",
+            "zone_type": self._zone_type(current_zone),
+            "full_body_pose_confidence": round(self._full_body_confidence(frame), 3),
+            "fall_suspected": self._fall_suspected,
+            "floor_level": self._floor_level,
+            "no_motion": self._no_motion,
+        }
         return events
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Current conservative fall-gating state for the preview overlay."""
+        return dict(self._debug)
 
     def _threshold(self, key: str, default: float) -> float:
         return float(self.thresholds.get(key, default))
+
+    @staticmethod
+    def _full_body_confidence(frame: FrameFeatures) -> float:
+        return frame.full_body_confidence if frame.full_body_confidence is not None else frame.confidence
 
     # ------------------------------------------------------------------
     # Smoothing and body model
@@ -236,10 +279,33 @@ class PoseEventEngine:
     # Zones
 
     def _zone_for(self, hip: tuple[float, float]) -> str | None:
-        for zone_id, zone in self.zones.items():
-            if point_in_polygon(hip[0], hip[1], zone["polygon"]):
-                return zone_id
+        matches = [
+            zone_id
+            for zone_id, zone in self.zones.items()
+            if point_in_polygon(hip[0], hip[1], zone["polygon"])
+        ]
+        # Overlapping placeholders are common. Safe-rest wins so a bed/sofa
+        # can never be shadowed by a larger floor polygon; fall-risk then wins
+        # over neutral route/doorway overlays.
+        for preferred in ("safe_rest", "fall_risk", "neutral"):
+            for zone_id in matches:
+                if self._zone_type(zone_id) == preferred:
+                    return zone_id
         return None
+
+    def _zone_type(self, zone_id: str | None) -> str:
+        if not zone_id or zone_id not in self.zones:
+            return "unknown"
+        zone = self.zones[zone_id]
+        explicit = zone.get("zone_type")
+        if explicit in {"safe_rest", "fall_risk", "neutral"}:
+            return explicit
+        # Compatibility for existing household configs while they are migrated.
+        if zone.get("suppress_fall_alerts") is True:
+            return "safe_rest"
+        if zone.get("kind") == "floor":
+            return "fall_risk"
+        return "neutral"
 
     def _update_effective_zone(self, hip: tuple[float, float] | None, now: int) -> str | None:
         instantaneous = self._zone_for(hip) if hip else None
@@ -353,10 +419,13 @@ class PoseEventEngine:
         shoulder_mid: tuple[float, float] | None,
         bbox: tuple[float, float, float, float] | None,
         zone: str | None,
+        zone_type: str,
         now: int,
         events: list[dict[str, Any]],
     ) -> None:
-        fall_zone_allowed = not self._fall_suppressed_by_zone(frame, hip, zone)
+        full_body = self._full_body_confidence(frame)
+        high_confidence = full_body >= self._threshold("fall_suspected_min_full_body_confidence", 0.65)
+        drop_zone_allowed = zone_type in {"fall_risk", "unknown"}
         scale = self._body_scale()
 
         if not 0.0 <= hip[1] <= 1.02:
@@ -376,7 +445,8 @@ class PoseEventEngine:
             or now - self._last_discontinuity_ms >= self._threshold("track_stabilize_s", 1.5) * 1000
         )
         if (
-            fall_zone_allowed
+            drop_zone_allowed
+            and high_confidence
             and track_stable
             and not self._fall_suspected
             and self._drop_pending_since is None
@@ -402,27 +472,22 @@ class PoseEventEngine:
         corroborated = collapsed or floor_level_now
 
         if self._drop_pending_since is not None:
-            if not fall_zone_allowed:
+            if not drop_zone_allowed or not high_confidence:
                 self._drop_pending_since = None
             elif corroborated:
                 self._drop_pending_since = None
                 self._fall_suspected = True
-                full_body = frame.full_body_confidence if frame.full_body_confidence is not None else frame.confidence
-                min_full_body = self._threshold("fall_suspected_min_full_body_confidence", 0.65)
-                if full_body >= min_full_body:
-                    confidence, notes = full_body, ""
-                else:
-                    # Stays below the full-body threshold so downstream scoring
-                    # treats the event as lower-trust.
-                    confidence = max(0.4, min(0.8 * frame.confidence, min_full_body - 0.05))
-                    notes = "partial_body"
+                self._rapid_drop_confirmed = True
                 events.append(
-                    self._payload("fall_suspected", True, now, zone_id=zone or "", confidence=confidence, notes=notes)
+                    self._payload("fall_suspected", True, now, zone_id=zone or "", confidence=full_body)
                 )
             elif now - self._drop_pending_since > self._threshold("fall_corroborate_window_s", 1.5) * 1000:
                 self._drop_pending_since = None
 
-        self._update_floor_latch(fall_zone_allowed and floor_level_now, frame.confidence, zone, now, events)
+        floor_allowed = high_confidence and (
+            zone_type == "fall_risk" or (zone_type == "unknown" and self._rapid_drop_confirmed)
+        )
+        self._update_floor_latch(floor_allowed and floor_level_now, full_body, zone, now, events)
 
     def _posture_cues(
         self,
@@ -474,7 +539,23 @@ class PoseEventEngine:
     # ------------------------------------------------------------------
     # Motion
 
-    def _update_no_motion(self, motion_score: float, now: int, events: list[dict[str, Any]]) -> None:
+    def _update_no_motion(
+        self,
+        motion_score: float,
+        zone: str | None,
+        now: int,
+        events: list[dict[str, Any]],
+        evidence_allowed: bool,
+        full_body_confidence: float,
+    ) -> None:
+        high_confidence = full_body_confidence >= self._threshold("fall_suspected_min_full_body_confidence", 0.65)
+        if not evidence_allowed or not high_confidence:
+            self._last_motion_ms = now
+            self._motion_streak = 0
+            if self._no_motion:
+                self._no_motion = False
+                events.append(self._payload("no_motion", False, now, zone_id=zone or ""))
+            return
         confirm_frames = int(self._threshold("motion_confirm_frames", 2))
         if motion_score >= self._threshold("motion_score_threshold_bl", 0.15):
             self._motion_streak += 1
@@ -490,7 +571,9 @@ class PoseEventEngine:
             return
         if not self._no_motion and now - self._last_motion_ms >= self._threshold("no_motion_after_s", 10.0) * 1000:
             self._no_motion = True
-            events.append(self._payload("no_motion", True, now, zone_id=self._last_zone or ""))
+            events.append(
+                self._payload("no_motion", True, now, zone_id=zone or "", confidence=full_body_confidence)
+            )
 
     def _motion_score_bl(self, frame: FrameFeatures) -> float:
         """Median keypoint displacement in body-lengths per second, with a
@@ -530,6 +613,22 @@ class PoseEventEngine:
 
     # ------------------------------------------------------------------
     # Suppression and resets
+
+    def _clear_fall_evidence(self, zone: str | None, now: int, events: list[dict[str, Any]]) -> None:
+        if self._fall_suspected:
+            events.append(self._payload("fall_suspected", False, now, zone_id=zone or ""))
+        if self._floor_level:
+            events.append(self._payload("floor_level_posture", False, now, zone_id=zone or ""))
+        if self._no_motion:
+            events.append(self._payload("no_motion", False, now, zone_id=zone or ""))
+        self._fall_suspected = False
+        self._rapid_drop_confirmed = False
+        self._floor_level = False
+        self._no_motion = False
+        self._drop_pending_since = None
+        self._floor_history.clear()
+        self._last_motion_ms = now
+        self._motion_streak = 0
 
     def _fall_suppressed_by_zone(self, frame: FrameFeatures, hip: tuple[float, float] | None, zone: str | None) -> bool:
         if zone in self.fall_suppressed_zone_ids:
@@ -573,6 +672,7 @@ class PoseEventEngine:
 
     def _wipe_incident_evidence(self) -> None:
         self._fall_suspected = False
+        self._rapid_drop_confirmed = False
         self._floor_level = False
         self._no_motion = False
         self._last_motion_ms = None

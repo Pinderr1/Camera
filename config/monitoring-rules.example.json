@@ -20,23 +20,41 @@
     {
       "id": "bed_zone",
       "kind": "bed",
+      "zone_type": "safe_rest",
       "suppress_fall_alerts": true,
       "urgent_if_floor_level": false
     },
     {
+      "id": "sofa_zone",
+      "kind": "sofa",
+      "zone_type": "safe_rest",
+      "suppress_fall_alerts": true,
+      "urgent_if_floor_level": false
+    },
+    {
+      "id": "carpet_zone",
+      "kind": "floor",
+      "zone_type": "fall_risk",
+      "suppress_fall_alerts": false,
+      "urgent_if_floor_level": true
+    },
+    {
       "id": "bed_exit_zone",
       "kind": "transition",
-      "urgent_if_floor_level": true
+      "zone_type": "neutral",
+      "urgent_if_floor_level": false
     },
     {
       "id": "route_zone",
       "kind": "path",
-      "urgent_if_floor_level": true
+      "zone_type": "neutral",
+      "urgent_if_floor_level": false
     },
     {
       "id": "bathroom_entry_zone",
       "kind": "doorway",
-      "urgent_if_floor_level": true
+      "zone_type": "neutral",
+      "urgent_if_floor_level": false
     }
   ],
   "thresholds": {
@@ -44,8 +62,7 @@
       "min_full_body_pose_confidence": 0.65,
       "floor_level_posture_min_s": 3,
       "watch_before_soft_check_s": 10,
-      "urgent_after_no_motion_s": 45,
-      "urgent_after_floor_level_s": 60
+      "urgent_after_no_motion_s": 45
     },
     "bed_exit_no_return": {
       "low_notice_after_s": 900,
@@ -79,6 +96,6 @@
     "realert_cooldown_s": 600,
     "normal_bed_lie_down_suppression": true,
     "normal_chair_sit_suppression": true,
-    "fall_suppressed_zone_ids": ["bed_zone"]
+    "fall_suppressed_zone_ids": ["bed_zone", "sofa_zone"]
   }
 }

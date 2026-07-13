@@ -1,7 +1,7 @@
 {
   "deployment_ready": false,
   "camera_id": "cam01",
-  "source": 0,
+  "source": 1,
   "room": "bedroom",
   "fps_limit": 10,
   "floor_line_y": 0.65,
@@ -9,17 +9,34 @@
     {
       "id": "bed_zone",
       "kind": "bed",
+      "zone_type": "safe_rest",
       "suppress_fall_alerts": true,
       "polygon": [[0.0, 0.25], [0.42, 0.25], [0.42, 0.95], [0.0, 0.95]]
     },
     {
+      "id": "sofa_zone",
+      "kind": "sofa",
+      "zone_type": "safe_rest",
+      "suppress_fall_alerts": true,
+      "polygon": [[0.43, 0.25], [0.57, 0.25], [0.57, 0.95], [0.43, 0.95]]
+    },
+    {
+      "id": "carpet_zone",
+      "kind": "floor",
+      "zone_type": "fall_risk",
+      "suppress_fall_alerts": false,
+      "polygon": [[0.57, 0.55], [0.85, 0.55], [0.85, 1.0], [0.57, 1.0]]
+    },
+    {
       "id": "route_zone",
       "kind": "path",
+      "zone_type": "neutral",
       "polygon": [[0.35, 0.3], [0.85, 0.3], [0.85, 1.0], [0.35, 1.0]]
     },
     {
       "id": "bathroom_door_zone",
       "kind": "doorway",
+      "zone_type": "neutral",
       "polygon": [[0.85, 0.2], [1.0, 0.2], [1.0, 0.9], [0.85, 0.9]]
     }
   ],
@@ -47,7 +64,7 @@
     "fall_corroborate_window_s": 1.5,
     "fall_corroborate_torso_deg": 45,
     "fall_suspected_min_full_body_confidence": 0.65,
-    "fall_suppressed_zone_ids": ["bed_zone"],
+    "fall_suppressed_zone_ids": ["bed_zone", "sofa_zone"],
     "fall_suppression_min_fraction": 0.5,
     "floor_level_torso_angle_deg": 55,
     "floor_level_bbox_aspect": 1.4,
