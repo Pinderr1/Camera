@@ -2,7 +2,33 @@
 
 This workspace is for a local-first safety monitor for an older adult who sleeps alone and may get up at night to use the washroom.
 
+> **v1 pivot (July 2026):** the live v1 is now [webapp/](./webapp/) — a phone-to-phone bed-exit alert ("BedWatch"). A spare iPhone by the bed runs the web app and pushes ntfy alerts to the caregiver's iPhone the moment she sits up or leaves the bed. No PC is involved at runtime. The Python stack below is unchanged and serves as the offline tuning/benchmark lab. Setup guide: [BedWatch v1](#bedwatch-v1-phone-to-phone-bed-exit-alert).
+
 Start with [claude.md](./claude.md). It defines the product goal, safety boundaries, data plan, detection states, rule baseline, alert ladder, privacy posture, and MVP phases.
+
+## BedWatch v1: phone-to-phone bed-exit alert
+
+Everything lives in [webapp/](./webapp/) — static HTML/JS, no build step. It runs MediaPipe Pose in Safari on the bedside phone and POSTs alerts to `ntfy.sh`. Default mode is **posture** (no zones): it detects lying → sitting (early warning) and sitting → standing/walking (main alert) wherever she is in frame, so one phone covers both the couch and the bed — just move it to whichever room she's resting in. A fixed-camera **bed zone** mode (tap-drawn polygon) is available in Settings. States and thresholds mirror the Python lab. Tests: `node --test webapp/test/engine.test.mjs webapp/test/posture.test.mjs`.
+
+Posture-mode caveats: start monitoring once she's settled; anyone else walking into frame can trigger an alert (use Pause when a caregiver is in the room), and the "settled again" all-clear is a heuristic (long stationary upright hold), so treat it as informational.
+
+Hosting (HTTPS is required for iOS camera access):
+
+1. Push this repo, then enable GitHub Pages: repo Settings → Pages → Deploy from branch → `main` / root. The app serves at `https://<user>.github.io/<repo>/webapp/`. Note: free Pages needs a public repo and publishes the whole repo — if that is not acceptable, drag the `webapp` folder onto Netlify Drop instead.
+2. Local dev: `python -m http.server` inside `webapp/`, open `http://localhost:8000` in desktop Chrome (camera works without HTTPS on localhost). Engine tests: `node --test webapp/test/engine.test.mjs`.
+
+Bedside iPhone setup:
+
+1. Open the deployed URL in Safari, allow the camera, tap the bed corners to draw the bed zone, send a test alert, then Start monitoring (start once she is in bed; alerts arm after 60 s).
+2. Keep the phone plugged in. Settings → Display & Brightness → Auto-Lock → Never. Turn Low Power Mode off.
+3. Pin Safari with Guided Access (Settings → Accessibility → Guided Access, then triple-click the side button) so the app cannot be closed accidentally.
+4. Use the Dim screen button overnight. Leave a night light on — the app warns when the room is too dark to see.
+
+Caregiver iPhone setup:
+
+1. Install the free **ntfy** app, subscribe to the topic shown on the bedside phone's setup screen.
+2. Allow ntfy notifications with sound, and **exempt ntfy from Sleep/Focus mode** (Settings → Focus → Sleep → Allowed Notifications → add ntfy) — this is the step that makes 3 a.m. alerts audible. Keep the ringer on.
+3. Optional watchdog: create a free check at healthchecks.io (period 2 min, grace 3 min), point its ntfy integration at the same topic, and paste the ping URL into BedWatch Settings — the caregiver then gets alerted if the bedside phone dies, loses WiFi, or Safari stops running.
 
 ## Build Order
 

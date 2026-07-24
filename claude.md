@@ -1,5 +1,7 @@
 # DIY Senior Night Safety Monitoring: Data-First Build Plan
 
+**v1 pivot (July 2026): the live v1 is `webapp/` (BedWatch), a phone-to-phone bed-exit alert.** A spare iPhone at the bedside runs a static web app (MediaPipe Pose in Safari) and pushes ntfy alerts to the caregiver's iPhone the moment she sits up in bed or leaves the tap-drawn bed zone. There is no PC, MQTT, or Home Assistant at runtime. The Python pipeline in `src/senior_safety/` stays as the offline tuning/benchmark lab — do not rebuild the PC pipeline for live monitoring. The webapp ports the lab's geometry, smoothing, threshold names, and state names (see `webapp/js/engine.js`); tune thresholds there. Setup guide is in `README.md` under "BedWatch v1".
+
 This file is the product, data, and detection plan for a home safety prototype for an older adult who sleeps alone and may get up at night to use the washroom. The goal is not just "fall detection." The real goal is to catch urgent situations quickly while keeping false alarms low enough that caregivers still trust the system.
 
 The system should be treated as an assistive safety monitor, not a medical device, proof-of-life system, breathing monitor, or emergency service. It can say "someone should check now." It cannot prove that someone is alive, dead, breathing safely, uninjured, or medically okay.

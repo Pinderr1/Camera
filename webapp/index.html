@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#101418">
+  <title>BedWatch</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-screen="setup">
+  <header>
+    <h1>BedWatch</h1>
+    <button id="open-settings" class="ghost">Settings</button>
+  </header>
+
+  <div id="banner" class="banner arming">
+    <span class="banner-label">STARTING UP</span>
+    <span class="banner-since"></span>
+  </div>
+  <div id="status-detail"></div>
+
+  <div id="camera-wrap">
+    <video id="camera" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div id="model-progress"></div>
+    <div id="start-overlay" class="hidden">
+      <button id="start-monitoring" class="big">Start monitoring</button>
+      <p>Start once she is settled (in bed or on the couch). Alerts arm after 60 seconds.</p>
+    </div>
+  </div>
+
+  <section id="setup-panel">
+    <h2>1. Point the phone at the bed</h2>
+    <p>Prop this phone up so the whole bed is in view, plugged in to power.</p>
+    <button id="enable-camera" class="big">Enable camera</button>
+
+    <div id="posture-tip" class="hidden">
+      <h2>2. That's it for the camera</h2>
+      <p>No zones needed &mdash; the app watches her posture (lying, sitting, standing) wherever she is in view. Move the phone to whichever room she's resting in: couch in the evening, bedroom at night.</p>
+    </div>
+
+    <div id="zone-controls" class="hidden">
+      <h2>2. Draw the bed zone</h2>
+      <p>Tap each corner of the bed on the picture above (at least 3, usually 4).</p>
+      <div class="row">
+        <button id="zone-undo">Undo corner</button>
+        <button id="zone-clear">Clear</button>
+        <span id="zone-count">0 corners</span>
+      </div>
+    </div>
+
+    <h2>3. Connect the caregiver phone</h2>
+    <p>Install the free <strong>ntfy</strong> app on the caregiver's iPhone and subscribe to this topic:</p>
+    <div class="row">
+      <input id="topic-input" type="text" autocapitalize="off" autocomplete="off">
+      <button id="topic-generate">New</button>
+    </div>
+    <div class="row">
+      <span id="subscribe-link" class="mono"></span>
+      <button id="topic-copy">Copy link</button>
+      <button id="topic-test">Send test</button>
+    </div>
+
+    <button id="setup-start" class="big" disabled>Save &amp; start monitoring</button>
+  </section>
+
+  <section id="monitor-panel">
+    <div class="row">
+      <button id="pause-15">Pause 15m</button>
+      <button id="pause-60">Pause 1h</button>
+      <button id="pause-hold">Pause</button>
+      <button id="resume">Resume</button>
+    </div>
+    <div class="row">
+      <button id="dim" class="wide">Dim screen</button>
+    </div>
+    <h2>Recent events</h2>
+    <ul id="event-log"></ul>
+  </section>
+
+  <section id="settings-panel">
+    <h2>Alerts</h2>
+    <label>ntfy topic <input id="set-topic" type="text" autocapitalize="off"></label>
+    <label class="check"><input id="set-situp-toggle" type="checkbox"> Sitting-up early warning</label>
+    <label class="check"><input id="set-fall-toggle" type="checkbox"> Possible-fall alert</label>
+    <label class="check"><input id="set-back-toggle" type="checkbox"> "Back in bed" notice</label>
+    <label class="check"><input id="set-reminder-toggle" type="checkbox"> 15-min no-return reminder</label>
+    <button id="settings-test">Send test alert</button>
+
+    <h2>Detection</h2>
+    <label>Mode
+      <select id="set-mode">
+        <option value="posture">Posture (no zones, phone moves with her)</option>
+        <option value="zone">Bed zone (fixed camera, draw the bed)</option>
+      </select>
+    </label>
+    <label>Sit-up torso angle (30&ndash;50&deg;) <input id="set-situp-deg" type="number" min="30" max="50"></label>
+    <label>Sit-up hold (seconds) <input id="set-situp-deb" type="number" min="0.5" max="10" step="0.5"></label>
+    <label>Bed-exit hold (seconds) <input id="set-exit-deb" type="number" min="1" max="10" step="0.5"></label>
+    <label>Frames per second (3&ndash;10) <input id="set-fps" type="number" min="3" max="10"></label>
+    <label>Darkness threshold (0&ndash;255) <input id="set-dark" type="number" min="5" max="100"></label>
+    <label>Pose model
+      <select id="set-model">
+        <option value="lite">Lite (recommended)</option>
+        <option value="full">Full (matches Python lab)</option>
+      </select>
+    </label>
+    <label class="check"><input id="set-privacy" type="checkbox"> Privacy mode (hide video, skeleton only)</label>
+
+    <h2>Reliability</h2>
+    <label>healthchecks.io ping URL (optional) <input id="set-heartbeat" type="url" autocapitalize="off"></label>
+    <button id="backup-copy">Copy backup link</button>
+    <button id="redraw-zone">Re-draw bed zone</button>
+    <button id="log-copy">Copy event log</button>
+
+    <div class="row">
+      <button id="settings-save" class="big">Save &amp; restart</button>
+      <button id="settings-cancel">Cancel</button>
+    </div>
+  </section>
+
+  <div id="dim-overlay"><div id="dim-dot" class="dim-dot ok"></div></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
