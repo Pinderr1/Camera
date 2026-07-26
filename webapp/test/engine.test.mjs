@@ -64,7 +64,7 @@ test("arming suppresses alerts then lands in in_bed", () => {
 
 test("sit-up fires after debounce", () => {
   const { engine, clock } = armedEngine();
-  const events = run(engine, clock, 3, sittingInBed);
+  const events = run(engine, clock, 1.2, sittingInBed);
   assert.equal(engine.state, "sitting_up");
   assert.ok(names(events).includes("sitting_up"));
 });
@@ -78,7 +78,7 @@ test("pose lost in bed turns red and repeats missing-person alerts", () => {
 
 test("tracked bed exit alerts with outside_bed reason", () => {
   const { engine, clock } = armedEngine();
-  const events = run(engine, clock, 4.5, standingOutside);
+  const events = run(engine, clock, 1.4, standingOutside);
   assert.equal(engine.state, "bed_exit");
   const exit = events.find((event) => event.name === "bed_exit");
   assert.equal(exit.reason, "outside_bed");
@@ -89,9 +89,9 @@ test("untracked person outside bed uses longer debounce", () => {
   const clock = { now: 0 };
   run(engine, clock, 1.4, absent);
   assert.equal(engine.state, "in_bed");
-  const early = run(engine, clock, 4, standingOutside);
+  const early = run(engine, clock, 0.8, standingOutside);
   assert.ok(!names(early).includes("bed_exit"));
-  const late = run(engine, clock, 3, standingOutside);
+  const late = run(engine, clock, 1, standingOutside);
   const exit = late.find((event) => event.name === "bed_exit");
   assert.equal(exit.reason, "person_outside_bed_untracked");
 });

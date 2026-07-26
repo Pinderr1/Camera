@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig, configToHash, generateTopic } from "./config.js";
+import { DEFAULTS, loadConfig, saveConfig, configToHash, generateTopic } from "./config.js";
 import { BedWatchEngine, PostureEngine } from "./engine.js";
 import { openCamera, createLandmarker, extractFeatures, sampleLuma } from "./pose.js";
 import { Notifier, startHeartbeat } from "./alerts.js";
@@ -15,6 +15,9 @@ let landmarker = null;
 let stream = null;
 let wakeLock = null;
 let loopTimer = null;
+let videoFrameCallbackId = null;
+let detectionLoopRunning = false;
+let lastInferenceMs = -Infinity;
 let busy = false;
 let lastState = "arming";
 let lastLandmarks = null;
@@ -76,11 +79,11 @@ function handleEvents(events) {
   }
 }
 
-function tick() {
+function tick(timestampMs = performance.now()) {
   if (busy || !landmarker || !video.videoWidth) return;
   busy = true;
   try {
-    const ts = performance.now();
+    const ts = timestampMs;
     const result = landmarker.detectForVideo(video, ts);
     lastLandmarks = result.landmarks?.[0] ?? null;
     const features = extractFeatures(lastLandmarks, ts);
@@ -99,11 +102,43 @@ function tick() {
   }
 }
 
+function stopDetectionLoop() {
+  detectionLoopRunning = false;
+  if (loopTimer !== null) clearInterval(loopTimer);
+  loopTimer = null;
+  if (videoFrameCallbackId !== null && video.cancelVideoFrameCallback) {
+    video.cancelVideoFrameCallback(videoFrameCallbackId);
+  }
+  videoFrameCallbackId = null;
+}
+
+function startDetectionLoop() {
+  stopDetectionLoop();
+  detectionLoopRunning = true;
+  lastInferenceMs = -Infinity;
+  const intervalMs = 1000 / cfg.fps;
+
+  // Frame callbacks react as soon as the camera produces a fresh frame. Keep
+  // the timer fallback for Safari versions without this API.
+  if (video.requestVideoFrameCallback) {
+    const onFrame = (now) => {
+      if (!detectionLoopRunning) return;
+      videoFrameCallbackId = video.requestVideoFrameCallback(onFrame);
+      if (now - lastInferenceMs + 1 < intervalMs) return;
+      lastInferenceMs = now;
+      tick(now);
+    };
+    videoFrameCallbackId = video.requestVideoFrameCallback(onFrame);
+  } else {
+    loopTimer = setInterval(() => tick(), intervalMs);
+  }
+}
+
 // Watchdog: tick stops advancing lastFrameMs if the video freezes, loses its
 // dimensions, or detectForVideo throws. Warn once; the paused/blind paths have
 // their own handling, so skip when paused or before the first frame.
 function checkCameraHealth() {
-  if (!engine || !loopTimer || notifier.paused || lastFrameMs === null) return;
+  if (!engine || !detectionLoopRunning || notifier.paused || lastFrameMs === null) return;
   if (Date.now() - lastFrameMs < cfg.camera_stall_s * 1000) return;
   lastState = "offline_or_blind";
   if (!cameraStalledNotified) {
@@ -170,8 +205,7 @@ async function startMonitoring() {
   startHeartbeat(cfg);
   lastFrameMs = Date.now();
   cameraStalledNotified = false;
-  if (loopTimer) clearInterval(loopTimer);
-  loopTimer = setInterval(tick, 1000 / cfg.fps);
+  startDetectionLoop();
   ui.log("monitoring started");
 }
 
@@ -271,9 +305,9 @@ el("settings-save").addEventListener("click", () => {
   cfg.alerts.no_return_reminder = el("set-reminder-toggle").checked;
   cfg.alerts.possible_fall = el("set-fall-toggle").checked;
   cfg.sit_up_torso_deg = Number(el("set-situp-deg").value) || 40;
-  cfg.sit_up_debounce_s = Number(el("set-situp-deb").value) || 1.5;
-  cfg.bed_exit_debounce_s = Number(el("set-exit-deb").value) || 2.0;
-  cfg.fps = Math.min(10, Math.max(3, Number(el("set-fps").value) || 5));
+  cfg.sit_up_debounce_s = Number(el("set-situp-deb").value) || DEFAULTS.sit_up_debounce_s;
+  cfg.bed_exit_debounce_s = Number(el("set-exit-deb").value) || DEFAULTS.bed_exit_debounce_s;
+  cfg.fps = Math.min(10, Math.max(3, Number(el("set-fps").value) || DEFAULTS.fps));
   cfg.dark_luma = Number(el("set-dark").value) || 25;
   cfg.dark_luma_recover = cfg.dark_luma + 10;
   cfg.model = el("set-model").value;
@@ -286,8 +320,7 @@ el("settings-save").addEventListener("click", () => {
 el("settings-cancel").addEventListener("click", () => ui.showScreen("monitor"));
 
 el("redraw-zone").addEventListener("click", () => {
-  if (loopTimer) clearInterval(loopTimer);
-  loopTimer = null;
+  stopDetectionLoop();
   ui.showScreen("setup");
   el("enable-camera").classList.toggle("hidden", Boolean(stream));
   el("zone-controls").classList.toggle("hidden", !stream);

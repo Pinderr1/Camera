@@ -57,7 +57,7 @@ test("arming classifies upright person as sitting without alert", () => {
 
 test("lying to sitting fires sitting_up early warning", () => {
   const { engine, clock } = lyingEngine();
-  const events = run(engine, clock, 3, sittingCouch);
+  const events = run(engine, clock, 1.2, sittingCouch);
   assert.equal(engine.state, "sitting");
   assert.ok(names(events).includes("sitting_up"));
   assert.equal(engine.update(sittingCouch(clock.now + STEP_MS)).state, "sitting_up");
@@ -65,8 +65,8 @@ test("lying to sitting fires sitting_up early warning", () => {
 
 test("standing up from sitting fires got_up", () => {
   const { engine, clock } = lyingEngine();
-  run(engine, clock, 3, sittingCouch);
-  const events = run(engine, clock, 4, standingUp);
+  run(engine, clock, 1.2, sittingCouch);
+  const events = run(engine, clock, 1.4, standingUp);
   assert.equal(engine.state, "up");
   const alert = events.find((event) => event.name === "got_up");
   assert.equal(alert.reason, "stood_up");
@@ -74,8 +74,8 @@ test("standing up from sitting fires got_up", () => {
 
 test("walking away from rest spot fires got_up", () => {
   const { engine, clock } = lyingEngine();
-  run(engine, clock, 3, sittingCouch);
-  const events = run(engine, clock, 4, walkedAway);
+  run(engine, clock, 1.2, sittingCouch);
+  const events = run(engine, clock, 1.4, walkedAway);
   assert.equal(engine.state, "up");
   assert.ok(names(events).includes("got_up"));
 });
