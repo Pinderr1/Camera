@@ -168,11 +168,20 @@ test("pose lost while last seen outside bed never resets to in_bed", () => {
   assert.equal(engine.state, "bed_exit");
 });
 
-test("no-return reminder fires once per episode", () => {
-  const { engine, clock } = armedEngine({ no_return_reminder_s: 5 });
+test("no-return reminder repeats while out of bed", () => {
+  const { engine, clock } = armedEngine({ up_repeat_s: 5, up_urgent_after_s: 1000 });
+  run(engine, clock, 4.5, standingOutside);
+  const events = run(engine, clock, 22, standingOutside);
+  assert.ok(names(events).filter((name) => name === "bed_exit_no_return").length >= 3);
+  assert.ok(!names(events).includes("bed_exit_no_return_urgent"));
+});
+
+test("no-return reminder escalates to urgent after threshold", () => {
+  const { engine, clock } = armedEngine({ up_repeat_s: 5, up_urgent_after_s: 12 });
   run(engine, clock, 4.5, standingOutside);
   const events = run(engine, clock, 20, standingOutside);
-  assert.equal(names(events).filter((name) => name === "bed_exit_no_return").length, 1);
+  assert.ok(names(events).includes("bed_exit_no_return"));
+  assert.ok(names(events).includes("bed_exit_no_return_urgent"));
 });
 
 test("darkness blinds and recovers with events", () => {

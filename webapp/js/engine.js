@@ -67,7 +67,7 @@ export class BedWatchEngine {
     this.lastPresentMs = null;
     this.lastPresentInBed = false;
     this.episodeStartMs = null;
-    this.reminderSent = false;
+    this.lastRepeatMs = null;
     this.debug = {};
     this._smoothedHip = null;
     this._smoothedShoulder = null;
@@ -183,13 +183,8 @@ export class BedWatchEngine {
           this._setState("in_bed", now, events, "back_in_bed_pose_lost");
           events.push({ name: "returned_to_bed", reason: "back_in_bed_pose_lost" });
           this.episodeStartMs = null;
-        } else if (
-          !this.reminderSent &&
-          this.episodeStartMs !== null &&
-          now - this.episodeStartMs >= this.cfg.no_return_reminder_s * 1000
-        ) {
-          this.reminderSent = true;
-          events.push({ name: "bed_exit_no_return", reason: "bed_exit_no_return" });
+        } else {
+          this._maybeRepeat(now, events, "bed_exit_no_return", "bed_exit_no_return_urgent");
         }
         break;
 
@@ -215,8 +210,27 @@ export class BedWatchEngine {
   _startEpisode(now) {
     if (this.episodeStartMs === null) {
       this.episodeStartMs = now;
-      this.reminderSent = false;
+      this.lastRepeatMs = null;
     }
+  }
+
+  // While she stays up/out of bed, re-emit a reminder every up_repeat_s and
+  // escalate to the urgent variant once she has been up past up_urgent_after_s.
+  // The 1-min cadence lives here; the alert stages use cooldown_s: 0.
+  _maybeRepeat(now, events, name, urgentName) {
+    if (this.episodeStartMs === null) return;
+    const elapsed = now - this.episodeStartMs;
+    if (elapsed < this.cfg.up_repeat_s * 1000) return;
+    if (this.lastRepeatMs !== null && now - this.lastRepeatMs < this.cfg.up_repeat_s * 1000) {
+      return;
+    }
+    this.lastRepeatMs = now;
+    const urgent = elapsed >= this.cfg.up_urgent_after_s * 1000;
+    events.push({
+      name: urgent ? urgentName : name,
+      reason: urgent ? "still_up_urgent" : "still_up_repeat",
+      minutes: Math.round(elapsed / 60000),
+    });
   }
 
   _updateDarkness(features, now, events) {
@@ -400,13 +414,8 @@ export class PostureEngine extends BedWatchEngine {
           this._settle("lying", hip, now, events);
         } else if (this._settledUpright(present, upright, hip, now)) {
           this._settle("sitting", hip, now, events);
-        } else if (
-          !this.reminderSent &&
-          this.episodeStartMs !== null &&
-          now - this.episodeStartMs >= this.cfg.no_return_reminder_s * 1000
-        ) {
-          this.reminderSent = true;
-          events.push({ name: "still_up", reason: "still_up" });
+        } else {
+          this._maybeRepeat(now, events, "still_up", "still_up_urgent");
         }
         break;
 

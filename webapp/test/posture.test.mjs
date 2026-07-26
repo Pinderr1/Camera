@@ -137,12 +137,32 @@ test("pacing never counts as settled", () => {
   assert.equal(engine.state, "up");
 });
 
-test("still_up reminder fires once", () => {
-  const { engine, clock } = lyingEngine({ no_return_reminder_s: 5 });
+test("still_up reminder repeats every interval while up", () => {
+  const { engine, clock } = lyingEngine({ up_repeat_s: 5, up_urgent_after_s: 1000 });
+  run(engine, clock, 3, sittingCouch);
+  run(engine, clock, 4, walkedAway);
+  const events = run(engine, clock, 22, walkedAway);
+  assert.ok(names(events).filter((name) => name === "still_up").length >= 3);
+  assert.ok(!names(events).includes("still_up_urgent"));
+});
+
+test("still_up escalates to still_up_urgent after urgent threshold", () => {
+  const { engine, clock } = lyingEngine({ up_repeat_s: 5, up_urgent_after_s: 12 });
   run(engine, clock, 3, sittingCouch);
   run(engine, clock, 4, walkedAway);
   const events = run(engine, clock, 20, walkedAway);
-  assert.equal(names(events).filter((name) => name === "still_up").length, 1);
+  assert.ok(names(events).includes("still_up"));
+  assert.ok(names(events).includes("still_up_urgent"));
+});
+
+test("repeats stop once she settles", () => {
+  const { engine, clock } = lyingEngine({ up_repeat_s: 5, up_urgent_after_s: 1000 });
+  run(engine, clock, 3, sittingCouch);
+  run(engine, clock, 4, walkedAway);
+  run(engine, clock, 13, lyingCouch);
+  assert.equal(engine.state, "lying");
+  const events = run(engine, clock, 30, lyingCouch);
+  assert.ok(!names(events).some((name) => name.startsWith("still_up")));
 });
 
 test("floor-level posture while up becomes possible_fall", () => {

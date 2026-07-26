@@ -20,6 +20,8 @@ let lastState = "arming";
 let lastLandmarks = null;
 let cameraLostSince = null;
 let cameraBlindNotified = false;
+let lastFrameMs = null;
+let cameraStalledNotified = false;
 
 notifier.onLog = ui.log;
 
@@ -59,8 +61,12 @@ function handleEvents(events) {
       continue;
     }
     ui.log(`event: ${event.name} (${event.reason})`);
-    if (["sitting_up", "bed_exit", "got_up", "possible_fall", "bed_exit_no_return", "still_up", "returned_to_bed", "settled", "camera_blind"].includes(event.name)) {
-      notifier.notify(event.name);
+    if (["sitting_up", "bed_exit", "got_up", "possible_fall", "bed_exit_no_return", "bed_exit_no_return_urgent", "still_up", "still_up_urgent", "returned_to_bed", "settled", "camera_blind"].includes(event.name)) {
+      const where = event.name.startsWith("bed_exit_no_return") ? "out of bed" : "up";
+      const body = event.minutes != null
+        ? `She's still ${where} and hasn't settled - ${event.minutes} min. Please check.`
+        : undefined;
+      notifier.notify(event.name, body);
     }
   }
 }
@@ -78,8 +84,26 @@ function tick() {
     lastState = state;
     handleEvents(events);
     ui.drawOverlay(overlay, video, lastLandmarks, cfg.mode === "zone" ? cfg.bed_polygon : null, cfg.privacy_mode);
+    lastFrameMs = Date.now();
+    if (cameraStalledNotified) {
+      cameraStalledNotified = false;
+      ui.log("camera recovered (frames resumed)");
+    }
   } finally {
     busy = false;
+  }
+}
+
+// Watchdog: tick stops advancing lastFrameMs if the video freezes, loses its
+// dimensions, or detectForVideo throws. Warn once; the paused/blind paths have
+// their own handling, so skip when paused or before the first frame.
+function checkCameraHealth() {
+  if (!engine || !loopTimer || notifier.paused || lastFrameMs === null) return;
+  if (Date.now() - lastFrameMs < cfg.camera_stall_s * 1000) return;
+  lastState = "offline_or_blind";
+  if (!cameraStalledNotified) {
+    cameraStalledNotified = true;
+    notifier.notify("camera_stopped");
   }
 }
 
@@ -139,6 +163,8 @@ async function startMonitoring() {
   zoneEditor.stop();
   await acquireWakeLock();
   startHeartbeat(cfg);
+  lastFrameMs = Date.now();
+  cameraStalledNotified = false;
   if (loopTimer) clearInterval(loopTimer);
   loopTimer = setInterval(tick, 1000 / cfg.fps);
   ui.log("monitoring started");
@@ -206,6 +232,7 @@ el("pause-60").addEventListener("click", () => notifier.pause(60));
 el("pause-hold").addEventListener("click", () => notifier.pause(null));
 el("resume").addEventListener("click", () => notifier.resume());
 el("dim").addEventListener("click", () => ui.setDim(true));
+el("monitor-test").addEventListener("click", () => notifier.notify("test"));
 el("dim-overlay").addEventListener("click", () => ui.setDim(false));
 el("open-settings").addEventListener("click", () => {
   fillSettings();
@@ -279,10 +306,15 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     acquireWakeLock();
     if (video.paused && video.srcObject) video.play();
+    // Backgrounding throttles timers on iOS; don't count that gap as a stall.
+    if (lastFrameMs !== null) lastFrameMs = Date.now();
   }
 });
 
-setInterval(refreshBanner, 1000);
+setInterval(() => {
+  refreshBanner();
+  checkCameraHealth();
+}, 1000);
 
 if (cfg.topic && (cfg.mode !== "zone" || cfg.bed_polygon.length >= 3)) {
   saveConfig(cfg);
