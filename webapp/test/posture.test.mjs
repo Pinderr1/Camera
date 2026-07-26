@@ -89,11 +89,14 @@ test("sitting quietly on the couch for a long time never alerts", () => {
   assert.deepEqual(names(events), []);
 });
 
-test("blanket rule: pose lost while lying stays lying", () => {
-  const { engine, clock } = lyingEngine();
-  const events = run(engine, clock, 120, absent);
-  assert.equal(engine.state, "lying");
-  assert.deepEqual(names(events), []);
+test("pose lost while lying turns red and alerts every missing interval", () => {
+  const { engine, clock } = lyingEngine({
+    person_missing_debounce_s: 2,
+    person_missing_repeat_s: 3,
+  });
+  const events = run(engine, clock, 12, absent);
+  assert.equal(engine.state, "person_missing");
+  assert.ok(names(events).filter((name) => name === "person_missing").length >= 4);
 });
 
 test("lie back down from sitting is silent", () => {
@@ -103,6 +106,14 @@ test("lie back down from sitting is silent", () => {
   assert.equal(engine.state, "lying");
   assert.ok(names(events).includes("lie_down"));
   assert.ok(!names(events).includes("got_up"));
+});
+
+test("sitting-up warning repeats every configured interval", () => {
+  const { engine, clock } = lyingEngine({ sit_up_repeat_s: 5 });
+  const initial = run(engine, clock, 3, sittingCouch);
+  assert.equal(names(initial).filter((name) => name === "sitting_up").length, 1);
+  const reminders = run(engine, clock, 16, sittingCouch);
+  assert.equal(names(reminders).filter((name) => name === "sitting_up").length, 3);
 });
 
 test("settles flat again and sends settled once", () => {
@@ -174,10 +185,22 @@ test("floor-level posture while up becomes possible_fall", () => {
   assert.ok(names(events).includes("possible_fall"));
 });
 
-test("pose lost while up stays up (left the room)", () => {
-  const { engine, clock } = lyingEngine();
+test("pose lost while up becomes person_missing and repeats", () => {
+  const { engine, clock } = lyingEngine({
+    person_missing_debounce_s: 2,
+    person_missing_repeat_s: 3,
+  });
   run(engine, clock, 3, sittingCouch);
   run(engine, clock, 4, walkedAway);
-  run(engine, clock, 120, absent);
-  assert.equal(engine.state, "up");
+  const events = run(engine, clock, 12, absent);
+  assert.equal(engine.state, "person_missing");
+  assert.ok(names(events).filter((name) => name === "person_missing").length >= 4);
+});
+
+test("person reappearing safely clears person_missing", () => {
+  const { engine, clock } = lyingEngine({ person_missing_debounce_s: 2 });
+  run(engine, clock, 4, absent);
+  assert.equal(engine.state, "person_missing");
+  run(engine, clock, 1, lyingCouch);
+  assert.equal(engine.state, "lying");
 });

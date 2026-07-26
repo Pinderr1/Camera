@@ -9,6 +9,7 @@ const BANNER = {
   bed_exit: { label: "OUT OF BED", cls: "alert" },
   up: { label: "UP - MOVING", cls: "alert" },
   possible_fall: { label: "POSSIBLE FALL", cls: "alert" },
+  person_missing: { label: "PERSON NOT VISIBLE", cls: "alert" },
   offline_or_blind: { label: "CAMERA CAN'T SEE", cls: "blind" },
   paused: { label: "PAUSED", cls: "paused" },
 };

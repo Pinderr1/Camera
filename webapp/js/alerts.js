@@ -8,7 +8,9 @@ const STAGES = {
     body: "Sitting up in bed - head over now.",
     priority: 4,
     tags: "warning,bed",
-    cooldown_s: 120,
+    // The engine owns the 60-second repeat cadence. A notification-layer
+    // cooldown here would silently discard those reminders.
+    cooldown_s: 0,
     toggle: "sitting_up",
     opensEpisode: true,
   },
@@ -35,6 +37,15 @@ const STAGES = {
     priority: 5,
     tags: "rotating_light",
     cooldown_s: 300,
+    opensEpisode: true,
+  },
+  person_missing: {
+    title: "Grandma is NOT VISIBLE",
+    body: "She is out of the camera view. Please check now.",
+    priority: 5,
+    tags: "rotating_light,eyes",
+    cooldown_s: 0,
+    toggle: "no_return_reminder",
     opensEpisode: true,
   },
   settled: {

@@ -1,6 +1,7 @@
 // Threshold names match config/zones.example.json so tuning stays comparable
 // with the Python lab.
 export const DEFAULTS = {
+  config_version: 2,
   smoothing_tau_s: 0.15,
   outlier_jump_bl: 1.5,
   outlier_accept_frames: 5,
@@ -9,17 +10,19 @@ export const DEFAULTS = {
 
   sit_up_torso_deg: 40,
   sit_up_debounce_s: 1.5,
+  sit_up_repeat_s: 60,
   bed_exit_debounce_s: 2.0,
   untracked_exit_debounce_s: 5.0,
+  person_missing_debounce_s: 5.0,
+  person_missing_repeat_s: 30,
   track_link_s: 10,
   lie_back_debounce_s: 5.0,
-  pose_lost_in_bed_s: 30,
   bed_return_debounce_s: 15,
   floor_level_min_s: 2.0,
   floor_clear_s: 3.0,
   arming_s: 60,
   no_return_reminder_s: 900,
-  up_repeat_s: 60,
+  up_repeat_s: 30,
   up_urgent_after_s: 300,
   camera_stall_s: 60,
   core_confidence_min: 0.5,
@@ -60,8 +63,16 @@ export function loadConfig() {
     stored = null;
   }
   if (!stored) stored = configFromHash();
+  const storedVersion = Number(stored?.config_version || 1);
   const cfg = { ...DEFAULTS, ...(stored || {}) };
   cfg.alerts = { ...DEFAULTS.alerts, ...((stored && stored.alerts) || {}) };
+  if (storedVersion < 2) {
+    // v2 makes away alerts deliberately persistent. Existing phones saved
+    // the old 60-second default, so a plain defaults merge would leave them
+    // on the old cadence forever.
+    cfg.up_repeat_s = 30;
+  }
+  cfg.config_version = DEFAULTS.config_version;
   return cfg;
 }
 

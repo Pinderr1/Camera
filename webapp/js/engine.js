@@ -1,7 +1,6 @@
 // Pure detection logic, no DOM. Ports point_in_polygon, torso_angle_deg, EMA
-// smoothing with hip-glitch rejection, and the blanket-occlusion rule from
-// src/senior_safety/pose_events.py so behavior stays comparable with the
-// Python lab.
+// smoothing with hip-glitch rejection, plus strict missing-person handling
+// for the bedside alert behavior.
 
 export function pointInPolygon(x, y, polygon) {
   let inside = false;
@@ -53,6 +52,7 @@ export const STATES = [
   "in_bed",
   "sitting_up",
   "bed_exit",
+  "person_missing",
   "possible_fall",
   "offline_or_blind",
 ];
@@ -68,6 +68,10 @@ export class BedWatchEngine {
     this.lastPresentInBed = false;
     this.episodeStartMs = null;
     this.lastRepeatMs = null;
+    this.sitUpStartedMs = null;
+    this.lastSitUpRepeatMs = null;
+    this.missingStartedMs = null;
+    this.lastMissingRepeatMs = null;
     this.debug = {};
     this._smoothedHip = null;
     this._smoothedShoulder = null;
@@ -78,6 +82,7 @@ export class BedWatchEngine {
       sitUp: new Sustained(cfg.sit_up_debounce_s),
       exit: new Sustained(cfg.bed_exit_debounce_s),
       untrackedExit: new Sustained(cfg.untracked_exit_debounce_s),
+      missing: new Sustained(cfg.person_missing_debounce_s),
       lieBack: new Sustained(cfg.lie_back_debounce_s),
       bedReturn: new Sustained(cfg.bed_return_debounce_s, 1.5),
       floor: new Sustained(cfg.floor_level_min_s),
@@ -120,6 +125,34 @@ export class BedWatchEngine {
 
     this.debug = { present, confident, hipInBed, angle, luma: features.luma };
 
+    const visible = confident && shoulderMid !== null;
+    if (this.state !== "arming" && this.state !== "person_missing") {
+      if (this.conds.missing.update(!visible, now)) {
+        this._enterMissing(now, events);
+        return { state: this.state, events };
+      }
+    } else if (this.state === "person_missing") {
+      if (!visible) {
+        this._maybeMissingRepeat(now, events);
+        return { state: this.state, events };
+      }
+
+      if (onFloor) {
+        this._recoverFromMissing("possible_fall", now, events, "visible_on_floor");
+        events.push({ name: "possible_fall", reason: "visible_on_floor" });
+      } else if (hipInBed && upright) {
+        this._recoverFromMissing("sitting_up", now, events, "visible_sitting_in_bed");
+        this._startSitUp(now);
+        events.push({ name: "sitting_up", reason: "visible_sitting_in_bed" });
+      } else if (hipInBed) {
+        this._recoverFromMissing("in_bed", now, events, "visible_in_bed");
+      } else {
+        this._recoverFromMissing("bed_exit", now, events, "visible_outside_bed");
+        events.push({ name: "bed_exit", reason: "visible_outside_bed" });
+      }
+      return { state: this.state, events };
+    }
+
     switch (this.state) {
       case "arming":
         if (now - this.stateSince >= this.cfg.arming_s * 1000) {
@@ -130,6 +163,7 @@ export class BedWatchEngine {
       case "in_bed":
         if (this.conds.sitUp.update(present && confident && hipInBed && upright, now)) {
           this._setState("sitting_up", now, events, "sit_up_in_bed");
+          this._startSitUp(now);
           events.push({ name: "sitting_up", reason: "sit_up_in_bed" });
         } else if (this.conds.exit.update(present && !hipInBed && trackedRecently, now)) {
           this._startEpisode(now);
@@ -144,23 +178,16 @@ export class BedWatchEngine {
 
       case "sitting_up":
         if (this.conds.exit.update(present && !hipInBed, now)) {
+          this._clearSitUp();
           this._startEpisode(now);
           this._setState("bed_exit", now, events, "outside_bed");
           events.push({ name: "bed_exit", reason: "outside_bed" });
         } else if (this.conds.lieBack.update(present && hipInBed && flat, now)) {
+          this._clearSitUp();
           this._setState("in_bed", now, events, "lie_back");
           events.push({ name: "lie_back", reason: "lie_back" });
-        } else if (
-          !present &&
-          this.lastPresentInBed &&
-          this.lastPresentMs !== null &&
-          now - this.lastPresentMs >= this.cfg.pose_lost_in_bed_s * 1000
-        ) {
-          // Blanket rule: no pose while last known in bed means still in bed.
-          // If she was last seen outside the bed, hold sitting_up instead —
-          // a lost pose mid-exit must not quietly reset to in_bed.
-          this._setState("in_bed", now, events, "pose_lost_in_bed");
-          events.push({ name: "pose_lost_in_bed", reason: "pose_lost_in_bed" });
+        } else {
+          this._maybeSitUpRepeat(now, events);
         }
         break;
 
@@ -172,17 +199,6 @@ export class BedWatchEngine {
         } else if (this.conds.floor.update(present && confident && onFloor, now)) {
           this._setState("possible_fall", now, events, "floor_level_posture");
           events.push({ name: "possible_fall", reason: "floor_level_posture" });
-        } else if (
-          !present &&
-          this.lastPresentInBed &&
-          this.lastPresentMs !== null &&
-          now - this.lastPresentMs >= this.cfg.pose_lost_in_bed_s * 1000
-        ) {
-          // Blanket rule on the return path: she climbed back in and the
-          // covers hid the pose before the 15 s return debounce elapsed.
-          this._setState("in_bed", now, events, "back_in_bed_pose_lost");
-          events.push({ name: "returned_to_bed", reason: "back_in_bed_pose_lost" });
-          this.episodeStartMs = null;
         } else {
           this._maybeRepeat(now, events, "bed_exit_no_return", "bed_exit_no_return_urgent");
         }
@@ -203,7 +219,12 @@ export class BedWatchEngine {
   _setState(state, now, events, reason) {
     this.state = state;
     this.stateSince = now;
-    for (const cond of Object.values(this.conds)) cond.reset();
+    // Darkness is camera-health state, not posture state. Keep its debounce
+    // running across posture changes (including a person disappearing), or a
+    // state transition can postpone the blind-camera warning indefinitely.
+    for (const [name, cond] of Object.entries(this.conds)) {
+      if (name !== "dark" && name !== "darkRecover") cond.reset();
+    }
     events.push({ name: "state_change", value: state, reason });
   }
 
@@ -214,9 +235,61 @@ export class BedWatchEngine {
     }
   }
 
+  _startSitUp(now) {
+    this.sitUpStartedMs = now;
+    this.lastSitUpRepeatMs = now;
+  }
+
+  _clearSitUp() {
+    this.sitUpStartedMs = null;
+    this.lastSitUpRepeatMs = null;
+  }
+
+  _maybeSitUpRepeat(now, events) {
+    if (this.sitUpStartedMs === null || this.lastSitUpRepeatMs === null) return;
+    if (now - this.lastSitUpRepeatMs < this.cfg.sit_up_repeat_s * 1000) return;
+    this.lastSitUpRepeatMs = now;
+    events.push({
+      name: "sitting_up",
+      reason: "still_sitting_up",
+      elapsed_s: Math.round((now - this.sitUpStartedMs) / 1000),
+    });
+  }
+
+  _enterMissing(now, events) {
+    const reason = `person_not_visible_from_${this.state}`;
+    this._clearSitUp();
+    this._startEpisode(now);
+    this.missingStartedMs = now;
+    this.lastMissingRepeatMs = now;
+    this._setState("person_missing", now, events, reason);
+    events.push({ name: "person_missing", reason });
+  }
+
+  _recoverFromMissing(state, now, events, reason) {
+    this._setState(state, now, events, reason);
+    this.missingStartedMs = null;
+    this.lastMissingRepeatMs = null;
+    if (["in_bed", "lying", "sitting"].includes(state)) {
+      this.episodeStartMs = null;
+      this.lastRepeatMs = null;
+    }
+  }
+
+  _maybeMissingRepeat(now, events) {
+    if (this.missingStartedMs === null || this.lastMissingRepeatMs === null) return;
+    if (now - this.lastMissingRepeatMs < this.cfg.person_missing_repeat_s * 1000) return;
+    this.lastMissingRepeatMs = now;
+    events.push({
+      name: "person_missing",
+      reason: "still_not_visible",
+      elapsed_s: Math.round((now - this.missingStartedMs) / 1000),
+    });
+  }
+
   // While she stays up/out of bed, re-emit a reminder every up_repeat_s and
   // escalate to the urgent variant once she has been up past up_urgent_after_s.
-  // The 1-min cadence lives here; the alert stages use cooldown_s: 0.
+  // The cadence lives here; the alert stages use cooldown_s: 0.
   _maybeRepeat(now, events, name, urgentName) {
     if (this.episodeStartMs === null) return;
     const elapsed = now - this.episodeStartMs;
@@ -339,6 +412,7 @@ export class PostureEngine extends BedWatchEngine {
       sitUp: new Sustained(cfg.sit_up_debounce_s),
       standUp: new Sustained(cfg.stand_debounce_s),
       lieDown: new Sustained(cfg.lie_back_debounce_s),
+      missing: new Sustained(cfg.person_missing_debounce_s),
       settleFlat: new Sustained(cfg.settle_flat_s),
       floor: new Sustained(cfg.floor_level_min_s),
       floorClear: new Sustained(cfg.floor_clear_s),
@@ -371,6 +445,33 @@ export class PostureEngine extends BedWatchEngine {
     const standing = this._standingSignal(present, upright, hip);
     this.debug = { present, confident, angle, standing, luma: features.luma };
 
+    const visible = confident && shoulderMid !== null;
+    if (this.state !== "arming" && this.state !== "person_missing") {
+      if (this.conds.missing.update(!visible, now)) {
+        this._enterMissing(now, events);
+        return { state: this.state, events };
+      }
+    } else if (this.state === "person_missing") {
+      if (!visible) {
+        this._maybeMissingRepeat(now, events);
+        return { state: this.state, events };
+      }
+
+      if (onFloor) {
+        this._recoverFromMissing("possible_fall", now, events, "visible_on_floor");
+        events.push({ name: "possible_fall", reason: "visible_on_floor" });
+      } else if (flat) {
+        this._recoverFromMissing("lying", now, events, "visible_lying");
+        this.restBaseline = [...hip];
+      } else if (standing) {
+        this._recoverFromMissing("up", now, events, "visible_and_up");
+      } else {
+        this._recoverFromMissing("sitting", now, events, "visible_sitting");
+        this.restBaseline = [...hip];
+      }
+      return { state: this._displayState(), events };
+    }
+
     switch (this.state) {
       case "arming":
         if (now - this.stateSince >= this.cfg.arming_s * 1000) {
@@ -389,6 +490,7 @@ export class PostureEngine extends BedWatchEngine {
         } else if (this.conds.sitUp.update(present && confident && upright && !standing, now)) {
           this._setState("sitting", now, events, "sit_up");
           this.sittingFromLyingMs = now;
+          this._startSitUp(now);
           events.push({ name: "sitting_up", reason: "sit_up" });
         }
         break;
@@ -396,13 +498,17 @@ export class PostureEngine extends BedWatchEngine {
       case "sitting":
         this._updateBaseline(present, hip, now);
         if (this.conds.standUp.update(present && confident && standing, now)) {
+          this._clearSitUp();
           this._startEpisode(now);
           this._setState("up", now, events, "stood_up");
           events.push({ name: "got_up", reason: "stood_up" });
         } else if (this.conds.lieDown.update(present && flat, now)) {
+          this._clearSitUp();
           this._setState("lying", now, events, "lie_down");
           this.sittingFromLyingMs = null;
           events.push({ name: "lie_down", reason: "lie_down" });
+        } else {
+          this._maybeSitUpRepeat(now, events);
         }
         break;
 
@@ -426,15 +532,11 @@ export class PostureEngine extends BedWatchEngine {
         break;
     }
 
-    return { state: this._displayState(now), events };
+    return { state: this._displayState(), events };
   }
 
-  _displayState(now) {
-    if (
-      this.state === "sitting" &&
-      this.sittingFromLyingMs !== null &&
-      now - this.sittingFromLyingMs < 180_000
-    ) {
+  _displayState() {
+    if (this.state === "sitting" && this.sittingFromLyingMs !== null) {
       return "sitting_up";
     }
     return this.state;

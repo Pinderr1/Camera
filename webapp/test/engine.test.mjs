@@ -69,11 +69,11 @@ test("sit-up fires after debounce", () => {
   assert.ok(names(events).includes("sitting_up"));
 });
 
-test("blanket rule: pose lost in bed stays in_bed with no alerts", () => {
+test("pose lost in bed turns red and repeats missing-person alerts", () => {
   const { engine, clock } = armedEngine();
   const events = run(engine, clock, 60, absent);
-  assert.equal(engine.state, "in_bed");
-  assert.deepEqual(names(events), []);
+  assert.equal(engine.state, "person_missing");
+  assert.equal(names(events).filter((name) => name === "person_missing").length, 2);
 });
 
 test("tracked bed exit alerts with outside_bed reason", () => {
@@ -131,12 +131,12 @@ test("floor-level posture after exit becomes possible_fall", () => {
   assert.ok(names(events).includes("possible_fall"));
 });
 
-test("pose lost during possible_fall does not clear it", () => {
+test("pose lost during possible_fall becomes an explicit missing-person alert", () => {
   const { engine, clock } = armedEngine();
   run(engine, clock, 4.5, standingOutside);
   run(engine, clock, 4, onFloor);
   run(engine, clock, 30, absent);
-  assert.equal(engine.state, "possible_fall");
+  assert.equal(engine.state, "person_missing");
 });
 
 test("return to bed sends returned_to_bed after 15s", () => {
@@ -149,23 +149,23 @@ test("return to bed sends returned_to_bed after 15s", () => {
   assert.ok(names(late).includes("returned_to_bed"));
 });
 
-test("blanket rule on return: seen in bed then pose lost counts as returned", () => {
+test("pose lost during a return remains a missing-person concern", () => {
   const { engine, clock } = armedEngine();
   run(engine, clock, 4.5, standingOutside);
   run(engine, clock, 5, lyingInBed);
   assert.equal(engine.state, "bed_exit");
   const events = run(engine, clock, 32, absent);
-  assert.equal(engine.state, "in_bed");
-  const returned = events.find((event) => event.name === "returned_to_bed");
-  assert.equal(returned.reason, "back_in_bed_pose_lost");
+  assert.equal(engine.state, "person_missing");
+  assert.ok(names(events).includes("person_missing"));
+  assert.ok(!names(events).includes("returned_to_bed"));
 });
 
-test("pose lost while last seen outside bed never resets to in_bed", () => {
+test("pose lost while outside bed becomes person_missing", () => {
   const { engine, clock } = armedEngine();
   run(engine, clock, 4.5, standingOutside);
   assert.equal(engine.state, "bed_exit");
   run(engine, clock, 60, absent);
-  assert.equal(engine.state, "bed_exit");
+  assert.equal(engine.state, "person_missing");
 });
 
 test("no-return reminder repeats while out of bed", () => {
@@ -191,5 +191,5 @@ test("darkness blinds and recovers with events", () => {
   assert.equal(engine.update(darkFrame(clock.now + STEP_MS)).state, "offline_or_blind");
   const lightEvents = run(engine, clock, 12, absent);
   assert.ok(names(lightEvents).includes("camera_ok"));
-  assert.equal(engine.state, "in_bed");
+  assert.equal(engine.state, "person_missing");
 });

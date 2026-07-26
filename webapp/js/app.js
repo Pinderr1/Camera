@@ -61,11 +61,16 @@ function handleEvents(events) {
       continue;
     }
     ui.log(`event: ${event.name} (${event.reason})`);
-    if (["sitting_up", "bed_exit", "got_up", "possible_fall", "bed_exit_no_return", "bed_exit_no_return_urgent", "still_up", "still_up_urgent", "returned_to_bed", "settled", "camera_blind"].includes(event.name)) {
-      const where = event.name.startsWith("bed_exit_no_return") ? "out of bed" : "up";
-      const body = event.minutes != null
-        ? `She's still ${where} and hasn't settled - ${event.minutes} min. Please check.`
-        : undefined;
+    if (["sitting_up", "bed_exit", "got_up", "person_missing", "possible_fall", "bed_exit_no_return", "bed_exit_no_return_urgent", "still_up", "still_up_urgent", "returned_to_bed", "settled", "camera_blind"].includes(event.name)) {
+      const where = event.name === "person_missing"
+        ? "out of the camera view"
+        : event.name === "sitting_up" ? "sitting up"
+        : event.name.startsWith("bed_exit_no_return") ? "out of bed" : "up";
+      const body = event.elapsed_s != null
+        ? `She's still ${where} - ${event.elapsed_s} seconds. Please check now.`
+        : event.minutes != null
+          ? `She's still ${where} and hasn't settled - ${event.minutes} min. Please check.`
+          : undefined;
       notifier.notify(event.name, body);
     }
   }
