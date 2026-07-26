@@ -72,6 +72,7 @@ export class BedWatchEngine {
     this.lastSitUpRepeatMs = null;
     this.missingStartedMs = null;
     this.lastMissingRepeatMs = null;
+    this.missingFromState = null;
     this.debug = {};
     this._smoothedHip = null;
     this._smoothedShoulder = null;
@@ -146,6 +147,7 @@ export class BedWatchEngine {
         events.push({ name: "sitting_up", reason: "visible_sitting_in_bed" });
       } else if (hipInBed) {
         this._recoverFromMissing("in_bed", now, events, "visible_in_bed");
+        events.push({ name: "returned_to_bed", reason: "visible_in_bed" });
       } else {
         this._recoverFromMissing("bed_exit", now, events, "visible_outside_bed");
         events.push({ name: "bed_exit", reason: "visible_outside_bed" });
@@ -258,6 +260,7 @@ export class BedWatchEngine {
 
   _enterMissing(now, events) {
     const reason = `person_not_visible_from_${this.state}`;
+    this.missingFromState = this.state;
     this._clearSitUp();
     this._startEpisode(now);
     this.missingStartedMs = now;
@@ -267,13 +270,16 @@ export class BedWatchEngine {
   }
 
   _recoverFromMissing(state, now, events, reason) {
+    const missingFromState = this.missingFromState;
     this._setState(state, now, events, reason);
     this.missingStartedMs = null;
     this.lastMissingRepeatMs = null;
+    this.missingFromState = null;
     if (["in_bed", "lying", "sitting"].includes(state)) {
       this.episodeStartMs = null;
       this.lastRepeatMs = null;
     }
+    return missingFromState;
   }
 
   _maybeMissingRepeat(now, events) {
@@ -463,11 +469,28 @@ export class PostureEngine extends BedWatchEngine {
       } else if (flat) {
         this._recoverFromMissing("lying", now, events, "visible_lying");
         this.restBaseline = [...hip];
+        this.sittingFromLyingMs = null;
+        events.push({ name: "settled", reason: "visible_lying" });
       } else if (standing) {
         this._recoverFromMissing("up", now, events, "visible_and_up");
       } else {
-        this._recoverFromMissing("sitting", now, events, "visible_sitting");
+        const missingFromState = this._recoverFromMissing(
+          "sitting",
+          now,
+          events,
+          "visible_sitting",
+        );
         this.restBaseline = [...hip];
+        if (missingFromState === "lying" || missingFromState === "sitting") {
+          // A brief missing interval must not erase the lying -> sitting
+          // episode. Alert on recovery and restart its repeat timer.
+          this.sittingFromLyingMs = now;
+          this._startSitUp(now);
+          events.push({ name: "sitting_up", reason: "visible_sitting_after_missing" });
+        } else {
+          this.sittingFromLyingMs = null;
+          events.push({ name: "settled", reason: "visible_sitting" });
+        }
       }
       return { state: this._displayState(), events };
     }
@@ -595,6 +618,7 @@ export class PostureEngine extends BedWatchEngine {
   }
 
   _settle(state, hip, now, events) {
+    this._clearSitUp();
     this._setState(state, now, events, "settled");
     this.sittingFromLyingMs = null;
     this._settleAnchor = null;

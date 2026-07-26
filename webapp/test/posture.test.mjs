@@ -204,3 +204,28 @@ test("person reappearing safely clears person_missing", () => {
   run(engine, clock, 1, lyingCouch);
   assert.equal(engine.state, "lying");
 });
+
+test("missing from lying then reappearing sitting restarts sit-up alerts", () => {
+  const { engine, clock } = lyingEngine({
+    person_missing_debounce_s: 1,
+    sit_up_repeat_s: 5,
+  });
+  run(engine, clock, 2, absent);
+  assert.equal(engine.state, "person_missing");
+
+  const returned = run(engine, clock, 1, sittingCouch);
+  assert.equal(engine.state, "sitting");
+  assert.equal(engine.update(sittingCouch(clock.now + STEP_MS)).state, "sitting_up");
+  assert.ok(names(returned).includes("sitting_up"));
+
+  const repeats = run(engine, clock, 11, sittingCouch);
+  assert.equal(names(repeats).filter((name) => name === "sitting_up").length, 2);
+});
+
+test("missing person reappearing lying emits the settled all-clear", () => {
+  const { engine, clock } = lyingEngine({ person_missing_debounce_s: 1 });
+  run(engine, clock, 2, absent);
+  const events = run(engine, clock, 1, lyingCouch);
+  assert.equal(engine.state, "lying");
+  assert.ok(names(events).includes("settled"));
+});

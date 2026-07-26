@@ -71,9 +71,9 @@ test("sit-up fires after debounce", () => {
 
 test("pose lost in bed turns red and repeats missing-person alerts", () => {
   const { engine, clock } = armedEngine();
-  const events = run(engine, clock, 60, absent);
+  const events = run(engine, clock, 8, absent);
   assert.equal(engine.state, "person_missing");
-  assert.equal(names(events).filter((name) => name === "person_missing").length, 2);
+  assert.equal(names(events).filter((name) => name === "person_missing").length, 4);
 });
 
 test("tracked bed exit alerts with outside_bed reason", () => {
@@ -192,4 +192,13 @@ test("darkness blinds and recovers with events", () => {
   const lightEvents = run(engine, clock, 12, absent);
   assert.ok(names(lightEvents).includes("camera_ok"));
   assert.equal(engine.state, "person_missing");
+});
+
+test("missing person reappearing in bed emits returned_to_bed", () => {
+  const { engine, clock } = armedEngine({ person_missing_debounce_s: 1 });
+  run(engine, clock, 2, absent);
+  assert.equal(engine.state, "person_missing");
+  const events = run(engine, clock, 1, lyingInBed);
+  assert.equal(engine.state, "in_bed");
+  assert.ok(names(events).includes("returned_to_bed"));
 });

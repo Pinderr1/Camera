@@ -8,7 +8,7 @@ const STAGES = {
     body: "Sitting up in bed - head over now.",
     priority: 4,
     tags: "warning,bed",
-    // The engine owns the 60-second repeat cadence. A notification-layer
+    // The engine owns the 5-second repeat cadence. A notification-layer
     // cooldown here would silently discard those reminders.
     cooldown_s: 0,
     toggle: "sitting_up",

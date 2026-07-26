@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Notifier } from "../js/alerts.js";
 import { DEFAULTS, loadConfig } from "../js/config.js";
 
-test("older browser settings migrate to fast response and the 30-second away cadence", () => {
+test("older browser settings migrate to fast response and requested alert cadences", () => {
   const originalStorage = globalThis.localStorage;
   globalThis.localStorage = {
     getItem: () => JSON.stringify({ up_repeat_s: 60, topic: "saved-topic" }),
@@ -11,15 +11,15 @@ test("older browser settings migrate to fast response and the 30-second away cad
 
   try {
     const cfg = loadConfig();
-    assert.equal(cfg.config_version, 3);
+    assert.equal(cfg.config_version, 4);
     assert.equal(cfg.up_repeat_s, 30);
     assert.equal(cfg.sit_up_debounce_s, 0.4);
     assert.equal(cfg.bed_exit_debounce_s, 0.5);
     assert.equal(cfg.person_missing_debounce_s, 1);
     assert.equal(cfg.stand_debounce_s, 0.5);
     assert.equal(cfg.fps, 10);
-    assert.equal(cfg.sit_up_repeat_s, 60);
-    assert.equal(cfg.person_missing_repeat_s, 30);
+    assert.equal(cfg.sit_up_repeat_s, 5);
+    assert.equal(cfg.person_missing_repeat_s, 2);
     assert.equal(cfg.topic, "saved-topic");
   } finally {
     globalThis.localStorage = originalStorage;

@@ -1,7 +1,7 @@
 // Threshold names match config/zones.example.json so tuning stays comparable
 // with the Python lab.
 export const DEFAULTS = {
-  config_version: 3,
+  config_version: 4,
   // Fast-response profile: at 10 FPS these holds confirm a real transition in
   // roughly half a second while still rejecting a single bad pose frame.
   smoothing_tau_s: 0.08,
@@ -12,11 +12,11 @@ export const DEFAULTS = {
 
   sit_up_torso_deg: 40,
   sit_up_debounce_s: 0.4,
-  sit_up_repeat_s: 60,
+  sit_up_repeat_s: 5,
   bed_exit_debounce_s: 0.5,
   untracked_exit_debounce_s: 1.0,
   person_missing_debounce_s: 1.0,
-  person_missing_repeat_s: 30,
+  person_missing_repeat_s: 2,
   track_link_s: 10,
   lie_back_debounce_s: 5.0,
   bed_return_debounce_s: 15,
@@ -87,6 +87,13 @@ export function loadConfig() {
     cfg.stand_rise_bl = DEFAULTS.stand_rise_bl;
     cfg.walk_dist_bl = DEFAULTS.walk_dist_bl;
     cfg.fps = DEFAULTS.fps;
+  }
+  if (storedVersion < 4) {
+    // v4 applies the requested repeat cadence to already-configured phones.
+    // These values were not editable in the UI, so preserving old values
+    // would leave an upgraded phone on the obsolete cadence.
+    cfg.sit_up_repeat_s = DEFAULTS.sit_up_repeat_s;
+    cfg.person_missing_repeat_s = DEFAULTS.person_missing_repeat_s;
   }
   cfg.config_version = DEFAULTS.config_version;
   return cfg;
