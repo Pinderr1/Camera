@@ -56,7 +56,7 @@ class IoUTracker:
     def update(self, detections: Iterable[Detection], timestamp_ms: int) -> tuple[list[Track], list[Track]]:
         """Returns (confirmed active tracks, tracks that ended this update)."""
         detections = [
-            Detection(canonical_class(det.label), det.confidence, det.bbox) for det in detections
+            Detection(canonical_class(det.label), det.confidence, det.bbox, det.kind or det.label) for det in detections
         ]
         high = [det for det in detections if det.confidence >= self.config.high_score]
         low = [det for det in detections if det.confidence < self.config.high_score]
@@ -144,6 +144,7 @@ class IoUTracker:
                 alpha * track.velocity[1] + (1 - alpha) * vy,
             )
         track.bbox = det.bbox
+        track.kind = det.kind or track.kind
         track.confidence = 0.7 * track.confidence + 0.3 * det.confidence
         track.last_seen_ms = timestamp_ms
         track.hits += 1
@@ -169,6 +170,7 @@ class IoUTracker:
             first_seen_ms=timestamp_ms,
             last_seen_ms=timestamp_ms,
             confirmed=self.config.min_hits <= 1,
+            kind=det.kind,
             first_anchor=det.anchor,
         )
         track.history.append((timestamp_ms, det.anchor))

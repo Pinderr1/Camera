@@ -16,7 +16,11 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 
 | Area | Status |
 | --- | --- |
-| Multi-camera ingestion (RTSP/HTTP/USB/file/simulated) | Built. RTSP verified against a local MediaMTX server. No real IP camera tested yet |
+| Multi-camera ingestion (RTSP/HTTP stream+snapshot/USB/capture/file/simulated) | Built: sub-stream preference, hardware decode with fallback, reconnect, diagnostics. Verified against MediaMTX and fake RTSP/ONVIF servers. **No physical camera or DVR tested yet** |
+| Camera onboarding wizard + ONVIF discovery | Built and tested end to end in a real browser (Edge) against recorded footage |
+| Visual setup editor (cameras, zones, privacy masks, property map, connections, categories) | Built. Edits are validated, persisted to `<storage>/site.json`, and applied live |
+| Credentials | DPAPI-encrypted store on Windows (0600 file elsewhere); never in config, API responses, or logs |
+| Environmental intelligence | Category filters (detect/alerts per category and camera). Scene conditions and unknown-motion via motion analysis. Validated on synthetic sequences only |
 | Real-footage benchmark (`sentinel.bench`) | Built: recorded and live feeds, accuracy against annotations, latency, CPU/memory, multi-camera sessions, playback viewer, reports |
 | Object detection (ONNX Runtime: YOLOX default, RT-DETRv2/D-FINE/RF-DETR options; EfficientDet fallback) | Built and benchmarked. Default YOLOX-s @960 on GPU: about 74% person recall at about 95% precision on MOT16-09. Crowded MOT16-02 is still about 30% (see ROADMAP) |
 | Tracking (IoU + constant velocity) | Built and unit-tested |
@@ -44,7 +48,13 @@ src/sentinel/            the Sentinel brain (current product)
   store.py               SQLite events / incidents / audit + retention purge
   notify.py              ntfy / MQTT / log notifiers on a background dispatcher
   vision.py              frames, privacy masks, motion gate, appearance histogram, annotation
-  sources.py             OpenCV capture with latest-frame reader and reconnect backoff
+  sources.py             capture: OpenCV (RTSP/HTTP/USB/capture/file) + HTTP snapshot poller, hw decode, diagnostics
+  streams.py             brand templates, URL building from credential references, safe public source view
+  onboarding.py          connection tests (RTSP-level probe + decoder test), local devices, decode capabilities
+  onvif.py               WS-Discovery, ONVIF device/media profiles/stream URIs (stdlib)
+  credentials.py         SecretStore: DPAPI (Windows) / 0600 file credential storage
+  site_config.py         SiteConfigManager: validated, persisted, live-applied config edits; drafts; cascades
+  environment.py         scene conditions (light, IR, rain, shadows, vegetation, lens) + unknown-motion proposals
   detectors.py           Detector protocol, hardware profiles (`model: auto`), tiling, NMS, MediaPipe + scripted detectors
   detectors_onnx.py      ONNX Runtime detectors (YOLOX, DETR family), model registry with licence/training-data metadata
   recorder.py            pre-roll ring buffer + MP4 clips + snapshots
@@ -56,7 +66,7 @@ src/sentinel/            the Sentinel brain (current product)
   api.py                 FastAPI app (/api/v1) + dashboard host
   mqtt.py                MQTT mirror of bus traffic
   drone/                 base (adapter ABC, telemetry), mock (simulator), geofence, manager, mavlink
-  web/                   dashboard (static HTML/CSS/JS, no build step)
+  web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors
   bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
                          metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
 config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, rules, drone
@@ -68,6 +78,8 @@ docs/architecture.md           architecture and event-processing design
 docs/api.md                    API reference for dashboard and mobile clients
 docs/drone-integration.md      drone design, safety gates, ArduPilot/MAVLink path
 docs/benchmarking.md           how to measure Sentinel on real footage, and what each metric means
+docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
+docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
 ROADMAP.md                     phased implementation roadmap
 sources.md                     license and reuse audit
 src/senior_safety/, webapp/, scripts/, integrations/, data/   legacy CameraAI (frozen)
@@ -104,7 +116,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 3. **Alerts must stay trustworthy.** Notify once per incident, again only when its severity rises, with a global rate limit. Ordinary activity is logged as `info` and never pushed. False-alarm cost is a first-class metric.
 4. **Privacy by default.** Processing is local. Privacy masks are applied before detection, recording, and streaming. Clips and snapshots stay on local disk under retention limits. Snapshots go to third-party push services only when `attach_snapshot` is explicitly enabled. Never commit media, recordings, `data/sentinel/`, or real site configs.
 5. **No public camera exposure.** The API binds to `127.0.0.1` by default and refuses to bind elsewhere without `SENTINEL_API_TOKEN`. Camera source URLs are never returned by the API. Remote access goes through a VPN or an authenticated HTTPS reverse proxy, never port-forwarding.
-6. **Secrets live in the environment.** Config files use `${ENV_VAR}` for camera passwords, ntfy topics, and tokens. Validation rejects literal passwords in RTSP URLs. MQTT credentials come from `MQTT_USERNAME`/`MQTT_PASSWORD`.
+6. **Secrets never sit in config, API responses, or logs.** Camera passwords entered in the dashboard go to the credential store, and configs reference them (`credential` / `${secret:NAME}`). Deployment secrets use `${ENV_VAR}`, which is never resolved into the persisted config. Validation rejects literal passwords in URLs. Stream URLs and paths are write-only over the API. MQTT credentials come from `MQTT_USERNAME`/`MQTT_PASSWORD`.
 7. **Drone safety.** No autonomous real-world flight. Sentinel may *request* inspections, but only an operator can approve them. Every command is checked against the geofence and written to the audit log. The flight controller owns stabilisation, failsafes, fences, and landing. Do not write custom flight controllers or landing algorithms. The MAVLink adapter stays telemetry-only until every gate in `docs/drone-integration.md` is met and recorded.
 8. **No automatic calls to police or emergency services.** Escalation goes to people only.
 
@@ -128,6 +140,8 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - New config keys must be validated in `config.validate_config` and documented in `docs/architecture.md`.
 - API changes are additive under `/api/v1`. Breaking changes go to `/api/v2`. Update `docs/api.md`.
 - Match the surrounding style: dataclasses, type hints, small modules, comments only where the *why* is non-obvious.
+- Config edits go through `SiteConfigManager` (validated, persisted, applied live); never mutate `runtime.config` directly.
+- Environmental motion (scene conditions) must never open incidents; new environmental signals are `info` events.
 - Do not modify `src/senior_safety/` or `webapp/` except to keep shared helpers working. Do not delete them without asking.
 - Run the full test suite before committing.
 

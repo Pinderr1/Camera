@@ -37,6 +37,10 @@ python -m unittest discover -s tests
 
 ## Connecting real cameras
 
+The easy way: open the dashboard, go to **Setup → Cameras → Add camera**, and follow the wizard (RTSP brand templates, DVR/NVR channels, ONVIF discovery, HTTP snapshots, USB/capture devices). Then draw zones and privacy masks on the live frame. Details and troubleshooting: [docs/camera-setup.md](./docs/camera-setup.md).
+
+Or edit a config file by hand:
+
 1. Copy the example config to an ignored local file: `Copy-Item config/sentinel.example.json config/sentinel.local.json`.
 2. For each camera, set the source. Prefer the camera's low-resolution sub-stream. Keep passwords in the environment:
    ```json

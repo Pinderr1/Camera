@@ -428,6 +428,7 @@ function connectStream() {
   });
   source.addEventListener("settings", (message) => renderSettings(JSON.parse(message.data)));
   source.addEventListener("drone", (message) => renderDrone(JSON.parse(message.data)));
+  source.addEventListener("config", () => refreshAfterConfigChange());
 }
 
 setInterval(async () => {
@@ -440,6 +441,18 @@ setInterval(async () => {
     /* connection indicator covers this */
   }
 }, 5000);
+
+async function refreshAfterConfigChange() {
+  try {
+    state.site = await api("/site");
+    renderCameras(await api("/cameras"));
+    renderStatic();
+    renderMap();
+    if (typeof onSetupConfigChanged === "function") onSetupConfigChanged();
+  } catch {
+    /* next event or reload will retry */
+  }
+}
 
 async function boot() {
   try {

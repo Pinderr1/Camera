@@ -7,25 +7,42 @@ from typing import Any
 SEVERITIES = ("info", "low", "medium", "high")
 SEVERITY_RANK = {name: rank for rank, name in enumerate(SEVERITIES)}
 
-# Detector labels (COCO-style) folded into the classes the event engine reasons about.
-CANONICAL_CLASSES = {
-    "person": "person",
-    "car": "vehicle",
-    "truck": "vehicle",
-    "bus": "vehicle",
-    "motorcycle": "vehicle",
-    "bicycle": "bicycle",
-    "dog": "animal",
-    "cat": "animal",
-    "bird": "animal",
-    "horse": "animal",
-    "sheep": "animal",
-    "cow": "animal",
-    "bear": "animal",
-    "backpack": "bag",
-    "handbag": "bag",
-    "suitcase": "bag",
+# Security categories and the COCO labels (what YOLOX/EfficientDet were trained
+# on) that feed them. `unknown_motion` comes from motion analysis, not a detector.
+# COCO has no "package/parcel", "insect", or "vegetation" classes: see
+# docs/environmental-intelligence.md for what needs other models or motion analysis.
+CATEGORY_LABELS: dict[str, tuple[str, ...]] = {
+    "person": ("person",),
+    "vehicle": ("car", "truck", "bus", "motorcycle"),
+    "bicycle": ("bicycle",),
+    "animal": ("bird", "cat", "dog", "horse", "sheep", "cow", "bear", "elephant", "zebra", "giraffe"),
+    "bag": ("backpack", "handbag", "suitcase"),
+    "unknown_motion": (),
 }
+# Defaults: everything recognised is recorded; only people and vehicles may alert.
+DEFAULT_CATEGORIES: dict[str, dict[str, bool]] = {
+    "person": {"detect": True, "alerts": True},
+    "vehicle": {"detect": True, "alerts": True},
+    "bicycle": {"detect": True, "alerts": False},
+    "animal": {"detect": True, "alerts": False},
+    "bag": {"detect": True, "alerts": False},
+    "unknown_motion": {"detect": False, "alerts": False},
+}
+CANONICAL_CLASSES = {label: category for category, labels in CATEGORY_LABELS.items() for label in labels}
+
+
+def effective_categories(config: dict, camera: dict | None = None) -> dict[str, dict[str, bool]]:
+    """Defaults, overridden by site-wide `categories`, overridden per camera."""
+    merged = {name: dict(values) for name, values in DEFAULT_CATEGORIES.items()}
+    for layer in (config.get("categories", {}), (camera or {}).get("categories", {})):
+        for name, values in layer.items():
+            merged.setdefault(name, {"detect": False, "alerts": False}).update(values)
+    return merged
+
+
+def detector_labels(categories: dict[str, dict[str, bool]]) -> list[str]:
+    """COCO labels the detector should report, given enabled categories."""
+    return [label for name, values in categories.items() if values.get("detect") for label in CATEGORY_LABELS.get(name, ())]
 
 
 def canonical_class(label: str) -> str:
@@ -49,6 +66,7 @@ class Detection:
     label: str
     confidence: float
     bbox: BBox
+    kind: str = ""  # specific detector label ("dog") when `label` is a category ("animal")
 
     @property
     def anchor(self) -> tuple[float, float]:
@@ -69,6 +87,7 @@ class Track:
     hits: int = 1
     missed_frames: int = 0
     confirmed: bool = False
+    kind: str = ""  # most recent specific label, e.g. "dog" for an "animal" track
     velocity: tuple[float, float] = (0.0, 0.0)  # bbox x/y change per second
     first_anchor: tuple[float, float] = (0.0, 0.0)
     max_displacement: float = 0.0

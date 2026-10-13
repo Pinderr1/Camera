@@ -33,6 +33,36 @@ Last updated: 2026-10-13. Priority: **a working security brain on real cameras b
 - [x] `min_box_area` lowered from 0.0015 to 0.0004. The old value discarded correctly detected distant people.
 - [x] Comparison of 13 configurations with identical settings, full default benchmark, and live multi-camera RTSP tests. Sentinel tests now number 94 (168 including legacy).
 
+## Phase 0.7: Setup, onboarding, and environmental intelligence (done, October 2026)
+- [x] Camera onboarding wizard:
+  - RTSP brand templates (Hikvision, Dahua/Amcrest/Lorex, Reolink, Uniview, Tapo, Axis) and DVR/NVR channels.
+  - ONVIF WS-Discovery and profile reading.
+  - HTTP snapshot/MJPEG fallback for recorders without RTSP.
+  - USB webcams and analog capture devices, recorded footage, simulated cameras.
+- [x] Connection testing:
+  - RTSP-level diagnostics: DNS, unreachable, closed port, auth required/failed, wrong path, not RTSP.
+  - Resolution, measured FPS, and codec, with a preview frame.
+  - Main/sub stream testing and automatic sub-stream preference.
+  - Hardware-decode detection (D3D11 verified: 1080p decode CPU from 35% to 12% of the machine) with software fallback.
+  - Reconnect counts and error kinds in camera status.
+- [x] Credentials: DPAPI-encrypted store. Never in config, API responses, or logs (tested, including with a fake camera and log capture). Stream addresses are write-only; unsaved tests are server-side drafts.
+- [x] Visual setup editor in the dashboard:
+  - Cameras: add, edit, delete, reorder.
+  - Zones and privacy masks: draw, reshape, move, delete, and type on a live frame.
+  - Property map: image upload, camera placement and aim, zone footprints.
+  - Travel connections between cameras, and category settings.
+  - Verified end to end in Microsoft Edge with Playwright.
+- [x] Live configuration: validated, atomic saves with history. Edits reach the running engine immediately and restart only the affected camera. Rules that lose their zones are disabled, never widened.
+- [x] Environmental intelligence:
+  - COCO class audit and per-category `detect`/`alerts` filters, site-wide and per camera.
+  - Specific labels in events ("Animal (dog)").
+  - Scene conditions (lighting, IR, rain/snow/noise, shadows, recurring motion, near-lens objects) as info-only events.
+  - `unknown_motion` proposals.
+  - Missing categories and candidate datasets documented with licence constraints.
+- [x] `sidewalk` zone type (public, never "on property"). Sentinel tests now number 125 (199 including legacy).
+
+**Still requires real hardware:** onboarding against physical cameras/DVRs (only fake RTSP/ONVIF servers and MediaMTX so far), ONVIF discovery on a real LAN, USB/capture-card discovery, HTTP snapshot devices, hardware decoding of live RTSP, and the environmental thresholds on real rain, snow, insects, headlights, and IR switching.
+
 ## Detector upgrade findings (2026-10-13)
 
 Host: i7-2600K (4 cores, no AVX2), 16 GB RAM, GTX 1070 via DirectML (ONNX Runtime 1.24). Every number comes from human annotations (MOTChallenge MOT16, CAVIAR). Thresholds are each model's operating point from a score sweep on sampled frames **of the same footage**: a single scalar per model, but not an independent test. Raw tables: `bench_runs/detectors_v2/comparison.md` and `bench_runs/final_default/report.md` (git-ignored; regenerate with `scripts/bench_detectors.sh` and `sentinel.bench run --all`).
@@ -168,7 +198,9 @@ Lite2 cut precision on CAVIAR to 42-54%. Tiling adds false boxes, mostly one box
 ## Phase 1: Brain on real cameras (next)
 Exit: 2+ real IP cameras running for 7 days with useful incidents and fewer than 1 nuisance push per day.
 - [x] **Detector upgrade:** done (see Phase 0.6). MOT16-09 target met; MOT16-02 not met (32%; 66% of visible people).
-- [ ] Hardware video decoding (FFmpeg NVDEC/D3D11VA or GStreamer) so 1080p streams stop dominating CPU.
+- [x] Hardware video decoding via OpenCV/FFmpeg (`hw_decode: auto`, D3D11 on Windows) with software fallback. Still to measure: live multi-camera RTSP with hardware decode.
+- [ ] Validate environmental thresholds and unknown-motion on labeled real footage (rain, snow, insects at night, headlights, IR switching); tune the `environment` settings.
+- [ ] Package/parcel detection: evaluate an additional detector trained on licence-cleared data (Open Images V7 *Box*/*Envelope*, own footage); see docs/environmental-intelligence.md.
 - [ ] Crowd and occlusion work: evaluate YOLOX-l and larger inputs on capable GPUs, and track-level re-detection. Measure on MOT16-02 and own footage.
 - [ ] Overhead/fisheye views: evaluate dewarping before detection, or avoid ceiling-mounted fisheye cameras in installation guidance.
 - [ ] Legal review of RF-DETR (Objects365 pre-training) and of COCO image provenance for commercial distribution.
@@ -177,7 +209,7 @@ Exit: 2+ real IP cameras running for 7 days with useful incidents and fewer than
 - [ ] Tracker upgrade (ByteTrack or OC-SORT style, using low-score detections) once recall improves. Measure identity switches and "mostly tracked" before and after.
 - [ ] Group-box handling: the detector often emits one box for two people walking together. Evaluate whether the stronger detector removes this before adding logic.
 - [ ] Multi-view dataset for cross-camera correlation validation (own cameras with overlapping or adjacent views).
-- [ ] Zone editor in the dashboard: draw polygons on a snapshot and save to a local config, so nobody hand-edits JSON.
+- [x] Zone editor in the dashboard (Phase 0.7).
 - [ ] Calibrate topology transit times from observed walks. Add a tool that suggests `min/max_transit_s` from stored site tracks.
 - [x] Detector benchmark harness and first comparison (Lite0, Lite2, and tiles on public footage; see findings). Still needed: real IR/night and rain recordings, and vehicle-class labels.
 - [ ] Label review loop: export resolved incidents (`expected_activity`, `false_alarm`, `real_concern`) and report nuisance rate per rule.

@@ -12,8 +12,9 @@ from .correlation import CorrelationConfig, CrossCameraCorrelator, SiteTrack, Zo
 from .models import SecurityEvent, Track
 
 DEFAULT_RULE_CLASSES = ["person"]
-ACTIVITY_CLASSES = {"person", "vehicle"}
-QUIET_ZONE_TYPES = {"street", "ignore"}
+# Categories whose first sighting is logged as ordinary `activity` (info, never an incident).
+ACTIVITY_CLASSES = {"person", "vehicle", "bicycle", "animal", "bag", "unknown_motion"}
+QUIET_ZONE_TYPES = {"street", "sidewalk", "ignore"}  # public or excluded areas: never "on the property"
 
 
 @dataclass
@@ -215,7 +216,7 @@ class TemporalEventEngine:
             events.append(
                 self._event(
                     "activity", "info", track, site, now,
-                    summary=f"{site.label.capitalize()} seen in {zone_name}",
+                    summary=f"{_display(track)} seen in {zone_name}",
                     zone_id=zone_id,
                     reason_codes=["object_on_property"],
                 )
@@ -232,7 +233,7 @@ class TemporalEventEngine:
                 events.append(
                     self._event(
                         "zone_entry", rule["severity"], track, site, now,
-                        summary=f"{site.label.capitalize()} entered {zone_name}",
+                        summary=f"{_display(track)} entered {zone_name}",
                         zone_id=zone_id, rule=rule,
                         reason_codes=[f"entered_{zone_type}_zone"],
                     )
@@ -293,7 +294,7 @@ class TemporalEventEngine:
                 events.append(
                     self._event(
                         "dwell", rule["severity"], track, site, now,
-                        summary=f"{site.label.capitalize()} has remained in {self.zones.zone_name(zone_id)} for {_duration(dwell_s)}",
+                        summary=f"{_display(track)} has remained in {self.zones.zone_name(zone_id)} for {_duration(dwell_s)}",
                         zone_id=zone_id, rule=rule,
                         reason_codes=["prolonged_presence"],
                         started_ms=presence.since_ms,
@@ -322,7 +323,7 @@ class TemporalEventEngine:
                 events.append(
                     self._event(
                         "sequence", rule["severity"], track, site, now,
-                        summary=f"{site.label.capitalize()} moved {names}",
+                        summary=f"{_display(track)} moved {names}",
                         zone_id=rule["zones"][-1], rule=rule,
                         reason_codes=["zone_sequence"],
                         started_ms=match[0],
@@ -339,7 +340,7 @@ class TemporalEventEngine:
                 events.append(
                     self._event(
                         "multi_camera", rule["severity"], track, site, now,
-                        summary=f"{site.label.capitalize()} moved across {len(cameras)} camera views",
+                        summary=f"{_display(track)} moved across {len(cameras)} camera views",
                         rule=rule,
                         reason_codes=["cross_camera_movement"],
                         started_ms=min(site.first_seen_ms, now),
@@ -418,6 +419,14 @@ def _match_sequence(path: list[tuple[int, str, str]], zones: list[str], within_m
                 if step == len(zones):
                     return (start_ms, ms)
     return None
+
+
+def _display(track: Track) -> str:
+    """'Person', 'Vehicle (truck)', 'Animal (dog)', 'Unidentified moving object'."""
+    if track.label == "unknown_motion":
+        return "Unidentified moving object"
+    name = track.label.capitalize()
+    return f"{name} ({track.kind})" if track.kind and track.kind != track.label else name
 
 
 def _duration(seconds: float) -> str:

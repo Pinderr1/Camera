@@ -10,8 +10,9 @@ from typing import Any, Callable
 from .config import ARM_MODES, SENSITIVITIES, cameras, zone_index
 from .engine import TemporalEventEngine
 from .incidents import AlertPolicy, AlertPolicyConfig, IncidentConfig, IncidentManager
-from .models import Incident, Notification, SecurityEvent, Track, severity_at_least
+from .models import Incident, Notification, SecurityEvent, Track, effective_categories, severity_at_least
 from .notify import NotificationDispatcher, Notifier, build_notifiers
+from .credentials import SecretStore
 from .store import EventStore
 
 log = logging.getLogger("sentinel.runtime")
@@ -76,11 +77,37 @@ class SentinelRuntime:
             for camera_id in self.camera_configs
         }
         self.recorders: dict[str, Any] = {}
-        self.latest_jpeg: dict[str, bytes] = {}
+        self.latest_jpeg: dict[str, bytes] = {}  # annotated live view
+        self.latest_frame: dict[str, bytes] = {}  # clean (privacy-masked, unannotated) frame for the setup editor
+        self.secrets = SecretStore(self.storage_dir / "credentials.json")
         self.drone = None
         self.started_ms = int(time.time() * 1000)
         self._lock = threading.RLock()
         self._last_purge_ms = 0
+        self._scene_logged: dict[tuple[str, str], int] = {}
+
+    def reconfigure(self, config: dict[str, Any]) -> None:
+        """Apply an edited site config. Zones, rules, topology, and alert policy
+        take effect immediately; open incidents, settings, and history are kept.
+        In-flight tracks restart, since zone geometry may have changed."""
+        with self._lock:
+            self.config = config
+            self.engine = TemporalEventEngine(config, arm_mode=self.settings["arm_mode"], sensitivity=self.settings["sensitivity"])
+            self.incidents.config = IncidentConfig.from_dict(config.get("incidents"))
+            self.policy.config = AlertPolicyConfig.from_dict(config.get("alerts"))
+            self.zones = zone_index(config)
+            self.camera_configs = {camera["id"]: camera for camera in cameras(config)}
+            for camera_id in list(self.camera_status):
+                if camera_id not in self.camera_configs:
+                    del self.camera_status[camera_id]
+                    self.latest_jpeg.pop(camera_id, None)
+                    self.latest_frame.pop(camera_id, None)
+                    self.recorders.pop(camera_id, None)
+            for camera_id in self.camera_configs:
+                self.camera_status.setdefault(
+                    camera_id,
+                    {"camera_id": camera_id, "connected": False, "last_frame_ms": int(time.time() * 1000), "fps": 0.0, "error": "", "offline_reported": False},
+                )
 
     # ---- settings --------------------------------------------------------
 
@@ -130,6 +157,7 @@ class SentinelRuntime:
     def _handle_events(self, events: list[SecurityEvent], now_ms: int, *, image: Any = None, active: list[Track] | None = None) -> None:
         changed: dict[str, tuple[Incident, list[SecurityEvent]]] = {}
         for event in events:
+            self._apply_category_policy(event)
             incident, is_new = self.incidents.add_event(event)
             if image is not None and incident is not None:
                 self._capture_media(event, incident, image, active or [], is_new)
@@ -144,6 +172,50 @@ class SentinelRuntime:
             if notification:
                 self._notify(notification)
             self._maybe_request_drone(incident)
+
+    SCENE_LABELS = {
+        "lighting_change": "Lighting change",
+        "ir_mode": "Camera switched to night (IR) mode",
+        "precipitation_or_noise": "Rain, snow, or image noise",
+        "moving_shadows": "Moving shadows",
+        "recurring_motion": "Recurring background motion (vegetation, flags)",
+        "near_camera_object": "Something close to the lens (insect, web, debris)",
+    }
+
+    def scene_update(self, camera_id: str, conditions: dict[str, bool], now_ms: int) -> None:
+        """Record environmental conditions on the camera and log their onset as
+        info events (at most once per condition per camera per 10 minutes).
+        Environmental motion never opens an incident."""
+        with self._lock:
+            status = self.camera_status.get(camera_id)
+            if status is None:
+                return
+            active = sorted(name for name, on in conditions.items() if on)
+            previous = set(status.get("scene", []))
+            status["scene"] = active
+            for name in set(active) - previous:
+                key = (camera_id, name)
+                if now_ms - self._scene_logged.get(key, -10**12) < 600_000:
+                    continue
+                self._scene_logged[key] = now_ms
+                event = SecurityEvent(
+                    event_id=f"evt_{now_ms}_scene_{camera_id}_{name}", event_type="scene_condition", severity="info",
+                    camera_id=camera_id, timestamp_ms=now_ms, started_ms=now_ms, confidence=0.5,
+                    summary=f"{self.SCENE_LABELS.get(name, name)} on {self._camera_name(camera_id)}", reason_codes=[name],
+                )
+                self.store.add_event(event)
+                self.bus.publish("event", event.as_dict())
+
+    def _apply_category_policy(self, event: SecurityEvent) -> None:
+        """Categories with alerts off (animals by default) are recorded as info:
+        info events never open incidents or send notifications."""
+        if not event.label or event.severity == "info":
+            return
+        categories = effective_categories(self.config, self.camera_configs.get(event.camera_id))
+        if not categories.get(event.label, {}).get("alerts", False):
+            event.details["original_severity"] = event.severity
+            event.severity = "info"
+            event.reason_codes.append("category_alerts_off")
 
     def _capture_media(self, event: SecurityEvent, incident: Incident, image: Any, active: list[Track], is_new: bool) -> None:
         recorder = self.recorders.get(event.camera_id)
@@ -243,7 +315,9 @@ class SentinelRuntime:
 
     def update_camera_status(self, camera_id: str, **fields: Any) -> None:
         with self._lock:
-            status = self.camera_status[camera_id]
+            status = self.camera_status.get(camera_id)
+            if status is None:  # camera removed while its worker was stopping
+                return
             was_offline_reported = status["offline_reported"]
             status.update(fields)
             if fields.get("connected") and was_offline_reported:

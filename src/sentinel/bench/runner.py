@@ -29,9 +29,9 @@ from typing import Any
 from ..config import load_config, redact_url, sensitivity_adjustments
 from ..detectors import create_detector, detection_thresholds, resolve_detector_settings
 from ..engine import ZoneMap
-from ..models import Notification, Track
+from ..models import Notification, Track, effective_categories
 from ..notify import CallbackNotifier
-from ..pipeline import filter_detections
+from ..pipeline import filter_detections, with_category_classes
 from ..runtime import SentinelRuntime
 from ..tracker import IoUTracker, TrackerConfig
 from ..vision import Frame, MotionGate, appearance_vector, apply_privacy_masks
@@ -272,7 +272,7 @@ def run_offline(
                     started = time.perf_counter()
                     raw = clip.detector.detect(Frame(image, now_ms))
                     detect_ms = (time.perf_counter() - started) * 1000
-                    detections = filter_detections(raw, camera_id, zones, min_area, set())
+                    detections = filter_detections(raw, camera_id, zones, min_area, enabled_categories(config, clip.camera))
                     started = time.perf_counter()
                     active, ended = clip.tracker.update(detections, now_ms)
                     for track in active:
@@ -364,6 +364,10 @@ def run_offline(
     return result
 
 
+def enabled_categories(config: dict[str, Any], camera: dict[str, Any]) -> set[str]:
+    return {name for name, values in effective_categories(config, camera).items() if values.get("detect")}
+
+
 def safe_config(config: dict[str, Any]) -> dict[str, Any]:
     """Config copy for run artifacts: no private keys, no credentials in source URLs."""
     safe = {key: copy.deepcopy(value) for key, value in config.items() if not key.startswith("_")}
@@ -386,7 +390,9 @@ def _open_clip(spec: dict[str, Any], config: dict[str, Any], out: Path, runtime:
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     gt = load_labels(spec.get("labels"), width, height, src_fps)
-    settings = resolve_detector_settings(config.get("detector", {}) | camera.get("detector", {}))
+    settings = with_category_classes(
+        resolve_detector_settings(config.get("detector", {}) | camera.get("detector", {})), effective_categories(config, camera)
+    )
     _, offset = sensitivity_adjustments(runtime.settings["sensitivity"])
     detector_threshold, report_threshold = detection_thresholds(settings, offset)
     detector = create_detector(settings, detector_threshold)

@@ -23,7 +23,10 @@ Data flows one way: frames → detections → tracks → events → incidents �
 
 ## Stages
 
-### 1. Ingestion (`sources.py`, `simulation.py`)
+### 1. Ingestion (`sources.py`, `streams.py`, `onboarding.py`, `onvif.py`, `simulation.py`)
+- Camera sources are **structured** (`host`, `port`, brand `template`, `channel`, `username`, `credential` reference, `prefer_substream`, `hw_decode`) or legacy `url` strings with `${ENV}` / `${secret:NAME}` placeholders. `streams.build_url` assembles the decoder URL at the last moment. `streams.public_source` is the only representation that may leave the process. See [camera-setup.md](./camera-setup.md).
+- Source types: `rtsp`, `http` (MJPEG stream or polled JPEG `snapshot`), `usb`/`capture` (device index, backend, requested resolution), `file`, `simulated`.
+- The sub-stream is used for AI when available. Hardware decoding is tried first (`hw_decode: auto`) with software fallback. Each source reports `stream`, `resolution`, `source_fps`, `hw_decode_active`, `reconnects`, and `error_kind` (classified with an RTSP-level probe).
 - `OpenCVSource` runs a reader thread that keeps only the newest frame, so a slow detector never builds up latency. It forces RTSP over TCP and reconnects with exponential backoff (1 s up to 30 s).
 - `SimulatedSource` renders a scripted scenario and attaches ground-truth boxes, so the whole stack runs without cameras.
 - Camera health: if a camera sends no frame for `health.camera_offline_after_s`, the runtime emits a `camera_offline` event (medium severity: a blind spot matters). When frames resume it emits `camera_online` (info).
@@ -32,6 +35,10 @@ Data flows one way: frames → detections → tracks → events → incidents �
 - `privacy_masks` (normalized polygons) are blacked out **before** detection, recording, and streaming.
 - `MotionGate` runs frame differencing on a 160x90 grayscale image. The detector runs when there is motion, when tracks are active, or at least every `idle_detect_interval_s`.
 - Detections smaller than `min_box_area`, or whose ground point falls in an `ignore` zone, are dropped.
+
+### 2b. Categories and environment (`models.py`, `environment.py`)
+- **Categories:** `person`, `vehicle`, `bicycle`, `animal`, `bag`, `unknown_motion`, each with `detect` and `alerts`. Defaults are overridden by site `categories`, then by camera `categories`. `detect` sets the detector's class allowlist and filters boxes. With `alerts: false`, events are downgraded to `info`, so they never open incidents.
+- **Environment:** `EnvironmentMonitor` classifies scene conditions (lighting change, IR mode, precipitation/noise, moving shadows, recurring motion, near-camera object) and proposes `unknown_motion` boxes. Conditions go to camera status and rate-limited `scene_condition` info events. See [environmental-intelligence.md](./environmental-intelligence.md).
 
 ### 3. Detection (`detectors.py`, `detectors_onnx.py`)
 - Interface: `Detector.detect(frame) -> list[Detection]`, with normalized boxes. Labels are COCO names, folded into canonical classes: `person`, `vehicle`, `bicycle`, `animal`, `bag`.
@@ -99,9 +106,14 @@ The engine also emits one `activity` event (severity `info`) the first time a pe
 - The API streams them over SSE, and `MqttPublisher` mirrors them to `<prefix>/<site_id>/<topic>`. Settings and drone topics are retained, and an LWT `status` topic reports online/offline.
 - Notifiers run on a background thread. A failure in one channel never blocks the others or the video loop.
 
+## Configuration editing (`site_config.py`, `credentials.py`)
+- `SiteConfigManager` owns the editable config. `load_effective` prefers `<storage>/site.json` over the file the service was started with (which is never modified). Every mutation is validated as a whole, written atomically (10 backups in `config_history/`), and then passed to `SentinelService.apply_config`.
+- `apply_config` → `SentinelRuntime.reconfigure`: rebuilds the engine (zones, rules, topology, correlator), alert policy, and incident settings. It keeps open incidents, settings, and history. In-flight tracks restart because zone geometry may have changed. Only camera workers whose config changed are restarted.
+- The managed copy keeps `${ENV}` placeholders unresolved, so environment secrets are never written to disk by the editor. Passwords live in `SecretStore` (DPAPI on Windows, a 0600 file elsewhere).
+
 ## Config reference
 
-See `config/sentinel.example.json`. Top-level keys: `site` (id, name, `map` with `width_m`, `height_m`, `origin_geo`, `buildings`), `cameras[]` (id, name, fps, source, map pose, privacy_masks, zones), `topology.links[]`, `detector`, `tracker`, `engine`, `correlation`, `rules[]`, `incidents`, `alerts` (thresholds, rate limit, `channels[]`), `recording`, `privacy`, `health`, `storage`, `mqtt`, `api`, `settings_defaults`, `drone`. `python -m sentinel validate` checks identifiers, polygons, references between sections, rule parameters, and literal passwords.
+See `config/sentinel.example.json`. Top-level keys: `site` (id, name, `map` with `width_m`, `height_m`, `origin_geo`, `buildings`, `image`), `categories`, `environment`, `cameras[]` (id, name, fps, source, map pose, privacy_masks, zones), `topology.links[]`, `detector`, `tracker`, `engine`, `correlation`, `rules[]`, `incidents`, `alerts` (thresholds, rate limit, `channels[]`), `recording`, `privacy`, `health`, `storage`, `mqtt`, `api`, `settings_defaults`, `drone`. `python -m sentinel validate` checks identifiers, polygons, references between sections, rule parameters, and literal passwords.
 
 Runtime settings (arm mode, sensitivity, notifications on/off) are changed through the API and persisted to `<storage.dir>/settings.json`.
 

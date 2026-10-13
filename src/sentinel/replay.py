@@ -13,7 +13,7 @@ from typing import Any
 
 from .config import cameras, load_config
 from .engine import ZoneMap
-from .models import Notification
+from .models import Notification, effective_categories
 from .notify import CallbackNotifier
 from .pipeline import filter_detections
 from .runtime import SentinelRuntime
@@ -50,6 +50,10 @@ def run_scenario(
                 camera["id"]: IoUTracker(camera["id"], TrackerConfig.from_dict(config.get("tracker")))
                 for camera in cameras(config)
             }
+            enabled = {
+                camera["id"]: {name for name, values in effective_categories(config, camera).items() if values.get("detect")}
+                for camera in cameras(config)
+            }
             step_ms = int(1000 / fps)
             total_ms = int((scenario.duration_s + tail_s) * 1000)
             all_events = []
@@ -58,7 +62,7 @@ def run_scenario(
                 t_s = offset / 1000
                 for camera_id, tracker in trackers.items():
                     raw = scenario.detections_at(camera_id, t_s) if t_s < scenario.duration_s else []
-                    detections = filter_detections(raw, camera_id, zones, min_area, set())
+                    detections = filter_detections(raw, camera_id, zones, min_area, enabled[camera_id])
                     active, ended = tracker.update(detections, now_ms)
                     runtime.update_camera_status(camera_id, connected=True, last_frame_ms=now_ms)
                     all_events.extend(runtime.process_camera_update(camera_id, now_ms, active, ended))

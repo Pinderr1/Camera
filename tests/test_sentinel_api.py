@@ -44,8 +44,8 @@ class ApiTests(unittest.TestCase):
     def test_site_never_exposes_camera_sources(self):
         body = self.client.get("/api/v1/site", headers=self.auth).json()
         for camera in body["cameras"]:
-            self.assertNotIn("source", camera)
             self.assertEqual(camera["source_type"], "simulated")
+            self.assertFalse({"url", "sub_url", "path", "sub_path", "password", "credential"} & set(camera["source"]))
 
     def test_settings_patch_is_validated_and_audited(self):
         response = self.client.patch("/api/v1/settings", headers=self.auth, json={"arm_mode": "away"})

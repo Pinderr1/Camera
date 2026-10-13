@@ -25,7 +25,7 @@ def serve(args: argparse.Namespace) -> None:
     from .config import load_config
     from .service import SentinelService
 
-    config = load_config(args.config)
+    config = load_config(args.config, resolve_secrets=False)  # placeholders are resolved by the service, never persisted
     host = args.host or config.get("api", {}).get("host", "127.0.0.1")
     port = args.port or int(config.get("api", {}).get("port", 8080))
     token = os.environ.get("SENTINEL_API_TOKEN", "")

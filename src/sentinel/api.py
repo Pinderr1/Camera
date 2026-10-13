@@ -19,9 +19,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import onboarding, onvif
 from .config import public_camera_view
 from .drone import FlightCommandRejected
 from .service import SentinelService
+from .site_config import WRITE_ONLY_FIELDS, SiteConfigError
 
 WEB_DIR = Path(__file__).parent / "web"
 COOKIE = "sentinel_session"
@@ -282,6 +284,154 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
         except (FlightCommandRejected, ValueError, KeyError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         return drone.status()
+
+    # ---- setup: site configuration -------------------------------------------
+
+    site = service.site
+
+    def config_call(function, *args):
+        try:
+            return function(*args)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=f"unknown id {error}") from None
+        except (SiteConfigError, ValueError, TypeError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.get("/api/v1/config")
+    def get_config(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return site.public_view()
+
+    @app.post("/api/v1/config/cameras")
+    def create_camera(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.save_camera, None, body, actor)
+
+    @app.put("/api/v1/config/cameras/{camera_id}")
+    def update_camera(camera_id: str, body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.save_camera, camera_id, body, actor)
+
+    @app.delete("/api/v1/config/cameras/{camera_id}")
+    def delete_camera(camera_id: str, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.delete_camera, camera_id, actor)
+
+    @app.put("/api/v1/config/camera-order")
+    def reorder_cameras(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, bool]:
+        config_call(site.reorder, list(body.get("order", [])), actor)
+        return {"ok": True}
+
+    @app.put("/api/v1/config/cameras/{camera_id}/zones")
+    def save_zones(camera_id: str, body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.set_zones, camera_id, list(body.get("zones", [])), list(body.get("privacy_masks", [])), actor)
+
+    @app.put("/api/v1/config/cameras/{camera_id}/categories")
+    def save_camera_categories(camera_id: str, body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, bool]:
+        config_call(site.set_categories, body.get("categories", {}), actor, camera_id)
+        return {"ok": True}
+
+    @app.put("/api/v1/config/categories")
+    def save_categories(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, bool]:
+        config_call(site.set_categories, body.get("categories", {}), actor)
+        return {"ok": True}
+
+    @app.put("/api/v1/config/map")
+    def save_map(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, bool]:
+        config_call(site.set_map, body, actor)
+        return {"ok": True}
+
+    @app.put("/api/v1/config/map/image")
+    async def upload_map_image(request: Request, actor: str = Depends(require_auth)) -> dict[str, bool]:
+        data = await request.body()
+        config_call(site.set_map_image, data, actor)
+        return {"ok": True}
+
+    @app.get("/api/v1/config/map/image")
+    def map_image(_: str = Depends(require_auth)) -> FileResponse:
+        path = site.map_image_path()
+        if path is None:
+            raise HTTPException(status_code=404, detail="no map image")
+        return FileResponse(path, headers={"Cache-Control": "no-store"})
+
+    @app.put("/api/v1/config/topology")
+    def save_topology(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, bool]:
+        config_call(site.set_topology, list(body.get("links", [])), actor)
+        return {"ok": True}
+
+    @app.get("/api/v1/cameras/{camera_id}/frame.jpg")
+    def clean_frame(camera_id: str, _: str = Depends(require_auth)) -> Response:
+        camera_or_404(camera_id)
+        jpeg = runtime.latest_frame.get(camera_id)
+        if not jpeg:
+            raise HTTPException(status_code=503, detail="no frame yet")
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    # ---- setup: camera onboarding ---------------------------------------------
+
+    @app.get("/api/v1/onboarding/templates")
+    def onboarding_templates(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return onboarding.templates()
+
+    @app.get("/api/v1/onboarding/decode")
+    def onboarding_decode(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return onboarding.decode_capabilities()
+
+    @app.post("/api/v1/onboarding/local-devices")
+    def onboarding_local_devices(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return onboarding.list_local_devices()
+
+    @app.post("/api/v1/onboarding/test")
+    def onboarding_test(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        """Test a camera before or after saving. Returns a draft id that the save
+        call can reference; the draft (with any password) stays on the server."""
+        if body.get("camera_id") and "source" not in body:
+            camera = camera_or_404(body["camera_id"])
+            result = onboarding.test_source(site.config_source(body["camera_id"]), runtime.secrets.get)
+            return result | {"camera_id": camera["id"]}
+        if body.get("draft_id"):  # e.g. a source staged by ONVIF inspection
+            clean, password = config_call(site.draft, body["draft_id"])
+            draft_id = body["draft_id"]
+        else:
+            source = dict(body.get("source") or {})
+            password = source.pop("password", None)
+            if body.get("camera_id"):  # editing: stream paths are write-only, so carry the stored ones forward
+                existing = config_call(site.config_source, body["camera_id"])
+                if existing.get("type") == source.get("type"):
+                    source = {key: existing[key] for key in WRITE_ONLY_FIELDS if key in existing} | source
+            draft_id, clean, password = config_call(site.make_draft, source, password)
+        lookup_extra = {}
+        test_source = dict(clean)
+        if password:
+            test_source["credential"] = "__draft__"
+            lookup_extra["__draft__"] = password
+        elif body.get("camera_id"):
+            existing = site.config_source(body["camera_id"])
+            if existing.get("credential") and existing.get("username") == clean.get("username"):
+                test_source["credential"] = existing["credential"]
+        result = onboarding.test_source(test_source, site.lookup_for(lookup_extra))
+        runtime.store.audit(actor, "camera_connection_test", {"type": clean.get("type"), "host": clean.get("host", ""), "result": result.get("kind")})
+        return result | {"draft_id": draft_id}
+
+    @app.post("/api/v1/onboarding/onvif/discover")
+    def onvif_discover(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return onvif.discover()
+
+    @app.post("/api/v1/onboarding/onvif/inspect")
+    def onvif_inspect(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        """Read profiles from an ONVIF camera and stage its streams as a draft source."""
+        try:
+            info = onvif.inspect(body["xaddr"], body.get("username", ""), body.get("password", ""))
+        except onvif.OnvifError as error:
+            return {"ok": False, "kind": str(error), "message": onboarding.ADVICE.get(str(error), f"ONVIF request failed ({error}).")}
+        except KeyError:
+            raise HTTPException(status_code=422, detail="xaddr is required") from None
+        main = info["streams"].get("main") or {}
+        source = {"type": "rtsp", "host": main.get("host"), "port": main.get("port", 554), "path": main.get("path"),
+                  "username": body.get("username", ""), "template": "custom", "prefer_substream": True}
+        if "sub" in info["streams"]:
+            source["sub_path"] = info["streams"]["sub"]["path"]
+        draft_id, _, _ = config_call(site.make_draft, source, body.get("password") or None)
+        return {
+            "ok": True, "draft_id": draft_id, "device": info["device"],
+            "streams": {which: stream["profile"] for which, stream in info["streams"].items()},
+        }
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

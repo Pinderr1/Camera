@@ -10,9 +10,11 @@ from typing import Any
 from senior_safety.config_validation import ConfigValidationError, read_json_object
 
 from .models import SEVERITIES
+from .streams import BRAND_TEMPLATES
 
-ZONE_TYPES = {"driveway", "entrance", "yard", "perimeter", "restricted", "street", "ignore", "general"}
-SOURCE_TYPES = {"rtsp", "http", "usb", "file", "simulated"}
+ZONE_TYPES = {"driveway", "entrance", "yard", "sidewalk", "perimeter", "restricted", "street", "ignore", "general"}
+SOURCE_TYPES = {"rtsp", "http", "usb", "capture", "file", "simulated"}
+CATEGORIES = ("person", "vehicle", "bicycle", "animal", "bag", "unknown_motion")
 RULE_TYPES = {"zone_entry", "dwell", "repeated_presence", "sequence", "multi_camera"}
 ARM_MODES = ("disarmed", "home", "away")
 SENSITIVITIES = {"low": (1.4, 0.10), "normal": (1.0, 0.0), "high": (0.7, -0.08)}
@@ -51,10 +53,13 @@ def redact_url(url: str) -> str:
 
 
 def public_camera_view(camera: dict[str, Any]) -> dict[str, Any]:
-    """Camera config safe to return over the API: no source URLs or credentials."""
+    """Camera config safe to return over the API: no stream URLs, paths, or credentials."""
+    from .streams import public_source
+
     view = {key: copy.deepcopy(value) for key, value in camera.items() if key not in {"source"}}
     source = camera.get("source", {})
     view["source_type"] = source.get("type", "")
+    view["source"] = public_source(source)
     return view
 
 
@@ -99,8 +104,17 @@ def validate_config(config: dict[str, Any]) -> None:
             errors.append(f"{path}.source.type must be one of {sorted(SOURCE_TYPES)}")
         elif source["type"] in {"rtsp", "http"}:
             url = str(source.get("url", ""))
-            if re.search(r"://[^/@\s]+:[^/@\s$]+@", url) and "${" not in url:
-                errors.append(f"{path}.source.url embeds a literal password; use ${{ENV_VAR}} substitution")
+            for key in ("url", "sub_url"):
+                if re.search(r"://[^/@\s]+:[^/@\s$]+@", str(source.get(key, ""))) and "${" not in str(source.get(key, "")):
+                    errors.append(f"{path}.source.{key} embeds a literal password; use the credential store or ${{ENV_VAR}}")
+            if not url and not source.get("host"):
+                errors.append(f"{path}.source needs a host (or a url)")
+            if source.get("template") and source["template"] not in BRAND_TEMPLATES:
+                errors.append(f"{path}.source.template must be one of {sorted(BRAND_TEMPLATES)}")
+            if source.get("mode", "stream") not in {"stream", "snapshot"}:
+                errors.append(f"{path}.source.mode must be stream or snapshot")
+        elif source["type"] in {"usb", "capture"} and not isinstance(source.get("index", 0), int):
+            errors.append(f"{path}.source.index must be an integer device index")
         fps = camera.get("fps", 5)
         if not _is_number(fps) or not 0 < fps <= 30:
             errors.append(f"{path}.fps must be in (0, 30]")
@@ -163,7 +177,7 @@ def validate_config(config: dict[str, Any]) -> None:
                 errors.append(f"{path}.count must be an integer >= 2")
             if not _positive(rule.get("window_s")):
                 errors.append(f"{path}.window_s must be positive")
-        if rule_type == "sequence":
+        if rule_type == "sequence" and rule.get("enabled", True):
             if len(rule.get("zones", [])) < 2:
                 errors.append(f"{path}.zones needs at least two zones in order")
             if not _positive(rule.get("within_s")):
@@ -179,6 +193,15 @@ def validate_config(config: dict[str, Any]) -> None:
             and all(re.fullmatch(r"\d{2}:\d{2}", str(active_hours.get(key, ""))) for key in ("start", "end"))
         ):
             errors.append(f"{path}.active_hours needs start/end as HH:MM")
+
+    for scope, categories in [("categories", config.get("categories", {}))] + [
+        (f"cameras[{index}].categories", camera.get("categories", {})) for index, camera in enumerate(raw_cameras)
+    ]:
+        for name, settings in categories.items():
+            if name not in CATEGORIES:
+                errors.append(f"{scope}.{name} is not a known category {list(CATEGORIES)}")
+            elif not isinstance(settings, dict) or any(key not in {"detect", "alerts"} or not isinstance(value, bool) for key, value in settings.items()):
+                errors.append(f"{scope}.{name} needs boolean detect/alerts")
 
     alerts = config.get("alerts", {})
     for mode, minimum in alerts.get("notify_min_severity", {}).items():

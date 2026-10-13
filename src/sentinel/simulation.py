@@ -117,6 +117,10 @@ class SimulatedSource:
     def close(self) -> None:
         self.connected = False
 
+    def status(self) -> dict:
+        return {"stream": "simulated", "resolution": [SIM_WIDTH, SIM_HEIGHT], "source_fps": None,
+                "hw_decode_active": False, "reconnects": 0, "error_kind": ""}
+
 
 def load_scenario_for(config: dict[str, Any], scenario_path: str) -> Scenario:
     path = Path(scenario_path)
