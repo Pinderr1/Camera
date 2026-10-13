@@ -1,0 +1,87 @@
+{
+ "name": "prowler",
+ "duration_s": 130,
+ "loop": false,
+ "actors": [
+  {
+   "id": "prowler",
+   "label": "person",
+   "noise": 0.004,
+   "miss_rate": 0.05,
+   "path": [
+    {
+     "t": 0,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.42
+    },
+    {
+     "t": 5,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.65
+    },
+    {
+     "t": 30,
+     "camera": "cam_driveway",
+     "x": 0.55,
+     "y": 0.7
+    },
+    {
+     "t": 36,
+     "camera": "cam_driveway",
+     "x": 0.9,
+     "y": 0.95
+    },
+    {
+     "t": 40,
+     "camera": "cam_front",
+     "x": 0.05,
+     "y": 0.6
+    },
+    {
+     "t": 52,
+     "camera": "cam_front",
+     "x": 0.95,
+     "y": 0.6
+    },
+    {
+     "t": 58,
+     "camera": "cam_backyard",
+     "x": 0.06,
+     "y": 0.8
+    },
+    {
+     "t": 66,
+     "camera": "cam_backyard",
+     "x": 0.14,
+     "y": 0.8
+    },
+    {
+     "t": 76,
+     "camera": "cam_backyard",
+     "x": 0.45,
+     "y": 0.8
+    },
+    {
+     "t": 88,
+     "camera": "cam_backyard",
+     "x": 0.86,
+     "y": 0.75
+    },
+    {
+     "t": 120,
+     "camera": "cam_backyard",
+     "x": 0.87,
+     "y": 0.76
+    },
+    {
+     "t": 128,
+     "camera": "cam_backyard",
+     "x": 0.5,
+     "y": 0.98
+    }
+   ]
+  }
+ ]
+}

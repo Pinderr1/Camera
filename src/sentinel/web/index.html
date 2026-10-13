@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sentinel</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">&#9673;</span>
+      <div>
+        <div class="title">Sentinel</div>
+        <div class="subtitle" id="site-name">Connecting…</div>
+      </div>
+    </div>
+    <div class="arm" role="group" aria-label="Arm mode">
+      <button data-arm="disarmed">Disarmed</button>
+      <button data-arm="home">Home</button>
+      <button data-arm="away">Away</button>
+    </div>
+    <div class="live-dot" id="live-dot" title="Live connection">offline</div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="live" class="active">Live</button>
+    <button role="tab" data-tab="map">Map</button>
+    <button role="tab" data-tab="timeline">Timeline <span class="badge" id="open-count" hidden></span></button>
+    <button role="tab" data-tab="drone">Drone</button>
+    <button role="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <section id="tab-live" class="tab active">
+      <div class="camera-grid" id="camera-grid"></div>
+    </section>
+
+    <section id="tab-map" class="tab">
+      <div class="map-layout">
+        <div class="card map-card"><svg id="site-map" role="img" aria-label="Property map"></svg></div>
+        <div class="card" id="zone-panel">
+          <h3>Zones</h3>
+          <p class="muted">Select a zone on the map.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-timeline" class="tab">
+      <div class="timeline-layout">
+        <div class="card">
+          <div class="row-between">
+            <h3>Incidents</h3>
+            <label class="muted small"><input type="checkbox" id="show-closed" checked> include closed</label>
+          </div>
+          <ul class="list" id="incident-list"></ul>
+        </div>
+        <div class="card" id="incident-detail"><p class="muted">Select an incident to review its events and recordings.</p></div>
+      </div>
+      <div class="card">
+        <h3>Recent activity</h3>
+        <ul class="list compact" id="activity-list"></ul>
+      </div>
+    </section>
+
+    <section id="tab-drone" class="tab">
+      <div class="notice" id="drone-mode-notice"></div>
+      <div class="tiles" id="drone-tiles"></div>
+      <div class="drone-layout">
+        <div class="card">
+          <h3>Inspection requests</h3>
+          <p class="muted small">Sentinel can propose inspections; only an operator can approve a flight.</p>
+          <ul class="list" id="drone-requests"></ul>
+        </div>
+        <div class="card">
+          <h3>Manual commands</h3>
+          <p class="muted small">High-level commands go to the flight controller, which owns stabilisation and failsafes.</p>
+          <div class="button-row" id="drone-commands">
+            <button data-cmd="takeoff">Take off</button>
+            <button data-cmd="hold">Hold</button>
+            <button data-cmd="return_home">Return home</button>
+            <button data-cmd="land" class="danger">Land now</button>
+          </div>
+          <div class="muted small" id="drone-blockers"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab">
+      <div class="settings-layout">
+        <div class="card">
+          <h3>Monitoring</h3>
+          <label class="field">Sensitivity
+            <select id="sensitivity">
+              <option value="low">Low: fewer alerts, longer dwell times</option>
+              <option value="normal">Normal</option>
+              <option value="high">High: earlier alerts</option>
+            </select>
+          </label>
+          <label class="field checkbox"><input type="checkbox" id="notifications"> Push notifications enabled</label>
+          <h3>Privacy</h3>
+          <dl class="kv" id="privacy-info"></dl>
+        </div>
+        <div class="card">
+          <h3>Rules</h3>
+          <ul class="list compact" id="rule-list"></ul>
+        </div>
+        <div class="card">
+          <h3>Audit log</h3>
+          <ul class="list compact" id="audit-list"></ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <dialog id="login">
+    <form method="dialog" id="login-form">
+      <h3>Sign in to Sentinel</h3>
+      <label class="field">Access token <input type="password" id="token" autocomplete="current-password" required></label>
+      <div class="error" id="login-error"></div>
+      <button type="submit">Sign in</button>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

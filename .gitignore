@@ -12,6 +12,7 @@ data/processed/video/
 *.png
 
 # Private operations data
+data/sentinel/
 consent/
 private/
 secrets/
