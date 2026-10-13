@@ -1,7 +1,26 @@
-# Core state machine and offline runner are stdlib-only.
-# These dependencies are needed only for the live runtime services.
-paho-mqtt>=2.0
+# Sentinel core (engine, tracker, correlator, incidents, store, drone manager) is stdlib-only.
+# These dependencies are needed by the I/O edges.
+
+# Camera capture, recording, motion gate.
 # OpenCV 5.0 Windows wheels cannot capture from cameras by index; stay on 4.x.
 # contrib variant because mediapipe depends on it (avoids two cv2 installs).
 opencv-contrib-python>=4.9,<5
+# Object detection (Apache-2.0 runtime and EfficientDet-Lite models); also legacy pose extraction.
 mediapipe>=0.10
+# ONNX detectors (YOLOX default). On Windows, onnxruntime-directml adds GPU support
+# for any DirectX 12 GPU; elsewhere use onnxruntime (CPU) or onnxruntime-gpu (CUDA).
+onnxruntime-directml>=1.18; sys_platform == "win32"
+onnxruntime>=1.18; sys_platform != "win32"
+# Only needed once, to make YOLOX ONNX files accept non-640 input sizes.
+onnx>=1.15
+# API and dashboard host.
+fastapi>=0.110
+uvicorn>=0.29
+# Test client for API tests.
+httpx>=0.27
+# CPU/memory sampling in the benchmark (sentinel.bench); optional elsewhere.
+psutil>=5.9
+# MQTT mirror and legacy senior_safety bridge.
+paho-mqtt>=2.0
+# Optional, drone telemetry over MAVLink (LGPL-3.0, used unmodified as a library):
+# pymavlink>=2.4

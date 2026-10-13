@@ -1,0 +1,252 @@
+{
+ "site_config": "config/bench/site.json",
+ "start_time": "2026-10-13T14:00:00",
+ "arm_mode": "away",
+ "notes": "Public footage for pipeline evaluation. Fetch with: python scripts/fetch_bench_footage.py",
+ "clips": [
+  {
+   "id": "mot16_02",
+   "camera_id": "mot16_02",
+   "video": "data/bench/mot16/MOT16-02/MOT16-02.mp4",
+   "labels": {
+    "format": "mot",
+    "path": "data/bench/mot16/MOT16-02/gt.txt"
+   },
+   "conditions": [
+    "day",
+    "outdoor",
+    "eye_level",
+    "crowded"
+   ],
+   "label_source": "MOTChallenge MOT16 train annotations (CC BY-NC-SA 3.0); evaluation only"
+  },
+  {
+   "id": "mot16_04",
+   "camera_id": "mot16_04",
+   "video": "data/bench/mot16/MOT16-04/MOT16-04.mp4",
+   "labels": {
+    "format": "mot",
+    "path": "data/bench/mot16/MOT16-04/gt.txt"
+   },
+   "conditions": [
+    "night",
+    "outdoor",
+    "elevated",
+    "artificial_light",
+    "crowded"
+   ],
+   "label_source": "MOTChallenge MOT16 train annotations (CC BY-NC-SA 3.0); evaluation only"
+  },
+  {
+   "id": "mot16_09",
+   "camera_id": "mot16_09",
+   "video": "data/bench/mot16/MOT16-09/MOT16-09.mp4",
+   "labels": {
+    "format": "mot",
+    "path": "data/bench/mot16/MOT16-09/gt.txt"
+   },
+   "conditions": [
+    "day",
+    "outdoor",
+    "doorbell_height",
+    "storefront"
+   ],
+   "label_source": "MOTChallenge MOT16 train annotations (CC BY-NC-SA 3.0); evaluation only"
+  },
+  {
+   "id": "vtest",
+   "camera_id": "vtest",
+   "video": "data/bench/unlabeled/vtest.avi",
+   "conditions": [
+    "day",
+    "outdoor",
+    "elevated",
+    "ordinary_activity"
+   ],
+   "expect_no_notifications": true,
+   "derive_expected_events": false,
+   "label_source": "No box annotations. Visual review of 8 sampled frames: pedestrians walking and crossing the lawn; nobody lingers. Notification expectation only."
+  },
+  {
+   "id": "caviar_walk1",
+   "camera_id": "caviar_walk1",
+   "video": "data/bench/caviar/Walk1/Walk1.mpg",
+   "labels": {
+    "format": "caviar",
+    "path": "data/bench/caviar/Walk1/wk1gt.xml"
+   },
+   "conditions": [
+    "indoor",
+    "overhead_fisheye",
+    "low_resolution",
+    "dim"
+   ],
+   "label_source": "CAVIAR ground truth (EC IST 2001 37540); evaluation only"
+  },
+  {
+   "id": "caviar_browse1",
+   "camera_id": "caviar_browse1",
+   "video": "data/bench/caviar/Browse1/Browse1.mpg",
+   "labels": {
+    "format": "caviar",
+    "path": "data/bench/caviar/Browse1/br1gt.xml"
+   },
+   "conditions": [
+    "indoor",
+    "overhead_fisheye",
+    "low_resolution",
+    "dim"
+   ],
+   "label_source": "CAVIAR ground truth (EC IST 2001 37540); evaluation only"
+  },
+  {
+   "id": "caviar_meet1",
+   "camera_id": "caviar_meet1",
+   "video": "data/bench/caviar/Meet_WalkTogether1/Meet_WalkTogether1.mpg",
+   "labels": {
+    "format": "caviar",
+    "path": "data/bench/caviar/Meet_WalkTogether1/mwt1gt.xml"
+   },
+   "conditions": [
+    "indoor",
+    "overhead_fisheye",
+    "low_resolution",
+    "dim"
+   ],
+   "label_source": "CAVIAR ground truth (EC IST 2001 37540); evaluation only"
+  },
+  {
+   "id": "caviar_leftbag",
+   "camera_id": "caviar_leftbag",
+   "video": "data/bench/caviar/LeftBag/LeftBag.mpg",
+   "labels": {
+    "format": "caviar",
+    "path": "data/bench/caviar/LeftBag/lb1gt.xml"
+   },
+   "conditions": [
+    "indoor",
+    "overhead_fisheye",
+    "low_resolution",
+    "dim"
+   ],
+   "label_source": "CAVIAR ground truth (EC IST 2001 37540); evaluation only"
+  },
+  {
+   "id": "caviar_restinchair",
+   "camera_id": "caviar_restinchair",
+   "video": "data/bench/caviar/Rest_InChair/Rest_InChair.mpg",
+   "labels": {
+    "format": "caviar",
+    "path": "data/bench/caviar/Rest_InChair/ricgt.xml"
+   },
+   "conditions": [
+    "indoor",
+    "overhead_fisheye",
+    "low_resolution",
+    "dim"
+   ],
+   "label_source": "CAVIAR ground truth (EC IST 2001 37540); evaluation only"
+  },
+  {
+   "id": "mot16_02_sub",
+   "camera_id": "mot16_02_sub",
+   "video": "data/bench/mot16/MOT16-02/substream_640p10.mp4",
+   "labels": {
+    "format": "mot",
+    "path": "data/bench/mot16/MOT16-02/gt.txt",
+    "fps": 30,
+    "width": 1920,
+    "height": 1080
+   },
+   "conditions": [
+    "day",
+    "outdoor",
+    "eye_level",
+    "crowded",
+    "substream_640p10"
+   ],
+   "label_source": "MOTChallenge MOT16 train annotations (CC BY-NC-SA 3.0); evaluation only",
+   "note": "Same footage re-encoded to 640x360 at 10 fps (as a camera sub-stream); labels mapped by time. Create with ffmpeg (docs/benchmarking.md)."
+  },
+  {
+   "id": "mot16_04_sub",
+   "camera_id": "mot16_04_sub",
+   "video": "data/bench/mot16/MOT16-04/substream_640p10.mp4",
+   "labels": {
+    "format": "mot",
+    "path": "data/bench/mot16/MOT16-04/gt.txt",
+    "fps": 30,
+    "width": 1920,
+    "height": 1080
+   },
+   "conditions": [
+    "night",
+    "outdoor",
+    "elevated",
+    "artificial_light",
+    "crowded",
+    "substream_640p10"
+   ],
+   "label_source": "MOTChallenge MOT16 train annotations (CC BY-NC-SA 3.0); evaluation only",
+   "note": "Same footage re-encoded to 640x360 at 10 fps (as a camera sub-stream); labels mapped by time. Create with ffmpeg (docs/benchmarking.md)."
+  },
+  {
+   "id": "mot16_09_sub",
+   "camera_id": "mot16_09_sub",
+   "video": "data/bench/mot16/MOT16-09/substream_640p10.mp4",
+   "labels": {
+    "format": "mot",
+    "path": "data/bench/mot16/MOT16-09/gt.txt",
+    "fps": 30,
+    "width": 1920,
+    "height": 1080
+   },
+   "conditions": [
+    "day",
+    "outdoor",
+    "doorbell_height",
+    "storefront",
+    "substream_640p10"
+   ],
+   "label_source": "MOTChallenge MOT16 train annotations (CC BY-NC-SA 3.0); evaluation only",
+   "note": "Same footage re-encoded to 640x360 at 10 fps (as a camera sub-stream); labels mapped by time. Create with ffmpeg (docs/benchmarking.md)."
+  }
+ ],
+ "sessions": [
+  {
+   "id": "street_3cam",
+   "clips": [
+    "mot16_02",
+    "mot16_04",
+    "mot16_09"
+   ],
+   "note": "three simultaneous 1080p feeds"
+  },
+  {
+   "id": "mixed_6cam",
+   "clips": [
+    "mot16_02",
+    "mot16_04",
+    "mot16_09",
+    "vtest",
+    "caviar_walk1",
+    "caviar_browse1"
+   ],
+   "note": "six simultaneous feeds, mixed resolutions"
+  }
+ ],
+ "degradation_runs": [
+  {
+   "clips": [
+    "mot16_02",
+    "mot16_09",
+    "caviar_browse1"
+   ],
+   "degradations": [
+    "low_light",
+    "night_ir",
+    "rain"
+   ]
+  }
+ ]
+}

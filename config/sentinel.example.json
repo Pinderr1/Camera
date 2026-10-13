@@ -1,0 +1,123 @@
+{
+  "site": {
+    "id": "demo_property",
+    "name": "Demo property (simulated)",
+    "map": {
+      "width_m": 40,
+      "height_m": 30,
+      "origin_geo": [45.0, -75.0],
+      "buildings": [
+        {"name": "House", "polygon": [[12, 6], [32, 6], [32, 20], [12, 20]]},
+        {"name": "Shed", "polygon": [[33, 1], [38, 1], [38, 5], [33, 5]]}
+      ]
+    }
+  },
+  "cameras": [
+    {
+      "id": "cam_driveway",
+      "name": "Driveway",
+      "fps": 5,
+      "source": {"type": "simulated", "scenario": "scenarios/demo_loop.json"},
+      "map": {"x": 11, "y": 21, "heading_deg": 200, "fov_deg": 90},
+      "privacy_masks": [[[0.85, 0.05], [1.0, 0.05], [1.0, 0.25], [0.85, 0.25]]],
+      "zones": [
+        {"id": "far_street", "name": "Far street", "type": "ignore", "polygon": [[0, 0], [1, 0], [1, 0.3], [0, 0.3]]},
+        {"id": "street", "name": "Street", "type": "street", "polygon": [[0, 0.3], [1, 0.3], [1, 0.45], [0, 0.45]],
+         "map_polygon": [[0, 28], [40, 28], [40, 30], [0, 30]]},
+        {"id": "driveway", "name": "Driveway", "type": "driveway", "polygon": [[0.25, 0.45], [0.75, 0.45], [0.95, 1], [0.05, 1]],
+         "map_polygon": [[2, 12], [10, 12], [10, 28], [2, 28]]}
+      ]
+    },
+    {
+      "id": "cam_front",
+      "name": "Front door",
+      "fps": 5,
+      "source": {"type": "simulated", "scenario": "scenarios/demo_loop.json"},
+      "map": {"x": 19, "y": 20, "heading_deg": 180, "fov_deg": 100},
+      "zones": [
+        {"id": "front_lawn", "name": "Front lawn", "type": "yard", "polygon": [[0, 0.45], [1, 0.45], [1, 0.7], [0, 0.7]],
+         "map_polygon": [[12, 23], [34, 23], [34, 28], [12, 28]]},
+        {"id": "front_porch", "name": "Front porch", "type": "entrance", "polygon": [[0.3, 0.7], [0.7, 0.7], [0.75, 1], [0.25, 1]],
+         "map_polygon": [[16, 20], [22, 20], [22, 23], [16, 23]]}
+      ]
+    },
+    {
+      "id": "cam_backyard",
+      "name": "Backyard",
+      "fps": 5,
+      "source": {"type": "simulated", "scenario": "scenarios/demo_loop.json"},
+      "map": {"x": 31, "y": 6, "heading_deg": 0, "fov_deg": 110},
+      "zones": [
+        {"id": "side_gate", "name": "Side gate", "type": "perimeter", "polygon": [[0, 0.5], [0.18, 0.5], [0.18, 1], [0, 1]],
+         "map_polygon": [[33, 12], [36, 12], [36, 16], [33, 16]]},
+        {"id": "backyard", "name": "Backyard", "type": "yard", "polygon": [[0.18, 0.45], [0.75, 0.45], [0.75, 1], [0.18, 1]],
+         "map_polygon": [[10, 0], [32, 0], [32, 6], [10, 6]]},
+        {"id": "shed", "name": "Shed", "type": "restricted", "polygon": [[0.75, 0.45], [1, 0.45], [1, 0.9], [0.75, 0.9]],
+         "map_polygon": [[33, 1], [38, 1], [38, 5], [33, 5]]}
+      ]
+    }
+  ],
+  "topology": {
+    "links": [
+      {"from": "cam_driveway", "to": "cam_front", "min_transit_s": 1, "max_transit_s": 20},
+      {"from": "cam_front", "to": "cam_backyard", "from_zones": ["front_lawn"], "to_zones": ["side_gate"], "min_transit_s": 2, "max_transit_s": 40},
+      {"from": "cam_driveway", "to": "cam_backyard", "from_zones": ["driveway"], "to_zones": ["side_gate"], "min_transit_s": 3, "max_transit_s": 45}
+    ]
+  },
+  "detector": {
+    "type": "scripted",
+    "model": "efficientdet_lite0",
+    "delegate": "cpu",
+    "score_threshold": 0.45,
+    "classes": ["person", "car", "truck", "bus", "motorcycle", "bicycle", "dog", "cat"],
+    "min_box_area": 0.0004,
+    "idle_detect_interval_s": 1.0
+  },
+  "tracker": {"iou_threshold": 0.25, "min_hits": 3, "max_missed_ms": 2500},
+  "engine": {"zone_enter_ms": 600, "zone_exit_ms": 1500, "presence_grace_ms": 5000},
+  "correlation": {"reacquire_s": 4, "min_link_confidence": 0.5, "ambiguity_margin": 0.15, "retain_s": 600},
+  "rules": [
+    {"id": "restricted_entry", "type": "zone_entry", "zone_types": ["restricted"], "classes": ["person"], "severity": "high"},
+    {"id": "backyard_after_hours", "type": "zone_entry", "zones": ["side_gate", "backyard"], "classes": ["person"],
+     "active_hours": {"start": "22:00", "end": "06:00"}, "severity": "medium"},
+    {"id": "porch_dwell", "type": "dwell", "zones": ["front_porch"], "classes": ["person"], "min_dwell_s": 90, "severity": "medium"},
+    {"id": "property_loiter", "type": "dwell", "zone_types": ["driveway", "yard", "perimeter"], "classes": ["person"], "min_dwell_s": 180,
+     "max_roam": 3, "severity": "low"},
+    {"id": "vehicle_idle_away", "type": "dwell", "zones": ["driveway"], "classes": ["vehicle"], "min_dwell_s": 300,
+     "require_arrival": true, "arm_modes": ["away"], "severity": "medium"},
+    {"id": "repeated_porch_visits", "type": "repeated_presence", "zones": ["front_porch"], "classes": ["person"], "count": 3, "window_s": 900, "severity": "medium"},
+    {"id": "perimeter_walk", "type": "sequence", "zones": ["driveway", "side_gate", "backyard"], "classes": ["person"], "within_s": 180, "severity": "medium"},
+    {"id": "property_traverse", "type": "multi_camera", "classes": ["person"], "min_cameras": 3, "window_s": 240, "severity": "low"}
+  ],
+  "incidents": {"merge_window_s": 120, "close_after_s": 120, "corroboration_behaviors": 3},
+  "alerts": {
+    "notify_min_severity": {"disarmed": "none", "home": "high", "away": "medium"},
+    "max_notifications": 6,
+    "rate_window_s": 600,
+    "ack_timeout_s": 300,
+    "channels": [
+      {"type": "ntfy", "enabled": false, "server": "https://ntfy.sh", "topic": "${SENTINEL_NTFY_TOPIC}", "attach_snapshot": false},
+      {"type": "mqtt", "enabled": false}
+    ]
+  },
+  "recording": {"enabled": true, "pre_roll_s": 5, "post_roll_s": 8, "max_clip_s": 60, "fps": 5, "max_width": 960},
+  "privacy": {"store_clips": true, "store_snapshots": true, "retention_days": {"events": 30, "media": 7}},
+  "health": {"camera_offline_after_s": 60},
+  "storage": {"dir": "data/sentinel"},
+  "mqtt": {"enabled": false, "host": "localhost", "port": 1883, "topic_prefix": "sentinel", "tls": false},
+  "api": {"host": "127.0.0.1", "port": 8080},
+  "settings_defaults": {"arm_mode": "home", "sensitivity": "normal", "notifications_enabled": true},
+  "drone": {
+    "enabled": true,
+    "adapter": "simulated",
+    "home_map": [6, 4],
+    "auto_request_min_severity": "high",
+    "geofence": {
+      "map_polygon": [[0, 0], [40, 0], [40, 28], [0, 28]],
+      "max_altitude_m": 25,
+      "min_altitude_m": 5
+    },
+    "safety": {"min_launch_battery_pct": 60, "rth_battery_pct": 30, "land_battery_pct": 15, "inspection_altitude_m": 12, "hover_s": 20, "request_ttl_s": 300},
+    "simulator": {"cruise_speed_mps": 4, "drain_pct_per_s": 0.12}
+  }
+}

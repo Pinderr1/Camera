@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sentinel</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">&#9673;</span>
+      <div>
+        <div class="title">Sentinel</div>
+        <div class="subtitle" id="site-name">Connecting…</div>
+      </div>
+    </div>
+    <div class="arm" role="group" aria-label="Arm mode">
+      <button data-arm="disarmed">Disarmed</button>
+      <button data-arm="home">Home</button>
+      <button data-arm="away">Away</button>
+    </div>
+    <div class="live-dot" id="live-dot" title="Live connection">offline</div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="live" class="active">Live</button>
+    <button role="tab" data-tab="map">Map</button>
+    <button role="tab" data-tab="timeline">Timeline <span class="badge" id="open-count" hidden></span></button>
+    <button role="tab" data-tab="drone">Drone</button>
+    <button role="tab" data-tab="settings">Settings</button>
+    <button role="tab" data-tab="setup">Setup</button>
+  </nav>
+
+  <main>
+    <section id="tab-live" class="tab active">
+      <div class="camera-grid" id="camera-grid"></div>
+    </section>
+
+    <section id="tab-map" class="tab">
+      <div class="map-layout">
+        <div class="card map-card"><svg id="site-map" role="img" aria-label="Property map"></svg></div>
+        <div class="card" id="zone-panel">
+          <h3>Zones</h3>
+          <p class="muted">Select a zone on the map.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-timeline" class="tab">
+      <div class="timeline-layout">
+        <div class="card">
+          <div class="row-between">
+            <h3>Incidents</h3>
+            <label class="muted small"><input type="checkbox" id="show-closed" checked> include closed</label>
+          </div>
+          <ul class="list" id="incident-list"></ul>
+        </div>
+        <div class="card" id="incident-detail"><p class="muted">Select an incident to review its events and recordings.</p></div>
+      </div>
+      <div class="card">
+        <h3>Recent activity</h3>
+        <ul class="list compact" id="activity-list"></ul>
+      </div>
+    </section>
+
+    <section id="tab-drone" class="tab">
+      <div class="notice" id="drone-mode-notice"></div>
+      <div class="tiles" id="drone-tiles"></div>
+      <div class="drone-layout">
+        <div class="card">
+          <h3>Inspection requests</h3>
+          <p class="muted small">Sentinel can propose inspections; only an operator can approve a flight.</p>
+          <ul class="list" id="drone-requests"></ul>
+        </div>
+        <div class="card">
+          <h3>Manual commands</h3>
+          <p class="muted small">High-level commands go to the flight controller, which owns stabilisation and failsafes.</p>
+          <div class="button-row" id="drone-commands">
+            <button data-cmd="takeoff">Take off</button>
+            <button data-cmd="hold">Hold</button>
+            <button data-cmd="return_home">Return home</button>
+            <button data-cmd="land" class="danger">Land now</button>
+          </div>
+          <div class="muted small" id="drone-blockers"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab">
+      <div class="settings-layout">
+        <div class="card">
+          <h3>Monitoring</h3>
+          <label class="field">Sensitivity
+            <select id="sensitivity">
+              <option value="low">Low: fewer alerts, longer dwell times</option>
+              <option value="normal">Normal</option>
+              <option value="high">High: earlier alerts</option>
+            </select>
+          </label>
+          <label class="field checkbox"><input type="checkbox" id="notifications"> Push notifications enabled</label>
+          <h3>Privacy</h3>
+          <dl class="kv" id="privacy-info"></dl>
+        </div>
+        <div class="card">
+          <h3>Rules</h3>
+          <ul class="list compact" id="rule-list"></ul>
+        </div>
+        <div class="card">
+          <h3>Audit log</h3>
+          <ul class="list compact" id="audit-list"></ul>
+        </div>
+      </div>
+    </section>
+    <section id="tab-setup" class="tab">
+      <nav class="subtabs" role="tablist" aria-label="Setup sections">
+        <button data-sub="cameras" class="active">Cameras</button>
+        <button data-sub="zones">Zones &amp; masks</button>
+        <button data-sub="propmap">Property map</button>
+        <button data-sub="links">Connections</button>
+        <button data-sub="categories">Categories</button>
+      </nav>
+
+      <div class="sub active" id="sub-cameras">
+        <div class="card">
+          <div class="row-between"><h3>Cameras</h3><button class="primary" id="add-camera">Add camera</button></div>
+          <p class="muted small">Order here is the order on the Live tab. Stream addresses and passwords are stored on the server only and never shown again.</p>
+          <ul class="list" id="setup-camera-list"></ul>
+        </div>
+        <div class="card"><h3>Decoding</h3><div class="small muted" id="decode-info">…</div></div>
+      </div>
+
+      <div class="sub" id="sub-zones">
+        <div class="editor-layout">
+          <div class="card">
+            <div class="row-between">
+              <label class="inline">Camera <select id="zone-camera"></select></label>
+              <div class="button-row tight">
+                <button id="zone-refresh" title="Fetch a new frame">New frame</button>
+                <button id="draw-zone" class="primary">Draw zone</button>
+                <button id="draw-mask">Draw privacy mask</button>
+              </div>
+            </div>
+            <div class="canvas-wrap" id="zone-canvas-wrap">
+              <img id="zone-frame" alt="Camera frame">
+              <svg id="zone-svg" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Zone editor"></svg>
+            </div>
+            <p class="muted small" id="zone-help">Click points to draw; click the first point or press Enter to finish. Drag corners to reshape, drag inside to move, Delete removes the selection.</p>
+          </div>
+          <div class="card">
+            <h3>Selection</h3>
+            <div id="zone-props" class="muted small">Nothing selected.</div>
+            <h3>Zones</h3>
+            <ul class="list compact" id="zone-list"></ul>
+            <h3>Privacy masks</h3>
+            <p class="muted small">Masked areas are blacked out before detection, recording and streaming.</p>
+            <ul class="list compact" id="mask-list"></ul>
+            <div class="button-row"><button class="primary" id="zone-save">Save zones</button><button id="zone-revert">Revert</button></div>
+            <div class="small" id="zone-status"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sub" id="sub-propmap">
+        <div class="editor-layout">
+          <div class="card">
+            <div class="canvas-wrap map-wrap"><svg id="prop-svg" aria-label="Property map editor"></svg></div>
+            <p class="muted small">Drag a camera to place it; drag its small handle to aim it. Map positions are approximate and kept separate from camera-frame zones.</p>
+          </div>
+          <div class="card">
+            <h3>Map</h3>
+            <label class="field">Background image (PNG/JPEG, under 10 MB) <input type="file" id="map-file" accept="image/png,image/jpeg"></label>
+            <div class="grid2">
+              <label class="field">Width (m) <input type="number" id="map-width" min="1" max="5000" step="1"></label>
+              <label class="field">Height (m) <input type="number" id="map-height" min="1" max="5000" step="1"></label>
+            </div>
+            <h3>Cameras on the map</h3>
+            <ul class="list compact" id="map-camera-list"></ul>
+            <h3>Zone footprints</h3>
+            <p class="muted small">Optional outlines of zones on the map (used for the overview and drone inspection targets).</p>
+            <label class="field">Zone <select id="footprint-zone"></select></label>
+            <div class="button-row tight"><button id="footprint-draw">Draw footprint</button><button id="footprint-clear">Remove footprint</button></div>
+            <div class="button-row"><button class="primary" id="map-save">Save map</button></div>
+            <div class="small" id="map-status"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sub" id="sub-links">
+        <div class="card">
+          <div class="row-between"><h3>Travel connections between cameras</h3><button id="link-add">Add connection</button></div>
+          <p class="muted small">Sentinel only links sightings across cameras that are connected here, within the travel-time window. Mark overlapping views so one person seen by both cameras at once is recognised.</p>
+          <div class="scroll"><table class="table" id="link-table"></table></div>
+          <div class="button-row"><button class="primary" id="link-save">Save connections</button></div>
+          <div class="small" id="link-status"></div>
+        </div>
+      </div>
+
+      <div class="sub" id="sub-categories">
+        <div class="card">
+          <h3>What Sentinel looks for</h3>
+          <p class="muted small">"Detect" decides whether a category is tracked at all. "Alerts" decides whether it may raise incidents and notifications; otherwise it is only logged as activity. Environmental motion (light changes, rain, shadows, swaying plants, insects) is classified separately and never raises incidents.</p>
+          <label class="inline">Apply to <select id="category-scope"><option value="">All cameras (site default)</option></select></label>
+          <div class="scroll"><table class="table" id="category-table"></table></div>
+          <div class="button-row"><button class="primary" id="category-save">Save categories</button></div>
+          <div class="small" id="category-status"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="wizard" class="wizard">
+    <form method="dialog" id="wizard-form" novalidate>
+      <div class="row-between"><h3 id="wizard-title">Add camera</h3><button type="button" id="wizard-close" aria-label="Close">✕</button></div>
+      <ol class="steps" id="wizard-steps"><li data-step="1">Type</li><li data-step="2">Connection</li><li data-step="3">Test</li><li data-step="4">Save</li></ol>
+      <div id="wizard-body"></div>
+      <div class="error" id="wizard-error"></div>
+      <div class="row-between"><button type="button" id="wizard-back">Back</button><button type="button" class="primary" id="wizard-next">Next</button></div>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <dialog id="login">
+    <form method="dialog" id="login-form">
+      <h3>Sign in to Sentinel</h3>
+      <label class="field">Access token <input type="password" id="token" autocomplete="current-password" required></label>
+      <div class="error" id="login-error"></div>
+      <button type="submit">Sign in</button>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/setup.js"></script>
+</body>
+</html>

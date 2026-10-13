@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel Bench Viewer</title>
+<style>
+:root { --bg:#f4f5f7; --card:#fff; --fg:#16191d; --muted:#5d6570; --line:#d9dde3; --accent:#2457c5; --ok:#2f7d4f; --bad:#c62828; --warn:#b86e00; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1215; --card:#181c21; --fg:#e7eaee; --muted:#9aa3ad; --line:#2c333b; --accent:#6d97ff; --ok:#4cbb7a; --bad:#ff6b6b; --warn:#f0a23b; color-scheme: dark; } }
+:root[data-theme="dark"] { --bg:#0f1215; --card:#181c21; --fg:#e7eaee; --muted:#9aa3ad; --line:#2c333b; --accent:#6d97ff; --ok:#4cbb7a; --bad:#ff6b6b; --warn:#f0a23b; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; }
+header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 16px; background:var(--card); border-bottom:1px solid var(--line); }
+header h1 { font-size:16px; margin:0 auto 0 0; }
+select, button, input { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:5px 9px; }
+button { cursor:pointer; }
+main { display:grid; grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:16px; padding:16px; max-width:1500px; margin:0 auto; }
+@media (max-width: 900px) { main { grid-template-columns:minmax(0, 1fr); } }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; min-width:0; }
+#frame { width:100%; display:block; background:#000; border-radius:8px; image-rendering:auto; }
+.controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; }
+#seek { flex:1 1 200px; }
+.layers label { margin-right:10px; white-space:nowrap; }
+.muted { color:var(--muted); }
+ul { list-style:none; margin:0; padding:0; max-height:300px; overflow:auto; }
+li { padding:4px 2px; border-top:1px solid var(--line); cursor:pointer; font-size:13px; }
+li:first-child { border-top:0; }
+.ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:13px; }
+.kv dt { color:var(--muted); } .kv dd { margin:0; font-variant-numeric:tabular-nums; }
+h3 { font-size:14px; margin:12px 0 6px; }
+#strip { width:100%; height:28px; display:block; margin-top:8px; cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sentinel benchmark viewer</h1>
+  <select id="session" aria-label="Session"></select>
+  <select id="clip" aria-label="Clip"></select>
+</header>
+<main>
+  <section class="card">
+    <img id="frame" alt="Annotated frame">
+    <svg id="strip" aria-label="Timeline: expected (top) and produced (bottom) events"></svg>
+    <div class="controls">
+      <button id="play">Play</button>
+      <button id="prev" title="Previous processed frame">&lsaquo;</button>
+      <button id="next" title="Next processed frame">&rsaquo;</button>
+      <input type="range" id="seek" min="0" value="0" aria-label="Seek">
+      <span id="pos" class="muted"></span>
+    </div>
+    <div class="controls layers" id="layers">
+      <label><input type="checkbox" value="zones" checked> zones</label>
+      <label><input type="checkbox" value="gt" checked> annotations</label>
+      <label><input type="checkbox" value="dets" checked> detections</label>
+      <label><input type="checkbox" value="tracks" checked> tracks</label>
+      <label><input type="checkbox" value="events" checked> events</label>
+    </div>
+    <p class="muted" style="font-size:12px">Green: human annotation (grey = don't-care). Yellow: raw detections. Coloured thick: confirmed tracks, labelled track-id and site-track id.</p>
+  </section>
+  <section class="card">
+    <h3>Clip metrics</h3>
+    <dl class="kv" id="metrics"></dl>
+    <h3>Expected events <span class="muted">(green = found)</span></h3>
+    <ul id="expected"></ul>
+    <h3>Produced events <span class="muted">(red = no matching expectation)</span></h3>
+    <ul id="predicted"></ul>
+    <h3>Notifications</h3>
+    <ul id="notifications"></ul>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const pct = (v) => (v == null ? "n/a" : `${(v * 100).toFixed(1)}%`);
+let sessions = [], timeline = null, cursor = 0, playing = null, pending = false;
+
+async function json(url) { const r = await fetch(url); if (!r.ok) throw new Error(await r.text()); return r.json(); }
+const q = (o) => new URLSearchParams(o).toString();
+const layers = () => [...document.querySelectorAll("#layers input:checked")].map((i) => i.value).join(",");
+
+async function init() {
+  sessions = await json("/api/sessions");
+  $("#session").innerHTML = sessions.map((s, i) => `<option value="${i}">${esc(s.session)}${s.degradation ? " [" + esc(s.degradation) + "]" : ""}</option>`).join("");
+  await pickSession();
+}
+
+async function pickSession() {
+  const s = sessions[$("#session").value];
+  if (!s) return;
+  $("#clip").innerHTML = s.clips.map((c) => `<option>${esc(c)}</option>`).join("");
+  await pickClip();
+}
+
+async function pickClip() {
+  stop();
+  const s = sessions[$("#session").value];
+  const clip = $("#clip").value;
+  timeline = await json(`/api/timeline?${q({ session: s.session, clip })}`);
+  const report = await json(`/api/report?${q({ session: s.session })}`);
+  renderMetrics(report.clips.find((c) => c.clip_id === clip));
+  $("#seek").max = timeline.frames.length - 1;
+  renderLists();
+  renderStrip();
+  show(0);
+}
+
+function renderMetrics(c) {
+  const d = c.detection, t = c.tracking, n = c.notification_match;
+  const rows = [
+    ["Conditions", c.conditions.join(", ") || "-"],
+    ["Annotations", c.labeled_boxes ? esc(c.label_source || "yes") : "none (no accuracy measured)"],
+    ["Detection P / R", d ? `${pct(d.precision)} / ${pct(d.recall)}` : "n/a"],
+    ["Recall small/med/large", d ? `${pct(d.recall_by_size.small)} / ${pct(d.recall_by_size.medium)} / ${pct(d.recall_by_size.large)}` : "n/a"],
+    ["Tracks: mostly tracked / lost / ID switches", t ? `${t.mostly_tracked}/${t.gt_identities} · ${t.mostly_lost} · ${t.id_switches}` : "n/a"],
+    ["Notifications sent / expected / false", n ? `${n.sent} / ${n.expected} / ${n.false}` : `${c.notifications} / n/a`],
+    ["Detect p50 / p95 ms", `${c.timings_ms.detect.p50 ?? "n/a"} / ${c.timings_ms.detect.p95 ?? "n/a"}`],
+    ["Throughput fps", c.throughput_fps ?? "n/a"],
+  ];
+  $("#metrics").innerHTML = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+}
+
+function renderLists() {
+  const item = (e, label, cls) => `<li data-t="${e.t}" class="${cls}">${e.t.toFixed(1)}s · ${esc(label)}</li>`;
+  $("#expected").innerHTML = timeline.expected.map((e) => item(e, `${e.type} ${e.zone} ${e.note ? "· " + e.note : ""}`, e.matched ? "ok" : "bad")).join("") || "<li class='muted'>No expected events (unlabeled clip)</li>";
+  $("#predicted").innerHTML = timeline.predicted.map((e) => item(e, `${e.severity} ${e.summary}`, timeline.expected.length ? (e.matched ? "ok" : "bad") : "")).join("") || "<li class='muted'>None</li>";
+  $("#notifications").innerHTML = timeline.notifications.map((n) => item(n, n.title, "warn")).join("") || "<li class='muted'>None</li>";
+  document.querySelectorAll("li[data-t]").forEach((li) => li.addEventListener("click", () => seekTime(Number(li.dataset.t))));
+}
+
+function renderStrip() {
+  const end = timeline.frames.at(-1)?.t || 1;
+  const x = (t) => (Math.max(0, t) / end) * 1000;
+  const mark = (e, y, color) => `<rect x="${x(e.t)}" y="${y}" width="4" height="12" fill="${color}"><title>${esc(e.type + " " + (e.summary || e.note || ""))}</title></rect>`;
+  const css = getComputedStyle(document.documentElement);
+  $("#strip").setAttribute("viewBox", "0 0 1004 28");
+  $("#strip").setAttribute("preserveAspectRatio", "none");
+  $("#strip").innerHTML =
+    `<rect x="0" y="0" width="1004" height="28" fill="${css.getPropertyValue("--bg")}"/>` +
+    timeline.expected.map((e) => mark(e, 1, e.matched ? css.getPropertyValue("--ok") : css.getPropertyValue("--bad"))).join("") +
+    timeline.predicted.map((e) => mark(e, 15, e.matched || !timeline.expected.length ? css.getPropertyValue("--accent") : css.getPropertyValue("--bad"))).join("") +
+    `<rect id="playhead" x="0" y="0" width="2" height="28" fill="${css.getPropertyValue("--fg")}"/>`;
+  $("#strip").onclick = (ev) => {
+    const box = $("#strip").getBoundingClientRect();
+    seekTime(((ev.clientX - box.left) / box.width) * end);
+  };
+}
+
+function seekTime(t) {
+  const index = timeline.frames.findIndex((f) => f.t >= t - 1e-6);
+  show(index < 0 ? timeline.frames.length - 1 : index);
+}
+
+function show(k) {
+  if (!timeline || !timeline.frames.length) return;
+  cursor = Math.max(0, Math.min(timeline.frames.length - 1, k));
+  const f = timeline.frames[cursor];
+  $("#seek").value = cursor;
+  $("#pos").textContent = `${f.t.toFixed(1)}s · frame ${f.i} · ${f.d} det · ${f.k} tracks${f.run ? "" : " · gated"}`;
+  const playhead = document.getElementById("playhead");
+  if (playhead) playhead.setAttribute("x", (f.t / (timeline.frames.at(-1).t || 1)) * 1000);
+  const s = sessions[$("#session").value];
+  pending = true;
+  $("#frame").src = `/api/frame?${q({ session: s.session, clip: $("#clip").value, i: f.i, layers: layers() })}`;
+}
+
+$("#frame").addEventListener("load", () => { pending = false; });
+$("#frame").addEventListener("error", () => { pending = false; });
+
+function stop() { if (playing) clearInterval(playing); playing = null; $("#play").textContent = "Play"; }
+$("#play").addEventListener("click", () => {
+  if (playing) return stop();
+  $("#play").textContent = "Pause";
+  const step = Math.max(50, (timeline.frames[1]?.t - timeline.frames[0]?.t) * 1000 || 200);
+  playing = setInterval(() => { if (!pending) { if (cursor >= timeline.frames.length - 1) stop(); else show(cursor + 1); } }, step);
+});
+$("#prev").addEventListener("click", () => show(cursor - 1));
+$("#next").addEventListener("click", () => show(cursor + 1));
+$("#seek").addEventListener("input", (e) => show(Number(e.target.value)));
+$("#session").addEventListener("change", pickSession);
+$("#clip").addEventListener("change", pickClip);
+document.querySelectorAll("#layers input").forEach((i) => i.addEventListener("change", () => show(cursor)));
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT" && e.target.type !== "checkbox") return;
+  if (e.key === "ArrowRight") show(cursor + 1);
+  if (e.key === "ArrowLeft") show(cursor - 1);
+  if (e.key === " ") { e.preventDefault(); $("#play").click(); }
+});
+init().catch((error) => { document.body.insertAdjacentHTML("beforeend", `<p class="bad" style="padding:16px">${esc(error.message)}</p>`); });
+</script>
+</body>
+</html>

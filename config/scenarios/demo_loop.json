@@ -1,0 +1,193 @@
+{
+ "name": "demo_loop",
+ "duration_s": 240,
+ "loop": true,
+ "actors": [
+  {
+   "id": "parked_car",
+   "label": "car",
+   "noise": 0.001,
+   "path": [
+    {
+     "t": 0,
+     "camera": "cam_driveway",
+     "x": 0.35,
+     "y": 0.92
+    },
+    {
+     "t": 240,
+     "camera": "cam_driveway",
+     "x": 0.35,
+     "y": 0.92
+    }
+   ]
+  },
+  {
+   "id": "courier",
+   "label": "person",
+   "noise": 0.004,
+   "miss_rate": 0.05,
+   "path": [
+    {
+     "t": 5,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.47
+    },
+    {
+     "t": 15,
+     "camera": "cam_driveway",
+     "x": 0.88,
+     "y": 0.95
+    },
+    {
+     "t": 18,
+     "camera": "cam_front",
+     "x": 0.1,
+     "y": 0.62
+    },
+    {
+     "t": 24,
+     "camera": "cam_front",
+     "x": 0.5,
+     "y": 0.85
+    },
+    {
+     "t": 50,
+     "camera": "cam_front",
+     "x": 0.5,
+     "y": 0.86
+    },
+    {
+     "t": 56,
+     "camera": "cam_front",
+     "x": 0.1,
+     "y": 0.6
+    },
+    {
+     "t": 60,
+     "camera": "cam_driveway",
+     "x": 0.85,
+     "y": 0.95
+    },
+    {
+     "t": 70,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.47
+    }
+   ]
+  },
+  {
+   "id": "van",
+   "label": "truck",
+   "noise": 0.002,
+   "path": [
+    {
+     "t": 0,
+     "camera": "cam_driveway",
+     "x": 0.15,
+     "y": 0.44
+    },
+    {
+     "t": 4,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.44
+    },
+    {
+     "t": 66,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.44
+    },
+    {
+     "t": 72,
+     "camera": "cam_driveway",
+     "x": 0.9,
+     "y": 0.44
+    }
+   ]
+  },
+  {
+   "id": "prowler",
+   "label": "person",
+   "noise": 0.004,
+   "miss_rate": 0.05,
+   "path": [
+    {
+     "t": 95,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.42
+    },
+    {
+     "t": 100,
+     "camera": "cam_driveway",
+     "x": 0.5,
+     "y": 0.65
+    },
+    {
+     "t": 125,
+     "camera": "cam_driveway",
+     "x": 0.55,
+     "y": 0.7
+    },
+    {
+     "t": 131,
+     "camera": "cam_driveway",
+     "x": 0.9,
+     "y": 0.95
+    },
+    {
+     "t": 135,
+     "camera": "cam_front",
+     "x": 0.05,
+     "y": 0.6
+    },
+    {
+     "t": 147,
+     "camera": "cam_front",
+     "x": 0.95,
+     "y": 0.6
+    },
+    {
+     "t": 153,
+     "camera": "cam_backyard",
+     "x": 0.06,
+     "y": 0.8
+    },
+    {
+     "t": 161,
+     "camera": "cam_backyard",
+     "x": 0.14,
+     "y": 0.8
+    },
+    {
+     "t": 171,
+     "camera": "cam_backyard",
+     "x": 0.45,
+     "y": 0.8
+    },
+    {
+     "t": 183,
+     "camera": "cam_backyard",
+     "x": 0.86,
+     "y": 0.75
+    },
+    {
+     "t": 215,
+     "camera": "cam_backyard",
+     "x": 0.87,
+     "y": 0.76
+    },
+    {
+     "t": 223,
+     "camera": "cam_backyard",
+     "x": 0.5,
+     "y": 0.98
+    }
+   ]
+  }
+ ]
+}
