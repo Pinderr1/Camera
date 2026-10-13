@@ -1,5 +1,6 @@
 import unittest
 
+from sentinel.detectors import non_max_suppression
 from sentinel.models import Detection
 from sentinel.tracker import IoUTracker, TrackerConfig, iou
 
@@ -57,6 +58,25 @@ class TrackerTests(unittest.TestCase):
             tracker.update([det(0.1 + step * 0.05, 0.5)], step * 200)
         track = next(iter(tracker.tracks.values()))
         self.assertGreater(track.max_displacement, 0.15)
+
+
+class NmsTests(unittest.TestCase):
+    def test_duplicates_from_tiles_are_merged_but_people_in_a_group_box_survive(self):
+        group = det(0.10, 0.2, w=0.20, h=0.5, confidence=0.9)  # one box around two people
+        left = det(0.10, 0.2, w=0.09, h=0.5, confidence=0.7)
+        right = det(0.21, 0.2, w=0.09, h=0.5, confidence=0.6)
+        duplicate = det(0.105, 0.2, w=0.09, h=0.5, confidence=0.5)
+        car = det(0.10, 0.2, w=0.09, h=0.5, label="car", confidence=0.8)
+        kept = non_max_suppression([group, left, right, duplicate, car])
+        self.assertEqual(len(kept), 4)
+        self.assertNotIn(duplicate, kept)
+
+    def test_tile_cut_partial_body_inside_full_box_is_dropped(self):
+        full = det(0.60, 0.3, w=0.10, h=0.6, confidence=0.6)
+        upper_half = det(0.61, 0.3, w=0.09, h=0.25, confidence=0.75)  # clipped by a tile edge
+        kept = non_max_suppression([full, upper_half], cut={1})
+        self.assertEqual(kept, [full])
+        self.assertEqual(len(non_max_suppression([full, upper_half])), 2, "uncut boxes are never dropped for containment")
 
 
 if __name__ == "__main__":

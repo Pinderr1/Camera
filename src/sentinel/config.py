@@ -156,6 +156,8 @@ def validate_config(config: dict[str, Any]) -> None:
                 errors.append(f"{path}.arm_modes has unknown mode {mode!r}")
         if rule_type == "dwell" and not _positive(rule.get("min_dwell_s")):
             errors.append(f"{path}.min_dwell_s must be positive")
+        if "max_roam" in rule and not _positive(rule["max_roam"]):
+            errors.append(f"{path}.max_roam must be positive (body heights)")
         if rule_type == "repeated_presence":
             if not isinstance(rule.get("count"), int) or rule["count"] < 2:
                 errors.append(f"{path}.count must be an integer >= 2")

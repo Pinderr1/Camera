@@ -13,6 +13,8 @@ data/processed/video/
 
 # Private operations data
 data/sentinel/
+data/bench/
+bench_runs/
 consent/
 private/
 secrets/

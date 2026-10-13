@@ -270,6 +270,10 @@ class TemporalEventEngine:
         for zone_id, presence in site.zones.items():
             if presence.left_ms is not None:
                 continue
+            if self.zones.zones.get(zone_id, {}).get("camera_id") == track.camera_id:
+                if not presence.samples or now - presence.samples[-1][0] >= 1000:
+                    presence.samples.append((now, *track.anchor, track.bbox[3]))
+                    del presence.samples[:-900]
             dwell_s = (now - presence.since_ms) / 1000
             for rule in self.rules:
                 if rule["type"] != "dwell" or not self._rule_matches_zone(rule, zone_id):
@@ -282,6 +286,9 @@ class TemporalEventEngine:
                 key = f"{rule['id']}:{zone_id}:{presence.since_ms}"
                 if dwell_s < threshold_s or key in site.fired:
                     continue
+                roam = _roam(presence.samples, now - int(threshold_s * 1000))
+                if rule.get("max_roam") is not None and roam is not None and roam > rule["max_roam"]:
+                    continue  # moving around, not lingering; re-checked as the window slides
                 site.fired.add(key)
                 events.append(
                     self._event(
@@ -290,7 +297,11 @@ class TemporalEventEngine:
                         zone_id=zone_id, rule=rule,
                         reason_codes=["prolonged_presence"],
                         started_ms=presence.since_ms,
-                        details={"dwell_s": round(dwell_s, 1), "threshold_s": round(threshold_s, 1)},
+                        details={
+                            "dwell_s": round(dwell_s, 1),
+                            "threshold_s": round(threshold_s, 1),
+                            "roam_body_heights": None if roam is None else round(roam, 2),
+                        },
                     )
                 )
         return events
@@ -375,6 +386,23 @@ class TemporalEventEngine:
             reason_codes=list(reason_codes or []),
             details=payload,
         )
+
+
+def _roam(samples: list[tuple[int, float, float, float]], window_start_ms: int) -> float | None:
+    """Largest distance between any two ground positions in the dwell window, in
+    body heights. Someone waiting or pacing stays within a small area; someone
+    walking through, or circling around a large zone, covers several body
+    heights even if they end up back where they started."""
+    window = [sample for sample in samples if sample[0] >= window_start_ms] or samples[-1:]
+    if len(window) < 2:
+        return None
+    height = sum(sample[3] for sample in window) / len(window)
+    if height <= 0:
+        return None
+    extent = max(
+        ((a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5 for i, a in enumerate(window) for b in window[i + 1 :]
+    )
+    return extent / height
 
 
 def _match_sequence(path: list[tuple[int, str, str]], zones: list[str], within_ms: int) -> tuple[int, int] | None:

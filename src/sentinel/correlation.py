@@ -11,6 +11,8 @@ from .models import Track
 class ZonePresence:
     since_ms: int
     left_ms: int | None = None
+    # ~1 Hz (ms, anchor x, anchor y, box height) samples for movement-aware dwell rules.
+    samples: list[tuple[int, float, float, float]] = field(default_factory=list)
 
 
 @dataclass

@@ -35,7 +35,8 @@ Data flows one way: frames → detections → tracks → events → incidents �
 
 ### 3. Detection (`detectors.py`)
 - `Detector.detect(frame) -> list[Detection]` with normalized boxes. Labels are COCO names, folded into canonical classes: `person`, `vehicle`, `bicycle`, `animal`, `bag`.
-- `MediaPipeObjectDetector` uses EfficientDet-Lite0 by default (`efficientdet_lite2` is more accurate and slower). The model downloads to `models/`.
+- `MediaPipeObjectDetector` uses EfficientDet-Lite0 by default (`efficientdet_lite2` is more accurate and slower). The model downloads to `models/`. It runs in IMAGE mode.
+- `detector.tiles: [cols, rows]` adds overlapping tile passes (`tile_overlap`, default 0.15) to the full-frame pass. Results are merged with per-label IoU NMS. Each tile is one more inference per frame. See ROADMAP findings for the measured recall/CPU trade-off.
 - The detector score threshold is shifted by sensitivity: low +0.10, high −0.08.
 
 ### 4. Tracking (`tracker.py`)
@@ -61,7 +62,7 @@ Every rule has `id`, `type`, `severity` (`info|low|medium|high`), and optional `
 | Type | Fires when | Extra keys | Fires at most |
 | --- | --- | --- | --- |
 | `zone_entry` | a new visit to a matching zone starts | | once per visit |
-| `dwell` | a visit lasts longer than `min_dwell_s` × the sensitivity multiplier (low 1.4, normal 1.0, high 0.7) | `require_arrival` (ignore objects that were stationary from the moment they were first seen) | once per visit |
+| `dwell` | a visit lasts longer than `min_dwell_s` × the sensitivity multiplier (low 1.4, normal 1.0, high 0.7) | `require_arrival` (ignore objects that were stationary from the moment they were first seen). `max_roam` (body heights): fire only if the subject's ground positions over the dwell window span at most this many body heights, so walking through or circling a large zone is not treated as lingering | once per visit |
 | `repeated_presence` | `count` new visits to a zone within `window_s`, from any subjects | | once per window per zone |
 | `sequence` | a site track visits `zones` in order within `within_s`; other zones may come in between | | once per site track |
 | `multi_camera` | a site track is seen on at least `min_cameras` cameras within `window_s` | | once per site track |

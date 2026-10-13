@@ -42,6 +42,7 @@ class OpenCVSource:
             os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
         self.connected = False
         self.last_error = ""
+        self.frames_read = 0
         self._latest: Frame | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -94,6 +95,7 @@ class OpenCVSource:
                     break
                 with self._lock:
                     self._latest = Frame(image=image, timestamp_ms=int(time.time() * 1000))
+                    self.frames_read += 1
                 if file_fps:
                     time.sleep(1.0 / file_fps)
             capture.release()

@@ -64,6 +64,33 @@ class DwellTests(unittest.TestCase):
         self.assertEqual(len(dwell), 1)
         self.assertEqual(len({event.site_track_id for event in driver.events}), 1)
 
+    def test_max_roam_separates_lingering_from_moving_around(self):
+        rule = dict(YARD_DWELL, max_roam=2.0)
+        small = (0.03, 0.08)  # a distant person: 8% of frame height
+
+        walker = Driver(TemporalEventEngine(make_config([rule])))
+        steps = iter(range(1000))
+        walker.run(33, {"cam_a": lambda now: [person(0.02 + next(steps) * 0.003, 0.8, size=small)]})
+        self.assertEqual(walker.of_type("dwell"), [], "slow transit is not lingering")
+
+        circler = Driver(TemporalEventEngine(make_config([rule])))
+        steps = iter(range(1000))
+
+        def loop(now):
+            # walks out and back along the yard every 20 s: ends where it started
+            phase = (next(steps) % 100) / 100
+            return [person(0.05 + 0.4 * (1 - abs(2 * phase - 1)), 0.8, size=small)]
+
+        circler.run(40, {"cam_a": loop})
+        self.assertEqual(circler.of_type("dwell"), [], "circling returns to the start but covers the zone")
+
+        pacer = Driver(TemporalEventEngine(make_config([rule])))
+        steps = iter(range(1000))
+        pacer.run(40, {"cam_a": lambda now: [person(0.2 + 0.05 * ((next(steps) // 10) % 2), 0.8, size=small)]})
+        dwell = pacer.of_type("dwell")
+        self.assertEqual(len(dwell), 1)
+        self.assertLessEqual(dwell[0].details["roam_body_heights"], 2.0)
+
     def test_stationary_vehicle_needs_arrival(self):
         rule = {"id": "vehicle_idle", "type": "dwell", "zones": ["yard"], "classes": ["vehicle"], "min_dwell_s": 20, "require_arrival": True, "severity": "medium"}
 

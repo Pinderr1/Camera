@@ -12,6 +12,8 @@ fastapi>=0.110
 uvicorn>=0.29
 # Test client for API tests.
 httpx>=0.27
+# CPU/memory sampling in the benchmark (sentinel.bench); optional elsewhere.
+psutil>=5.9
 # MQTT mirror and legacy senior_safety bridge.
 paho-mqtt>=2.0
 # Optional, drone telemetry over MAVLink (LGPL-3.0, used unmodified as a library):

@@ -9,6 +9,7 @@ Sentinel describes observed activity ("Person entered Shed", "Person moved Drive
 - Architecture and event processing: [docs/architecture.md](./docs/architecture.md)
 - API for the dashboard and mobile apps: [docs/api.md](./docs/api.md)
 - Drone integration and safety gates: [docs/drone-integration.md](./docs/drone-integration.md)
+- Real-footage benchmarking: [docs/benchmarking.md](./docs/benchmarking.md)
 - License audit: [sources.md](./sources.md)
 
 ## Quick start (no cameras needed)
@@ -66,4 +67,4 @@ python -m unittest discover -s tests
 
 ## Status
 
-The security brain works end to end with simulated cameras and is covered by tests. Next up is validating it on real IP cameras (Phase 1 in [ROADMAP.md](./ROADMAP.md)). The drone layer is simulation-only. The MAVLink adapter reads telemetry, and every flight command is disabled by design.
+The security brain works end to end and is covered by tests. It has been measured on real, publicly annotated footage, including night, indoor, storefront, and multi-camera load runs (see the findings in [ROADMAP.md](./ROADMAP.md)). The headline result: detection precision is high, but recall with the default CPU model is too low for unattended use. Improving detection on real cameras is the current priority. The drone layer is simulation-only. The MAVLink adapter reads telemetry, and every flight command is disabled by design.

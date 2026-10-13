@@ -15,6 +15,17 @@ This project is reuse-first, but code is copied only when the upstream license c
 | pymavlink (optional) | LGPL-3.0 | Drone telemetry | Use unmodified as a dynamically imported library. Alternative: MAVSDK-Python (BSD-3). |
 | ArduPilot / PX4 | GPL-3.0 / BSD-3 | Flight stacks (run on the drone, not linked) | Sentinel talks MAVLink over a link; it does not link or distribute firmware. |
 | ntfy | Apache-2.0 / GPL-2.0 dual | Push delivery (external service or self-hosted) | Not linked. |
+| psutil | BSD-3 | Benchmark resource sampling | |
+
+### Benchmark footage and tools (evaluation only, never shipped or trained on)
+
+| Source | Terms | Use |
+| --- | --- | --- |
+| MOTChallenge MOT16 (train sequences 02, 04, 09) | CC BY-NC-SA 3.0 | Annotated pedestrian boxes for detection, tracking and derived-event metrics. Non-commercial: evaluation only. |
+| CAVIAR (INRIA lobby clips) | Research use; acknowledge "EC Funded CAVIAR project/IST 2001 37540" when publishing | Annotated indoor overhead footage. |
+| OpenCV `vtest.avi` | OpenCV sample data | Unlabeled ordinary-activity footage. |
+| MediaMTX | MIT | Local RTSP server for live-stream benchmarking (dev tool, not shipped). |
+| ffmpeg | LGPL/GPL builds | Re-encoding benchmark footage and publishing test RTSP streams (dev tool, not shipped). |
 
 **Do not ship:** Ultralytics YOLOv5/v8/v11 (AGPL-3.0 unless an Ultralytics enterprise licence is purchased), models trained on non-commercial datasets (e.g. OmniFall CC BY-NC), and face or licence-plate recognition models, which need a separate product and privacy decision first (see `CLAUDE.md`).
 

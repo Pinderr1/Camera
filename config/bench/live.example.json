@@ -1,0 +1,457 @@
+{
+ "site": {
+  "id": "bench_live",
+  "name": "Live stream benchmark",
+  "map": {
+   "width_m": 10,
+   "height_m": 10,
+   "origin_geo": [
+    45.0,
+    -75.0
+   ]
+  }
+ },
+ "cameras": [
+  {
+   "id": "mot16_02",
+   "name": "Plaza (MOT16-02)",
+   "fps": 5,
+   "source": {
+    "type": "rtsp",
+    "url": "rtsp://127.0.0.1:8554/mot16_02"
+   },
+   "zones": [
+    {
+     "id": "m02_plaza",
+     "name": "Plaza",
+     "type": "general",
+     "polygon": [
+      [
+       0.0,
+       0.57
+      ],
+      [
+       1.0,
+       0.57
+      ],
+      [
+       1.0,
+       1.0
+      ],
+      [
+       0.0,
+       1.0
+      ]
+     ]
+    },
+    {
+     "id": "m02_shopfront",
+     "name": "Left shopfronts",
+     "type": "entrance",
+     "polygon": [
+      [
+       0.0,
+       0.45
+      ],
+      [
+       0.32,
+       0.45
+      ],
+      [
+       0.32,
+       0.57
+      ],
+      [
+       0.0,
+       0.57
+      ]
+     ]
+    },
+    {
+     "id": "m02_far_square",
+     "name": "Far square",
+     "type": "general",
+     "polygon": [
+      [
+       0.32,
+       0.45
+      ],
+      [
+       0.88,
+       0.45
+      ],
+      [
+       0.88,
+       0.57
+      ],
+      [
+       0.32,
+       0.57
+      ]
+     ]
+    },
+    {
+     "id": "m02_right_doorway",
+     "name": "Right doorway",
+     "type": "restricted",
+     "polygon": [
+      [
+       0.88,
+       0.45
+      ],
+      [
+       1.0,
+       0.45
+      ],
+      [
+       1.0,
+       0.57
+      ],
+      [
+       0.88,
+       0.57
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "mot16_04",
+   "name": "Night street (MOT16-04)",
+   "fps": 5,
+   "source": {
+    "type": "rtsp",
+    "url": "rtsp://127.0.0.1:8554/mot16_04"
+   },
+   "zones": [
+    {
+     "id": "m04_sidewalk",
+     "name": "Left sidewalk",
+     "type": "general",
+     "polygon": [
+      [
+       0.0,
+       0.0
+      ],
+      [
+       0.36,
+       0.0
+      ],
+      [
+       0.36,
+       1.0
+      ],
+      [
+       0.0,
+       1.0
+      ]
+     ]
+    },
+    {
+     "id": "m04_road",
+     "name": "Road",
+     "type": "driveway",
+     "polygon": [
+      [
+       0.36,
+       0.0
+      ],
+      [
+       0.78,
+       0.0
+      ],
+      [
+       0.78,
+       1.0
+      ],
+      [
+       0.36,
+       1.0
+      ]
+     ]
+    },
+    {
+     "id": "m04_bike_parking",
+     "name": "Bike parking",
+     "type": "restricted",
+     "polygon": [
+      [
+       0.78,
+       0.45
+      ],
+      [
+       1.0,
+       0.45
+      ],
+      [
+       1.0,
+       0.78
+      ],
+      [
+       0.78,
+       0.78
+      ]
+     ]
+    },
+    {
+     "id": "m04_shop_front",
+     "name": "Shop front",
+     "type": "entrance",
+     "polygon": [
+      [
+       0.08,
+       0.15
+      ],
+      [
+       0.24,
+       0.15
+      ],
+      [
+       0.24,
+       0.33
+      ],
+      [
+       0.08,
+       0.33
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "mot16_09",
+   "name": "Storefront (MOT16-09)",
+   "fps": 5,
+   "source": {
+    "type": "rtsp",
+    "url": "rtsp://127.0.0.1:8554/mot16_09"
+   },
+   "zones": [
+    {
+     "id": "m09_walkway",
+     "name": "Walkway",
+     "type": "general",
+     "polygon": [
+      [
+       0.0,
+       0.73
+      ],
+      [
+       1.0,
+       0.73
+      ],
+      [
+       1.0,
+       1.0
+      ],
+      [
+       0.0,
+       1.0
+      ]
+     ]
+    },
+    {
+     "id": "m09_shop_entrance",
+     "name": "Shop entrance",
+     "type": "entrance",
+     "polygon": [
+      [
+       0.0,
+       0.6
+      ],
+      [
+       0.58,
+       0.6
+      ],
+      [
+       0.58,
+       0.73
+      ],
+      [
+       0.0,
+       0.73
+      ]
+     ]
+    },
+    {
+     "id": "m09_store_entrance",
+     "name": "Store entrance",
+     "type": "entrance",
+     "polygon": [
+      [
+       0.58,
+       0.56
+      ],
+      [
+       1.0,
+       0.56
+      ],
+      [
+       1.0,
+       0.73
+      ],
+      [
+       0.58,
+       0.73
+      ]
+     ]
+    },
+    {
+     "id": "m09_shop_interior",
+     "name": "Shop interior",
+     "type": "restricted",
+     "polygon": [
+      [
+       0.12,
+       0.45
+      ],
+      [
+       0.36,
+       0.45
+      ],
+      [
+       0.36,
+       0.6
+      ],
+      [
+       0.12,
+       0.6
+      ]
+     ]
+    }
+   ]
+  }
+ ],
+ "topology": {
+  "links": []
+ },
+ "detector": {
+  "type": "mediapipe",
+  "model": "efficientdet_lite0",
+  "delegate": "cpu",
+  "score_threshold": 0.45,
+  "classes": [
+   "person",
+   "car",
+   "truck",
+   "bus",
+   "motorcycle",
+   "bicycle",
+   "dog",
+   "cat"
+  ],
+  "min_box_area": 0.0015,
+  "idle_detect_interval_s": 1.0
+ },
+ "tracker": {
+  "iou_threshold": 0.25,
+  "min_hits": 3,
+  "max_missed_ms": 2500
+ },
+ "engine": {
+  "zone_enter_ms": 600,
+  "zone_exit_ms": 1500,
+  "presence_grace_ms": 5000
+ },
+ "correlation": {
+  "reacquire_s": 4,
+  "min_link_confidence": 0.5,
+  "ambiguity_margin": 0.15
+ },
+ "rules": [
+  {
+   "id": "restricted_entry",
+   "type": "zone_entry",
+   "zone_types": [
+    "restricted"
+   ],
+   "classes": [
+    "person"
+   ],
+   "severity": "high"
+  },
+  {
+   "id": "linger_30s",
+   "type": "dwell",
+   "zone_types": [
+    "entrance",
+    "yard",
+    "driveway",
+    "perimeter",
+    "general"
+   ],
+   "classes": [
+    "person"
+   ],
+   "min_dwell_s": 30,
+   "severity": "medium"
+  },
+  {
+   "id": "repeated_entrance",
+   "type": "repeated_presence",
+   "zone_types": [
+    "entrance"
+   ],
+   "classes": [
+    "person"
+   ],
+   "count": 3,
+   "window_s": 120,
+   "severity": "medium"
+  },
+  {
+   "id": "vehicle_stop",
+   "type": "dwell",
+   "zone_types": [
+    "driveway"
+   ],
+   "classes": [
+    "vehicle"
+   ],
+   "min_dwell_s": 30,
+   "require_arrival": true,
+   "severity": "low"
+  }
+ ],
+ "incidents": {
+  "merge_window_s": 120,
+  "close_after_s": 60,
+  "corroboration_behaviors": 3
+ },
+ "alerts": {
+  "notify_min_severity": {
+   "disarmed": "none",
+   "home": "high",
+   "away": "medium"
+  },
+  "max_notifications": 6,
+  "rate_window_s": 600,
+  "channels": []
+ },
+ "recording": {
+  "enabled": false
+ },
+ "privacy": {
+  "store_clips": false,
+  "store_snapshots": false,
+  "retention_days": {
+   "events": 30,
+   "media": 7
+  }
+ },
+ "health": {
+  "camera_offline_after_s": 60
+ },
+ "storage": {
+  "dir": "bench_runs/_live_store"
+ },
+ "settings_defaults": {
+  "arm_mode": "away",
+  "sensitivity": "normal",
+  "notifications_enabled": true
+ },
+ "drone": {
+  "enabled": false
+ },
+ "_comment": "Publish test streams with MediaMTX + ffmpeg (see docs/benchmarking.md). For a real camera set the source to {\"type\": \"rtsp\", \"url\": \"rtsp://user:$-{CAM_PASS}@192.168.1.20:554/stream2\"} (without the dash: env var substitution) or {\"type\": \"usb\", \"index\": 0}."
+}

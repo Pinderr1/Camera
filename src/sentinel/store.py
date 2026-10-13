@@ -59,6 +59,9 @@ class EventStore:
         with self._lock:
             self._db.executescript(SCHEMA)
             self._db.execute("PRAGMA journal_mode=WAL")
+            # WAL + NORMAL stays consistent after a crash and only risks the last
+            # commit on power loss; FULL fsyncs every event (tens of ms on Windows).
+            self._db.execute("PRAGMA synchronous=NORMAL")
 
     def close(self) -> None:
         with self._lock:

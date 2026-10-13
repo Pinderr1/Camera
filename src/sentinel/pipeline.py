@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .config import sensitivity_adjustments
 from .detectors import create_detector
@@ -36,11 +36,17 @@ class CameraWorker(threading.Thread):
     """capture → privacy mask → motion gate → detect → track → temporal engine.
     One thread per camera; the shared runtime serialises engine access."""
 
-    def __init__(self, camera: dict[str, Any], runtime: SentinelRuntime) -> None:
+    def __init__(
+        self,
+        camera: dict[str, Any],
+        runtime: SentinelRuntime,
+        on_frame: Callable[[dict[str, Any], Any], None] | None = None,
+    ) -> None:
         super().__init__(name=f"camera-{camera['id']}", daemon=True)
         self.camera = camera
         self.runtime = runtime
         self.config = runtime.config
+        self.on_frame = on_frame  # benchmark/diagnostics hook: (frame record, masked image)
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -86,14 +92,37 @@ class CameraWorker(threading.Thread):
                     continue
                 image = apply_privacy_masks(frame.image, masks)
                 now_ms = frame.timestamp_ms
-                if motion.changed(image) or active or now_ms - last_detect_ms >= idle_detect_ms:
+                detections: list[Detection] = []
+                timings = {"detect": 0.0, "track": 0.0, "engine": 0.0}
+                detected = motion.changed(image) or bool(active) or now_ms - last_detect_ms >= idle_detect_ms
+                if detected:
                     last_detect_ms = now_ms
+                    stage = time.perf_counter()
                     detections = filter_detections(detector.detect(frame), camera_id, zones, min_area, track_classes)
+                    timings["detect"] = (time.perf_counter() - stage) * 1000
+                    stage = time.perf_counter()
                     active, ended = tracker.update(detections, now_ms)
                     for track in active:
                         if track.appearance is None or track.hits % 10 == 0:
                             track.appearance = appearance_vector(image, track.bbox)
+                    timings["track"] = (time.perf_counter() - stage) * 1000
+                    stage = time.perf_counter()
                     self.runtime.process_camera_update(camera_id, now_ms, active, ended, image=image)
+                    timings["engine"] = (time.perf_counter() - stage) * 1000
+                if self.on_frame is not None:
+                    self.on_frame(
+                        {
+                            "camera_id": camera_id,
+                            "capture_ms": now_ms,
+                            "done_ms": int(time.time() * 1000),
+                            "detected": detected,
+                            "timings": timings,
+                            "detections": detections,
+                            "tracks": list(active),
+                            "frames_read": getattr(source, "frames_read", None),
+                        },
+                        image,
+                    )
                 recorder.add_frame(image, now_ms)
                 site_ids = dict(self.runtime.engine.correlator.track_to_site)
                 self.runtime.latest_jpeg[camera_id] = encode_jpeg(annotate(image, active, camera_zones, site_ids=site_ids))

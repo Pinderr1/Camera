@@ -16,8 +16,9 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 
 | Area | Status |
 | --- | --- |
-| Multi-camera ingestion (RTSP/HTTP/USB/file/simulated) | Built. Real IP cameras have not been field-tested yet |
-| Object detection (MediaPipe EfficientDet-Lite, CPU) | Built. Not yet benchmarked on real footage |
+| Multi-camera ingestion (RTSP/HTTP/USB/file/simulated) | Built. RTSP verified against a local MediaMTX server. No real IP camera tested yet |
+| Real-footage benchmark (`sentinel.bench`) | Built: recorded and live feeds, accuracy against annotations, latency, CPU/memory, multi-camera sessions, playback viewer, reports |
+| Object detection (MediaPipe EfficientDet-Lite, CPU, optional tiling) | Built. **Benchmarked on real footage: high precision, low recall** (see ROADMAP findings) |
 | Tracking (IoU + constant velocity) | Built and unit-tested |
 | Temporal event engine (zone entry, dwell, repeated presence, sequence, multi-camera) | Built and tested |
 | Cross-camera correlation (topology + timing + optional appearance; refuses ambiguous merges) | Built and tested |
@@ -55,12 +56,17 @@ src/sentinel/            the Sentinel brain (current product)
   mqtt.py                MQTT mirror of bus traffic
   drone/                 base (adapter ABC, telemetry), mock (simulator), geofence, manager, mavlink
   web/                   dashboard (static HTML/CSS/JS, no build step)
+  bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
+                         metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
 config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, rules, drone
 config/scenarios/              scripted scenarios (delivery, prowler, ambiguous handoff, demo loop)
+config/bench/                  benchmark site config (zones per public clip), manifest, live RTSP example
+scripts/fetch_bench_footage.py downloads public annotated footage into data/bench/ (git-ignored)
 tests/test_sentinel_*.py       Sentinel tests (tests/sentinel_helpers.py holds the fixtures)
 docs/architecture.md           architecture and event-processing design
 docs/api.md                    API reference for dashboard and mobile clients
 docs/drone-integration.md      drone design, safety gates, ArduPilot/MAVLink path
+docs/benchmarking.md           how to measure Sentinel on real footage, and what each metric means
 ROADMAP.md                     phased implementation roadmap
 sources.md                     license and reuse audit
 src/senior_safety/, webapp/, scripts/, integrations/, data/   legacy CameraAI (frozen)
@@ -77,6 +83,9 @@ python -m unittest discover -s tests -p "test_sentinel_*.py"
 python -m sentinel validate --config config/sentinel.example.json
 python -m sentinel replay --scenario config/scenarios/prowler.json --at 2026-10-12T02:00:00
 python -m sentinel serve                                   # dashboard on http://127.0.0.1:8080
+python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
+python -m sentinel.bench run --all --out bench_runs/NAME   # real-footage benchmark -> report.md/html
+python -m sentinel.bench view --runs bench_runs            # playback/debug viewer on :8090
 ```
 
 Install dependencies with `pip install -r requirements.txt`. The engine, tracker, correlator, incidents, store, and drone manager use only the standard library. OpenCV, MediaPipe, FastAPI, and paho are needed only by the I/O edges. Keep it that way so the core stays testable anywhere.
@@ -111,6 +120,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 ## Working conventions
 
 - Every new rule type, event type, or alert behaviour needs a unit test, and ideally a scenario in `config/scenarios/` with an assertion in `tests/test_sentinel_scenarios.py`. Tune rules with `replay` before touching thresholds in live config.
+- **Detection, tracking, or rule changes must be re-measured with `sentinel.bench` against the previous run, and the result recorded in the ROADMAP findings.** Never quote accuracy without naming the labeled footage behind it. Synthetic degradations and unlabeled clips never support accuracy claims.
 - Keep the core (`models`, `tracker`, `engine`, `correlation`, `incidents`, `store`, `drone/manager`) free of OpenCV, numpy, and FastAPI imports.
 - New config keys must be validated in `config.validate_config` and documented in `docs/architecture.md`.
 - API changes are additive under `/api/v1`. Breaking changes go to `/api/v2`. Update `docs/api.md`.
