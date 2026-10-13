@@ -45,7 +45,7 @@ def run_scenario(
             runtime.started_ms = start_ms
             zones = ZoneMap(config)
             detector_settings = config.get("detector", {})
-            min_area = float(detector_settings.get("min_box_area", 0.0015))
+            min_area = float(detector_settings.get("min_box_area", 0.0004))
             trackers = {
                 camera["id"]: IoUTracker(camera["id"], TrackerConfig.from_dict(config.get("tracker")))
                 for camera in cameras(config)

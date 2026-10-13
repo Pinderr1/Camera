@@ -11,6 +11,7 @@ from ..tracker import iou
 from .labels import GTBox
 
 SIZE_BUCKETS = (("small", 0.0, 0.10), ("medium", 0.10, 0.25), ("large", 0.25, 9.0))  # by box height / frame height
+VISIBILITY_BUCKETS = (("<25%", 0.0, 0.25), ("25-50%", 0.25, 0.5), ("50-75%", 0.5, 0.75), (">=75%", 0.75, 9.0))
 
 
 def size_bucket(bbox: BBox) -> str:
@@ -18,6 +19,25 @@ def size_bucket(bbox: BBox) -> str:
         if low <= bbox[3] < high:
             return name
     return "large"
+
+
+def visibility_bucket(visibility: float) -> str:
+    for name, low, high in VISIBILITY_BUCKETS:
+        if low <= visibility < high:
+            return name
+    return ">=75%"
+
+
+def count_group_boxes(predictions: list[BBox], unmatched: list[int], ground_truth: list[GTBox]) -> int:
+    """Unmatched predictions whose box contains the centres of two or more
+    annotated people: several people reported as one detection."""
+    centres = [(gt.bbox[0] + gt.bbox[2] / 2, gt.bbox[1] + gt.bbox[3] / 2) for gt in ground_truth if not gt.ignore]
+    groups = 0
+    for index in unmatched:
+        x, y, w, h = predictions[index]
+        if sum(1 for cx, cy in centres if x <= cx <= x + w and y <= cy <= y + h) >= 2:
+            groups += 1
+    return groups
 
 
 def ratio(numerator: float, denominator: float) -> float | None:
@@ -79,17 +99,22 @@ class DetectionStats:
     frames: int = 0
     tp_visible: int = 0
     fn_visible: int = 0
+    group_boxes: int = 0
+    by_visibility: dict[str, list[int]] = field(default_factory=lambda: {name: [0, 0] for name, _, _ in VISIBILITY_BUCKETS})
     by_size: dict[str, list[int]] = field(default_factory=lambda: {name: [0, 0] for name, _, _ in SIZE_BUCKETS})  # [tp, fn]
 
-    def add(self, matches: list, unmatched: list, missed: list[GTBox]) -> None:
+    def add(self, matches: list, unmatched: list, missed: list[GTBox], group_boxes: int = 0) -> None:
         self.frames += 1
+        self.group_boxes += group_boxes
         self.tp += len(matches)
         self.fp += len(unmatched)
         self.fn += len(missed)
         for _, gt in matches:
             self.by_size[size_bucket(gt.bbox)][0] += 1
             self.tp_visible += gt.visibility >= 0.5
+            self.by_visibility[visibility_bucket(gt.visibility)][0] += 1
         for gt in missed:
+            self.by_visibility[visibility_bucket(gt.visibility)][1] += 1
             self.by_size[size_bucket(gt.bbox)][1] += 1
             self.fn_visible += gt.visibility >= 0.5
 
@@ -107,6 +132,9 @@ class DetectionStats:
             "recall_visible": ratio(self.tp_visible, self.tp_visible + self.fn_visible),
             "fp_per_frame": ratio(self.fp, self.frames),
             "recall_by_size": {name: ratio(tp, tp + fn) for name, (tp, fn) in self.by_size.items()},
+            "recall_by_visibility": {name: ratio(tp, tp + fn) for name, (tp, fn) in self.by_visibility.items()},
+            "group_boxes": self.group_boxes,
+            "group_box_share_of_fp": ratio(self.group_boxes, self.fp),
             "gt_boxes_by_size": {name: tp + fn for name, (tp, fn) in self.by_size.items()},
         }
 

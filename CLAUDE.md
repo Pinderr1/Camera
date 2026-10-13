@@ -18,7 +18,7 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | --- | --- |
 | Multi-camera ingestion (RTSP/HTTP/USB/file/simulated) | Built. RTSP verified against a local MediaMTX server. No real IP camera tested yet |
 | Real-footage benchmark (`sentinel.bench`) | Built: recorded and live feeds, accuracy against annotations, latency, CPU/memory, multi-camera sessions, playback viewer, reports |
-| Object detection (MediaPipe EfficientDet-Lite, CPU, optional tiling) | Built. **Benchmarked on real footage: high precision, low recall** (see ROADMAP findings) |
+| Object detection (ONNX Runtime: YOLOX default, RT-DETRv2/D-FINE/RF-DETR options; EfficientDet fallback) | Built and benchmarked. Default YOLOX-s @960 on GPU: about 74% person recall at about 95% precision on MOT16-09. Crowded MOT16-02 is still about 30% (see ROADMAP) |
 | Tracking (IoU + constant velocity) | Built and unit-tested |
 | Temporal event engine (zone entry, dwell, repeated presence, sequence, multi-camera) | Built and tested |
 | Cross-camera correlation (topology + timing + optional appearance; refuses ambiguous merges) | Built and tested |
@@ -45,7 +45,8 @@ src/sentinel/            the Sentinel brain (current product)
   notify.py              ntfy / MQTT / log notifiers on a background dispatcher
   vision.py              frames, privacy masks, motion gate, appearance histogram, annotation
   sources.py             OpenCV capture with latest-frame reader and reconnect backoff
-  detectors.py           Detector protocol, MediaPipe object detector, scripted (sim) detector
+  detectors.py           Detector protocol, hardware profiles (`model: auto`), tiling, NMS, MediaPipe + scripted detectors
+  detectors_onnx.py      ONNX Runtime detectors (YOLOX, DETR family), model registry with licence/training-data metadata
   recorder.py            pre-roll ring buffer + MP4 clips + snapshots
   simulation.py          scripted multi-camera scenarios and simulated camera source
   pipeline.py            CameraWorker thread: capture -> mask -> gate -> detect -> track -> engine
@@ -86,6 +87,8 @@ python -m sentinel serve                                   # dashboard on http:/
 python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
 python -m sentinel.bench run --all --out bench_runs/NAME   # real-footage benchmark -> report.md/html
 python -m sentinel.bench view --runs bench_runs            # playback/debug viewer on :8090
+bash scripts/bench_detectors.sh bench_runs/detectors       # detector comparison (same clips, same settings)
+python -m sentinel.bench compare bench_runs/detectors/*    # comparison table across runs
 ```
 
 Install dependencies with `pip install -r requirements.txt`. The engine, tracker, correlator, incidents, store, and drone manager use only the standard library. OpenCV, MediaPipe, FastAPI, and paho are needed only by the I/O edges. Keep it that way so the core stays testable anywhere.
@@ -107,8 +110,8 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 
 ## Technical decisions (and why)
 
-- **Detector: MediaPipe EfficientDet-Lite (Apache-2.0).** It is already a dependency, it runs on CPU, and it is commercially safe. Ultralytics YOLO is AGPL and must not ship in a closed product without a commercial licence. Any other detector plugs in behind `detectors.Detector.detect(frame) -> list[Detection]`. Good candidates: ONNX Runtime or OpenVINO running Apache/MIT-licensed weights such as RT-DETR or YOLOX, for GPU or NPU acceleration.
-- **CPU practicality.** A motion gate skips detection on static frames, an idle re-detect runs at 1 s, frame rate is capped per camera (default 5 fps), the reader thread keeps only the latest frame, and pre-roll is stored as JPEG. GPU is opt-in through `detector.delegate: "gpu"` where MediaPipe supports it (not on Windows).
+- **Detector: YOLOX via ONNX Runtime (Apache-2.0 code and weights), chosen by measurement.** `model: auto` uses YOLOX-s at 960x544 on any GPU provider (DirectML on Windows, CUDA, OpenVINO) and YOLOX-tiny at 416 on CPU. EfficientDet-Lite0 (MediaPipe) remains the fallback when ONNX Runtime is absent. RT-DETRv2 and D-FINE (Apache-2.0, COCO-only weights) are supported alternatives. RF-DETR is benchmark-only (Objects365 pre-training needs legal review). Ultralytics YOLO (AGPL) and YOLOv6/7/9 (GPL) are excluded. **Check weights licences separately from code licences**, and record them in `detectors_onnx.MODELS` (tests enforce the fields).
+- **Hardware practicality.** A motion gate skips detection on static frames, an idle re-detect runs at 1 s, frame rate is capped per camera (default 5 fps), the reader thread keeps only the latest frame, and pre-roll is stored as JPEG. ONNX sessions are shared across cameras (one GPU copy, with DirectML calls serialised). Use camera sub-streams: full-rate 1080p decoding is the CPU bottleneck on older hosts.
 - **Tracker: our own IoU tracker.** It is small, dependency-free, and has time-based expiry. Move to ByteTrack or OC-SORT behind the same `update()` contract if crowded scenes require it.
 - **Storage: SQLite (WAL) plus files on disk.** Zero-ops and single-site. The store API is narrow so Postgres can replace it for multi-site hosting.
 - **API: FastAPI + uvicorn.** Typed request models, OpenAPI at `/api/docs` for future mobile clients, async SSE and MJPEG. Bearer token for apps, exchanged for an HttpOnly cookie for the dashboard. Tokens never go in URLs.

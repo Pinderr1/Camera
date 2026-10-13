@@ -30,6 +30,9 @@ class TrackerConfig:
     min_hits: int = 3
     max_missed_ms: int = 2500
     smoothing: float = 0.6
+    # ByteTrack-style second stage: detections below this score may only extend
+    # an existing track (IoU match), never start one. 0 disables the split.
+    high_score: float = 0.0
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "TrackerConfig":
@@ -39,9 +42,10 @@ class TrackerConfig:
 
 class IoUTracker:
     """Per-camera multi-object tracker: constant-velocity prediction plus greedy
-    IoU / centre-distance association. Deliberately small and dependency-free;
-    swap for ByteTrack/OC-SORT behind the same update() contract if crowded
-    scenes need it."""
+    IoU / centre-distance association, with an optional ByteTrack-style second
+    pass that lets low-confidence boxes (partly occluded people) keep existing
+    tracks alive without ever creating new ones. Dependency-free; the idea, not
+    the code, comes from ByteTrack (Zhang et al., 2022)."""
 
     def __init__(self, camera_id: str, config: TrackerConfig | None = None) -> None:
         self.camera_id = camera_id
@@ -54,36 +58,17 @@ class IoUTracker:
         detections = [
             Detection(canonical_class(det.label), det.confidence, det.bbox) for det in detections
         ]
+        high = [det for det in detections if det.confidence >= self.config.high_score]
+        low = [det for det in detections if det.confidence < self.config.high_score]
         predicted = {track_id: self._predict(track, timestamp_ms) for track_id, track in self.tracks.items()}
 
-        pairs: list[tuple[float, str, int]] = []
-        for track_id, track in self.tracks.items():
-            box = predicted[track_id]
-            diagonal = math.hypot(box[2], box[3]) or 1e-6
-            for index, det in enumerate(detections):
-                if det.label != track.label:
-                    continue
-                overlap = iou(box, det.bbox)
-                if overlap >= self.config.iou_threshold:
-                    pairs.append((1.0 + overlap, track_id, index))
-                    continue
-                cx, cy = _center(box)
-                dx, dy = _center(det.bbox)
-                distance = math.hypot(cx - dx, cy - dy) / diagonal
-                if distance <= self.config.max_center_distance:
-                    pairs.append((1.0 - distance / (self.config.max_center_distance * 2), track_id, index))
-
         matched_tracks: set[str] = set()
-        matched_dets: set[int] = set()
-        for _, track_id, index in sorted(pairs, reverse=True):
-            if track_id in matched_tracks or index in matched_dets:
-                continue
-            matched_tracks.add(track_id)
-            matched_dets.add(index)
-            self._apply(self.tracks[track_id], detections[index], timestamp_ms)
+        matched_high = self._associate(high, predicted, matched_tracks, timestamp_ms, allow_distance=True)
+        if low:
+            self._associate(low, predicted, matched_tracks, timestamp_ms, allow_distance=False)
 
-        for index, det in enumerate(detections):
-            if index not in matched_dets:
+        for index, det in enumerate(high):
+            if index not in matched_high:
                 self._spawn(det, timestamp_ms)
 
         ended: list[Track] = []
@@ -99,6 +84,44 @@ class IoUTracker:
 
         active = [track for track in self.tracks.values() if track.confirmed and track.last_seen_ms == timestamp_ms]
         return active, ended
+
+    def _associate(
+        self,
+        detections: list[Detection],
+        predicted: dict[str, BBox],
+        matched_tracks: set[str],
+        timestamp_ms: int,
+        *,
+        allow_distance: bool,
+    ) -> set[int]:
+        pairs: list[tuple[float, str, int]] = []
+        for track_id, track in self.tracks.items():
+            if track_id in matched_tracks or track_id not in predicted:
+                continue
+            box = predicted[track_id]
+            diagonal = math.hypot(box[2], box[3]) or 1e-6
+            for index, det in enumerate(detections):
+                if det.label != track.label:
+                    continue
+                overlap = iou(box, det.bbox)
+                if overlap >= self.config.iou_threshold:
+                    pairs.append((1.0 + overlap, track_id, index))
+                    continue
+                if not allow_distance:
+                    continue
+                cx, cy = _center(box)
+                dx, dy = _center(det.bbox)
+                distance = math.hypot(cx - dx, cy - dy) / diagonal
+                if distance <= self.config.max_center_distance:
+                    pairs.append((1.0 - distance / (self.config.max_center_distance * 2), track_id, index))
+        matched_dets: set[int] = set()
+        for _, track_id, index in sorted(pairs, reverse=True):
+            if track_id in matched_tracks or index in matched_dets:
+                continue
+            matched_tracks.add(track_id)
+            matched_dets.add(index)
+            self._apply(self.tracks[track_id], detections[index], timestamp_ms)
+        return matched_dets
 
     def flush(self) -> list[Track]:
         ended = [track for track in self.tracks.values() if track.confirmed]

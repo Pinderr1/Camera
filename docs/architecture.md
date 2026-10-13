@@ -33,14 +33,27 @@ Data flows one way: frames → detections → tracks → events → incidents �
 - `MotionGate` runs frame differencing on a 160x90 grayscale image. The detector runs when there is motion, when tracks are active, or at least every `idle_detect_interval_s`.
 - Detections smaller than `min_box_area`, or whose ground point falls in an `ignore` zone, are dropped.
 
-### 3. Detection (`detectors.py`)
-- `Detector.detect(frame) -> list[Detection]` with normalized boxes. Labels are COCO names, folded into canonical classes: `person`, `vehicle`, `bicycle`, `animal`, `bag`.
-- `MediaPipeObjectDetector` uses EfficientDet-Lite0 by default (`efficientdet_lite2` is more accurate and slower). The model downloads to `models/`. It runs in IMAGE mode.
-- `detector.tiles: [cols, rows]` adds overlapping tile passes (`tile_overlap`, default 0.15) to the full-frame pass. Results are merged with per-label IoU NMS. Each tile is one more inference per frame. See ROADMAP findings for the measured recall/CPU trade-off.
-- The detector score threshold is shifted by sensitivity: low +0.10, high −0.08.
+### 3. Detection (`detectors.py`, `detectors_onnx.py`)
+- Interface: `Detector.detect(frame) -> list[Detection]`, with normalized boxes. Labels are COCO names, folded into canonical classes: `person`, `vehicle`, `bicycle`, `animal`, `bag`.
+- **Default: `{"type": "onnx", "model": "auto"}`.** `resolve_detector_settings` picks a measured profile for the machine:
+  - **GPU present** (CUDA, DirectML, or OpenVINO provider installed): YOLOX-s at 960x544, threshold 0.5.
+  - **CPU only:** YOLOX-tiny at 416, threshold 0.45.
+  - **ONNX Runtime missing:** EfficientDet-Lite0 via MediaPipe, which is kept as the fallback.
+  - Override the profiles with `detector.profiles.gpu` and `detector.profiles.cpu`.
+- `OnnxDetector` decodes two model families:
+  - **YOLOX:** letterbox, BGR 0–255, grid/stride decode, NMS. The official ONNX files declare a fixed 416 or 640 input, but the graph is shape-agnostic. When `input_size` differs, a resolution-flexible copy (`*.dynamic.onnx`) is written once with the `onnx` package, with the weights unchanged.
+  - **DETR family** (RT-DETRv2, D-FINE, RF-DETR exports from onnx-community): resize, RGB 0–1 (ImageNet normalization for RF-DETR), sigmoid scores, no NMS needed. These have dynamic input shapes. `keep_aspect: true` keeps the frame's aspect, with the longest side set to `input_size[0]`.
+- **Registry** (`detectors_onnx.MODELS`): each entry records the download URL, `license`, `training_data`, and `commercial_ok`. Only `commercial_ok` models may be shipped defaults (see `sources.md`). D-FINE is forced to CPU because its export returns corrupted outputs on DirectML.
+- **Providers** (`providers`): `"auto"` (CUDA, then DirectML, then OpenVINO, then CPU), or an explicit list such as `["dml", "cpu"]`. `cpu_threads` limits ONNX intra-op threads per session.
+- **Sessions are shared across cameras** running the same model, so there is one copy of the weights on the GPU. DirectML calls are serialised with a lock.
+- **Thresholds:** `score_threshold` is the confidence at which a box counts as a reported detection. The sensitivity setting shifts it: low +0.10, high −0.08. The optional `low_score_threshold` also passes weaker boxes to the tracker for track extension only (see section 4).
+- `min_box_area` (default 0.0004 of the frame) drops tiny boxes. The old 0.0015 discarded correctly detected distant people once the detector improved.
+- `tiles: [cols, rows]` adds overlapping tile passes for any backend. Tile detections clipped at an inner tile edge are dropped when contained in another box. This was measured as inferior to a higher input resolution with YOLOX (more group-box false positives).
+- `MediaPipeObjectDetector` (EfficientDet-Lite0/2) runs in IMAGE mode.
 
 ### 4. Tracking (`tracker.py`)
 - Matching uses constant-velocity prediction, then greedy assignment by IoU, with a centre-distance fallback for fast movers. Tracks never match across classes.
+- Optional ByteTrack-style second stage (`tracker.high_score`, set automatically from `detector.low_score_threshold`): boxes below the reporting threshold may extend an existing track by IoU, but never start one. It is measured as mixed: more alert events found, fewer identity switches with YOLOX-m, slightly more false notifications. It is opt-in.
 - A track is confirmed after `min_hits` matches and expires after `max_missed_ms` without one. The tracker records the displacement from a track's first position, which the engine uses to decide whether a vehicle *arrived* or was already parked.
 
 ### 5. Zones (`engine.ZoneMap`)

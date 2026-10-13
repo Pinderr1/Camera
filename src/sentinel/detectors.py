@@ -67,31 +67,13 @@ class MediaPipeObjectDetector:
         import cv2
 
         rgb = cv2.cvtColor(frame.image, cv2.COLOR_BGR2RGB)
-        detections = self._detect_region(rgb, (0.0, 0.0, 1.0, 1.0))
-        cols, rows = self.tiles
-        if cols * rows == 1:
-            return detections
-        cut: set[int] = set()  # indexes of tile detections clipped by an inner tile edge
-        tile_w = min(1.0, (1 + self.tile_overlap * (cols - 1)) / cols)
-        tile_h = min(1.0, (1 + self.tile_overlap * (rows - 1)) / rows)
-        for col in range(cols):
-            for row in range(rows):
-                x0 = 0.0 if cols == 1 else col * (1 - tile_w) / (cols - 1)
-                y0 = 0.0 if rows == 1 else row * (1 - tile_h) / (rows - 1)
-                for det in self._detect_region(rgb, (x0, y0, tile_w, tile_h)):
-                    if _touches_inner_edge(det.bbox, (x0, y0, tile_w, tile_h)):
-                        cut.add(len(detections))
-                    detections.append(det)
-        return non_max_suppression(detections, cut=cut)
+        return detect_with_tiles(rgb, self._detect_region, self.tiles, self.tile_overlap)
 
     def _detect_region(self, rgb, region: tuple[float, float, float, float]) -> list[Detection]:
         import mediapipe as mp
-        import numpy as np
 
         height, width = rgb.shape[:2]
-        rx, ry, rw, rh = region
-        x0, y0 = int(rx * width), int(ry * height)
-        crop = np.ascontiguousarray(rgb[y0 : y0 + int(rh * height), x0 : x0 + int(rw * width)])
+        crop, x0, y0 = crop_region(rgb, region)
         result = self._detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=crop))
         out = []
         for item in result.detections:
@@ -108,6 +90,37 @@ class MediaPipeObjectDetector:
 
     def close(self) -> None:
         self._detector.close()
+
+
+def detect_with_tiles(image, detect_region, tiles, overlap: float) -> list[Detection]:
+    """Full-frame pass plus optional overlapping [cols, rows] tile passes.
+    `detect_region(image, (x, y, w, h))` returns full-frame normalized boxes."""
+    detections = detect_region(image, (0.0, 0.0, 1.0, 1.0))
+    cols, rows = tiles
+    if cols * rows == 1:
+        return detections
+    cut: set[int] = set()  # indexes of tile detections clipped by an inner tile edge
+    tile_w = min(1.0, (1 + overlap * (cols - 1)) / cols)
+    tile_h = min(1.0, (1 + overlap * (rows - 1)) / rows)
+    for col in range(cols):
+        for row in range(rows):
+            x0 = 0.0 if cols == 1 else col * (1 - tile_w) / (cols - 1)
+            y0 = 0.0 if rows == 1 else row * (1 - tile_h) / (rows - 1)
+            for det in detect_region(image, (x0, y0, tile_w, tile_h)):
+                if _touches_inner_edge(det.bbox, (x0, y0, tile_w, tile_h)):
+                    cut.add(len(detections))
+                detections.append(det)
+    return non_max_suppression(detections, cut=cut)
+
+
+def crop_region(image, region: tuple[float, float, float, float]):
+    """Returns (crop, x0_px, y0_px) for a normalized region."""
+    import numpy as np
+
+    height, width = image.shape[:2]
+    rx, ry, rw, rh = region
+    x0, y0 = int(rx * width), int(ry * height)
+    return np.ascontiguousarray(image[y0 : y0 + int(rh * height), x0 : x0 + int(rw * width)]), x0, y0
 
 
 def non_max_suppression(
@@ -158,10 +171,57 @@ def _touches_inner_edge(bbox, tile, margin: float = 0.01) -> bool:
     )
 
 
+# Measured defaults (see ROADMAP "Detector upgrade" findings): YOLOX-s at 960x544
+# on any GPU ONNX Runtime can use; YOLOX-tiny at 416 on CPU-only hosts, which costs
+# about the same as EfficientDet-Lite0 but more than doubles person recall.
+DEFAULT_PROFILES = {
+    "gpu": {"model": "yolox_s", "input_size": [960, 544], "score_threshold": 0.5},
+    "cpu": {"model": "yolox_tiny", "input_size": [416, 416], "score_threshold": 0.45},
+}
+
+
+def resolve_detector_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Expand `"model": "auto"` into a concrete profile for this machine, and fall
+    back to EfficientDet-Lite0 (MediaPipe) when ONNX Runtime is not installed."""
+    if settings.get("type") != "onnx":
+        return settings
+    try:
+        from .detectors_onnx import gpu_available
+    except ImportError:
+        log.warning("onnxruntime is not installed; falling back to EfficientDet-Lite0")
+        return {key: value for key, value in settings.items() if key not in {"model", "input_size", "providers"}} | {
+            "type": "mediapipe", "model": "efficientdet_lite0", "score_threshold": 0.45,
+        }
+    if settings.get("model", "auto") != "auto":
+        return settings
+    profiles = DEFAULT_PROFILES | settings.get("profiles", {})
+    profile = profiles["gpu" if gpu_available(settings.get("providers", "auto")) else "cpu"]
+    resolved = {key: value for key, value in settings.items() if key != "profiles"} | profile
+    log.info("detector profile: %s", {key: resolved.get(key) for key in ("model", "input_size", "score_threshold")})
+    return resolved
+
+
+def detection_thresholds(settings: dict[str, Any], offset: float = 0.0) -> tuple[float, float]:
+    """(threshold handed to the detector, tracker high_score).
+
+    `score_threshold` is the confidence at which a box counts as a reported
+    detection. With `low_score_threshold` set, the detector also returns weaker
+    boxes, which the tracker may only use to extend existing tracks."""
+    report = float(settings.get("score_threshold", 0.45)) + offset
+    low = settings.get("low_score_threshold")
+    if low is None:
+        return report, 0.0
+    return min(float(low), report), report
+
+
 def create_detector(settings: dict[str, Any], score_threshold: float) -> Detector:
     kind = settings.get("type", "mediapipe")
     if kind == "scripted":
         return ScriptedDetector()
     if kind == "mediapipe":
         return MediaPipeObjectDetector(settings, score_threshold)
+    if kind == "onnx":
+        from .detectors_onnx import OnnxDetector
+
+        return OnnxDetector(settings, score_threshold)
     raise ValueError(f"unknown detector type {kind!r}")

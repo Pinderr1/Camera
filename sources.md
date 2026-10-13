@@ -27,6 +27,26 @@ This project is reuse-first, but code is copied only when the upstream license c
 | MediaMTX | MIT | Local RTSP server for live-stream benchmarking (dev tool, not shipped). |
 | ffmpeg | LGPL/GPL builds | Re-encoding benchmark footage and publishing test RTSP streams (dev tool, not shipped). |
 
+### Detector models (verified 2026-10-13)
+
+The weights' licence is checked separately from the code's, and the training data is recorded, because a permissive code licence does not license the weights.
+
+| Model (registry name) | Code | Weights | Training data | Source of ONNX | Status |
+| --- | --- | --- | --- | --- | --- |
+| EfficientDet-Lite0/2 (MediaPipe) | Apache-2.0 | Apache-2.0 (MediaPipe model card) | COCO | MediaPipe model storage | Shippable (fallback) |
+| YOLOX nano/tiny/s/m (`yolox_*`) | Apache-2.0 (Megvii-BaseDetection/YOLOX) | Apache-2.0, official 0.1.1rc0 release | COCO 2017 | Official release assets (`*.onnx`) | **Shippable, default** |
+| D-FINE n/s/m (`dfine_*`) | Apache-2.0 (Peterande/D-FINE) | Apache-2.0 (ustc-community/dfine-*-coco model cards) | COCO only (`*_coco`; the `*_obj2coco` variants add Objects365 and are excluded) | onnx-community conversion | Shippable; CPU only (wrong output on DirectML) |
+| RT-DETRv2-R18 (`rtdetrv2_r18`) | Apache-2.0 (lyuwenyu/RT-DETR) | Apache-2.0 (PekingU/rtdetr_v2_r18vd) | COCO 2017; ImageNet-pretrained backbone | onnx-community conversion | Shippable |
+| RF-DETR base (`rfdetr_base`) | Apache-2.0 (roboflow/rf-detr) | Apache-2.0 | Objects365 pre-training (non-commercial dataset terms) and a DINOv2 backbone | onnx-community conversion | **Benchmark only until legal review** |
+| RTMDet | Apache-2.0 in mmdetection, GPL-3.0 in mmyolo | Varies by repo | COCO | Requires export | Not evaluated (licence ambiguity) |
+| Ultralytics YOLOv5/v8/v11, YOLOv10 | AGPL-3.0 | AGPL-3.0 | | | Excluded |
+| YOLOv6, YOLOv7, YOLOv9 | GPL-3.0 | GPL-3.0 | | | Excluded |
+| YOLO-NAS | Apache-2.0 code | Proprietary weights licence | | | Excluded |
+
+COCO itself has CC BY 4.0 annotations, and its images remain under their Flickr licences. That is standard industry practice for pre-trained detectors, but it should be noted in a commercial licence review. Every registry entry in `src/sentinel/detectors_onnx.py` carries `license`, `training_data`, and `commercial_ok`, and the tests enforce that.
+
+ONNX Runtime and `onnxruntime-directml` are MIT. `onnx` (Apache-2.0) is only used once, to relax YOLOX's declared input shape.
+
 **Do not ship:** Ultralytics YOLOv5/v8/v11 (AGPL-3.0 unless an Ultralytics enterprise licence is purchased), models trained on non-commercial datasets (e.g. OmniFall CC BY-NC), and face or licence-plate recognition models, which need a separate product and privacy decision first (see `CLAUDE.md`).
 
 Candidate future detectors with permissive licences: YOLOX (Apache-2.0), RT-DETR (Apache-2.0), RTMDet / MMDetection (Apache-2.0). Verify the licence of the **weights** and the training data, not only the code.

@@ -43,7 +43,7 @@ python -m unittest discover -s tests
    "source": {"type": "rtsp", "url": "rtsp://viewer:${CAM_DRIVEWAY_PASS}@192.168.1.20:554/stream2"}
    ```
    USB webcams use `{"type": "usb", "index": 0}`. Recorded files use `{"type": "file", "path": "clip.mp4"}`.
-3. Set `"detector": {"type": "mediapipe"}`. The EfficientDet-Lite model (about 7 MB) downloads to `models/` on first run.
+3. Set `"detector": {"type": "onnx", "model": "auto"}`. On a machine with a GPU (Windows: `onnxruntime-directml`, which works with any DirectX 12 GPU), this runs YOLOX-s at 960x544. On CPU only, it runs YOLOX-tiny at 416. Models download to `models/` on first run. Without ONNX Runtime, Sentinel falls back to EfficientDet-Lite0, which finds far fewer people (see the ROADMAP findings).
 4. Draw zones as normalized polygons over each camera view (0–1 coordinates; the ground point of a person is the bottom-centre of their box). Add `privacy_masks` over neighbours' windows or the street, and fill in `topology.links` with realistic walking times between cameras.
 5. Validate the config, then run with a token:
    ```powershell
@@ -67,4 +67,4 @@ python -m unittest discover -s tests
 
 ## Status
 
-The security brain works end to end and is covered by tests. It has been measured on real, publicly annotated footage, including night, indoor, storefront, and multi-camera load runs (see the findings in [ROADMAP.md](./ROADMAP.md)). The headline result: detection precision is high, but recall with the default CPU model is too low for unattended use. Improving detection on real cameras is the current priority. The drone layer is simulation-only. The MAVLink adapter reads telemetry, and every flight command is disabled by design.
+The security brain works end to end and is covered by tests. It has been measured on real, publicly annotated footage, including night, indoor, storefront, and multi-camera load runs (see the findings in [ROADMAP.md](./ROADMAP.md)). After the detector upgrade (YOLOX via ONNX Runtime, GPU-accelerated where available), person recall on the doorbell-height MOT16-09 clip rose from 28% to 74% at 95% precision. Crowded and heavily occluded scenes remain the weak spot (32% on MOT16-02), and nothing has been validated on real residential cameras yet. The drone layer is simulation-only. The MAVLink adapter reads telemetry, and every flight command is disabled by design.

@@ -26,6 +26,7 @@ All of this is evaluation-only data (non-commercial licences). Never train shipp
 | Detection precision / recall / F1 | Person boxes at IoU ≥ 0.5 against annotations, on frames where the detector ran. MOT "don't-care" boxes (static people, distractors, reflections, low-visibility flags) neither reward nor penalise | Yes |
 | Recall by size and by visibility | Annotation height bucket (small < 10% of frame height, medium < 25%, large), and recall for people at least 50% visible | Yes |
 | Tracking continuity | Annotated identities mostly tracked (≥80% of frames), mostly lost (<20%), identity switches, tracks per identity | Yes |
+| Occlusion and merging | Recall by visibility band (<25%, 25–50%, 50–75%, ≥75%). "Group boxes": false boxes containing the centres of two or more annotated people (several people reported as one) | Yes |
 | Events vs expected | **Reference pass:** annotated boxes and identities run through the same zones and rules give the events Sentinel *should* produce with perfect perception. Hand-written `expected_events` in the manifest are added. Matching uses type, camera, zone, and a time window | Yes |
 | Missed events / false alert events | Unmatched expected / unmatched produced events, per type | Yes |
 | Notifications | Produced vs reference notifications within 15 s. False alerts per hour. For `expect_no_notifications` clips, every push counts as false | Yes, or a stated expectation |
@@ -45,6 +46,9 @@ python -m sentinel.bench run --session street_3cam --out bench_runs/load        
 python -m sentinel.bench run --clips mot16_02 --degrade rain --out bench_runs/x  # synthetic stress
 python -m sentinel.bench run --all --model efficientdet_lite2 --out bench_runs/lite2   # compare detectors
 python -m sentinel.bench run --clips mot16_09 --tiles 2x2 --out bench_runs/tiles      # tiled detection
+python -m sentinel.bench run --clips mot16_02 --model yolox_m --input-size 1280x736 --providers dml,cpu --out bench_runs/m1280
+bash scripts/bench_detectors.sh bench_runs/detectors                            # every detector config, same clips and settings
+python -m sentinel.bench compare bench_runs/detectors/* --out comparison.md      # one row per configuration
 python -m sentinel.bench live --config config/bench/live.example.json --duration 60 --out bench_runs/live
 python -m sentinel.bench view --runs bench_runs                                  # http://127.0.0.1:8090
 python -m sentinel.bench export --session bench_runs/NAME/mot16_04 --clip mot16_04 --out night.mp4

@@ -7,6 +7,12 @@
 opencv-contrib-python>=4.9,<5
 # Object detection (Apache-2.0 runtime and EfficientDet-Lite models); also legacy pose extraction.
 mediapipe>=0.10
+# ONNX detectors (YOLOX default). On Windows, onnxruntime-directml adds GPU support
+# for any DirectX 12 GPU; elsewhere use onnxruntime (CPU) or onnxruntime-gpu (CUDA).
+onnxruntime-directml>=1.18; sys_platform == "win32"
+onnxruntime>=1.18; sys_platform != "win32"
+# Only needed once, to make YOLOX ONNX files accept non-640 input sizes.
+onnx>=1.15
 # API and dashboard host.
 fastapi>=0.110
 uvicorn>=0.29

@@ -71,6 +71,7 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "host": results[0].get("host") if results else {},
         "caveats": CAVEATS,
+        "detectors": sorted({json.dumps(result.get("detector") or {}, sort_keys=True, default=str) for result in results}),
         "clips": clips,
         "conditions": conditions,
         "sessions": sessions,
@@ -114,10 +115,10 @@ def tables(report: dict[str, Any]) -> list[tuple[str, list[str], list[list[str]]
             detection_rows.append([
                 name, ", ".join(clip["conditions"]), str(det["frames_scored"]), _pct(det["precision"]), _pct(det["recall"]), _pct(det.get("recall_visible")), _pct(det["f1"]),
                 f"{_pct(sizes['small'])} / {_pct(sizes['medium'])} / {_pct(sizes['large'])}",
-                f"{trk['mostly_tracked']}/{trk['gt_identities']}", str(trk["mostly_lost"]), str(trk["id_switches"]),
+                f"{trk['mostly_tracked']}/{trk['gt_identities']}", str(trk["mostly_lost"]), str(trk["id_switches"]), str(det.get("group_boxes", "n/a")),
             ])
         else:
-            detection_rows.append([name, ", ".join(clip["conditions"]), "unlabeled", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"])
+            detection_rows.append([name, ", ".join(clip["conditions"]), "unlabeled", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"])
         if clip["events"] is not None:
             expected, predicted, matched = _alert_events(clip)
             activity = (clip["events"] or {}).get("activity", {"expected": 0, "predicted": 0, "matched": 0})
@@ -152,7 +153,7 @@ def tables(report: dict[str, Any]) -> list[tuple[str, list[str], list[list[str]]
             _num(resources.get("process_cpu_percent_of_machine")), _num(resources.get("process_cpu_percent_of_one_core")), _num(resources.get("rss_mb_peak")),
         ])
     return [
-        ("Detection and tracking (person, IoU 0.5)", ["Clip", "Conditions", "Frames scored", "Precision", "Recall", "Recall (>=50% visible)", "F1", "Recall small/med/large", "Mostly tracked", "Mostly lost", "ID switches"], detection_rows),
+        ("Detection and tracking (person, IoU 0.5)", ["Clip", "Conditions", "Frames scored", "Precision", "Recall", "Recall (>=50% visible)", "F1", "Recall small/med/large", "Mostly tracked", "Mostly lost", "ID switches", "Group boxes"], detection_rows),
         ("Events vs expected", ["Clip", "Alert events found", "False alert events", "Activity found", "Extra activity", "Notifications matched", "False notifications", "False alerts/h"], event_rows),
         ("Per-clip performance (ms)", ["Clip", "Resolution", "Frames", "Detector runs", "Detect p50", "Detect p95", "Engine p95", "Frame p95", "Throughput fps"], perf_rows),
         ("By condition", ["Condition", "Clips", "Frames scored", "Det precision", "Det recall", "Alert-event precision", "Alert-event recall", "Activity recall"], condition_rows),
@@ -203,3 +204,72 @@ th {{ font-weight:600; }} li {{ margin:4px 0; }}
 {''.join(sections)}
 </main></body></html>"""
     (out_dir / "report.html").write_text(page, encoding="utf-8")
+
+
+COMPARE_CLIPS = ("mot16_09", "mot16_02", "mot16_04", "caviar_browse1", "caviar_walk1")
+
+
+def compare_runs(run_dirs: list[Path]) -> str:
+    """One row per benchmark run (one detector configuration), single-clip sessions only."""
+    header = [
+        "Run", "Detector", "Provider", "MOT16-09 P / R (vis)", "MOT16-02 P / R (vis)", "MOT16-04 P / R", "CAVIAR P / R",
+        "Mostly tracked", "ID switches", "Group boxes", "Alert events found", "Notifications matched / false", "Detect p50 ms", "fps", "CPU %", "RSS MB",
+    ]
+    rows = []
+    for run_dir in run_dirs:
+        results = {}
+        for path in sorted(run_dir.glob("*/result.json")):
+            result = json.loads(path.read_text(encoding="utf-8"))
+            if len(result["clips"]) == 1 and not result.get("degradation"):
+                results[result["clips"][0]["clip_id"]] = result
+        if not results:
+            continue
+        any_result = next(iter(results.values()))
+        detector = any_result.get("detector") or {}
+        runtime = detector.get("runtime") or {}
+
+        def pr(clip_id: str, visible: bool = True) -> str:
+            if clip_id not in results or not results[clip_id]["clips"][0]["detection"]:
+                return "n/a"
+            det = results[clip_id]["clips"][0]["detection"]
+            text = f"{_pct(det['precision'])} / {_pct(det['recall'])}"
+            return text + (f" ({_pct(det.get('recall_visible'))})" if visible else "")
+
+        caviar = [results[c]["clips"][0]["detection"] for c in ("caviar_browse1", "caviar_walk1") if c in results]
+        cav_tp = sum(d["tp"] for d in caviar)
+        cav_text = f"{_pct(ratio(cav_tp, cav_tp + sum(d['fp'] for d in caviar)))} / {_pct(ratio(cav_tp, cav_tp + sum(d['fn'] for d in caviar)))}" if caviar else "n/a"
+        labeled = [results[c]["clips"][0] for c in COMPARE_CLIPS if c in results and results[c]["clips"][0]["detection"]]
+        tracked = sum(c["tracking"]["mostly_tracked"] for c in labeled)
+        identities = sum(c["tracking"]["gt_identities"] for c in labeled)
+        expected = matched = n_match = n_exp = n_false = 0
+        for clip in labeled:
+            e, _, m = _alert_events(clip)
+            expected, matched = expected + e, matched + m
+            notif = clip["notification_match"] or {}
+            n_match, n_exp, n_false = n_match + notif.get("matched", 0), n_exp + notif.get("expected", 0), n_false + notif.get("false", 0)
+        mot = [results[c] for c in ("mot16_02", "mot16_04", "mot16_09") if c in results]
+        detect_p50 = [r["clips"][0]["timings_ms"]["detect"]["p50"] for r in mot if r["clips"][0]["timings_ms"]["detect"]["p50"] is not None]
+        fps = [r["clips"][0]["throughput_fps"] for r in mot if r["clips"][0]["throughput_fps"]]
+        cpu = [r["resources"]["process_cpu_percent_of_machine"] for r in mot if r["resources"].get("process_cpu_percent_of_machine") is not None]
+        rss = [r["resources"]["rss_mb_peak"] for r in mot if r["resources"].get("rss_mb_peak")]
+        name = detector.get("model") or detector.get("type") or "?"
+        extras = []
+        if detector.get("input_size"):
+            extras.append("x".join(str(v) for v in detector["input_size"]))
+        if detector.get("tiles"):
+            extras.append("tiles " + "x".join(str(v) for v in detector["tiles"]))
+        if detector.get("low_score_threshold") is not None:
+            extras.append(f"low {detector['low_score_threshold']}")
+        extras.append(f"t={detector.get('score_threshold')}")
+        rows.append([
+            run_dir.name, f"{name} ({', '.join(extras)})", runtime.get("provider", "MediaPipe CPU").replace("ExecutionProvider", ""),
+            pr("mot16_09"), pr("mot16_02"), pr("mot16_04", visible=False), cav_text,
+            f"{tracked}/{identities}", str(sum(c["tracking"]["id_switches"] for c in labeled)),
+            str(sum(c["detection"]["group_boxes"] for c in labeled)) if all("group_boxes" in c["detection"] for c in labeled) else "n/a",
+            f"{matched}/{expected}", f"{n_match}/{n_exp} / {n_false}",
+            _num(sorted(detect_p50)[len(detect_p50) // 2] if detect_p50 else None), _num(min(fps) if fps else None),
+            _num(max(cpu) if cpu else None), _num(max(rss) if rss else None),
+        ])
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    lines += ["| " + " | ".join(row) + " |" for row in rows]
+    return "\n".join(lines) + "\n"

@@ -326,10 +326,9 @@
   "links": []
  },
  "detector": {
-  "type": "mediapipe",
-  "model": "efficientdet_lite0",
-  "delegate": "cpu",
-  "score_threshold": 0.45,
+  "type": "onnx",
+  "model": "auto",
+  "providers": "auto",
   "classes": [
    "person",
    "car",
@@ -340,7 +339,7 @@
    "dog",
    "cat"
   ],
-  "min_box_area": 0.0015,
+  "min_box_area": 0.0004,
   "idle_detect_interval_s": 1.0
  },
  "tracker": {

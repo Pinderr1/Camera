@@ -47,6 +47,18 @@ def _plan(manifest: dict, args: argparse.Namespace) -> list[tuple[str, list[str]
     return plan
 
 
+def _add_detector_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--detector-type", choices=["mediapipe", "onnx"], help="Override the detector backend")
+    parser.add_argument("--model", help="efficientdet_lite0|efficientdet_lite2 (MediaPipe) or an ONNX registry name, e.g. yolox_s, rtdetrv2_r18")
+    parser.add_argument("--score-threshold", type=float, help="Confidence at which a box counts as a reported detection")
+    parser.add_argument("--low-score-threshold", type=float, help="Also pass weaker boxes to the tracker (track extension only)")
+    parser.add_argument("--tiles", help="Tiled detection grid, e.g. 2x2 (full frame is always included)")
+    parser.add_argument("--input-size", help="Model input WxH for dynamic-shape ONNX models (aspect is preserved), e.g. 960x544")
+    parser.add_argument("--providers", help="ONNX execution providers in order, e.g. dml,cpu or cpu")
+    parser.add_argument("--min-box-area", type=float, help="Drop boxes smaller than this fraction of the frame")
+    parser.add_argument("--cpu-threads", type=int, help="ONNX intra-op CPU threads per session")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     from .runner import load_manifest, run_offline
 
@@ -76,13 +88,28 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def _detector_overrides(args: argparse.Namespace) -> dict:
-    overrides = {}
+    overrides: dict = {}
+    if args.detector_type:
+        overrides["type"] = args.detector_type
     if args.model:
         overrides["model"] = args.model
+        if not args.detector_type:
+            overrides["type"] = "mediapipe" if args.model.startswith("efficientdet") else "onnx"
     if args.score_threshold is not None:
         overrides["score_threshold"] = args.score_threshold
+    if args.low_score_threshold is not None:
+        overrides["low_score_threshold"] = args.low_score_threshold
     if args.tiles:
         overrides["tiles"] = [int(value) for value in args.tiles.lower().split("x")]
+    if args.input_size:
+        overrides["input_size"] = [int(value) for value in args.input_size.lower().split("x")]
+        overrides["keep_aspect"] = True
+    if args.providers:
+        overrides["providers"] = args.providers.split(",")
+    if args.cpu_threads:
+        overrides["cpu_threads"] = args.cpu_threads
+    if args.min_box_area is not None:
+        overrides["min_box_area"] = args.min_box_area
     return overrides
 
 
@@ -91,6 +118,9 @@ def cmd_live(args: argparse.Namespace) -> None:
     from .live import run_live
 
     config = load_config(args.config)
+    config["detector"] = config.get("detector", {}) | _detector_overrides(args)
+    if args.cameras:
+        config["cameras"] = config["cameras"][: args.cameras]
     result = run_live(config, Path(args.out) / "live", args.duration)
     for clip in result["clips"]:
         print(f"{clip['clip_id']}: {clip['frames_processed']} frames, {clip['throughput_fps']} fps, latency p95 {clip['capture_to_decision_ms']['p95']} ms, dropped {clip['frames_dropped_by_reader']}, status {clip['camera_status']}")
@@ -112,6 +142,15 @@ def _write(out: Path, results: list[dict]) -> None:
     merged.update({result["session_id"]: result for result in results})
     write_reports(aggregate(list(merged.values())), out)
     print(f"report: {out / 'report.md'}  |  {out / 'report.html'}")
+
+
+def cmd_compare(args: argparse.Namespace) -> None:
+    from .report import compare_runs
+
+    table = compare_runs([Path(path) for path in args.runs])
+    if args.out:
+        Path(args.out).write_text(table, encoding="utf-8")
+    print(table)
 
 
 def cmd_view(args: argparse.Namespace) -> None:
@@ -145,20 +184,25 @@ def main() -> None:
     run.add_argument("--max-seconds", type=float)
     run.add_argument("--no-reference", action="store_true", help="Skip the annotation reference pass")
     run.add_argument("--no-motion-gate", action="store_true", help="Run the detector on every sampled frame")
-    run.add_argument("--model", choices=["efficientdet_lite0", "efficientdet_lite2"], help="Override the detector model")
-    run.add_argument("--score-threshold", type=float, help="Override the detector score threshold")
-    run.add_argument("--tiles", help="Tiled detection grid, e.g. 2x2 (full frame is always included)")
+    _add_detector_args(run)
     run.set_defaults(handler=cmd_run)
 
     live = commands.add_parser("live", help="Live streams (RTSP/HTTP/USB/paced files), all cameras at once")
     live.add_argument("--config", required=True)
     live.add_argument("--duration", type=float, default=120)
     live.add_argument("--out", required=True)
+    live.add_argument("--cameras", type=int, help="Use only the first N cameras of the config")
+    _add_detector_args(live)
     live.set_defaults(handler=cmd_live)
 
     report = commands.add_parser("report", help="Rebuild report.md/html from session results")
     report.add_argument("--runs", required=True)
     report.set_defaults(handler=cmd_report)
+
+    compare = commands.add_parser("compare", help="Comparison table across runs (one detector configuration per run)")
+    compare.add_argument("runs", nargs="+")
+    compare.add_argument("--out")
+    compare.set_defaults(handler=cmd_compare)
 
     view = commands.add_parser("view", help="Visual playback/debugging of runs")
     view.add_argument("--runs", default="bench_runs")

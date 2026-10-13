@@ -6,7 +6,7 @@ import time
 from typing import Any, Callable
 
 from .config import sensitivity_adjustments
-from .detectors import create_detector
+from .detectors import create_detector, detection_thresholds, resolve_detector_settings
 from .engine import ZoneMap
 from .models import Detection
 from .recorder import ClipRecorder
@@ -54,9 +54,9 @@ class CameraWorker(threading.Thread):
 
     def run(self) -> None:
         camera_id = self.camera["id"]
-        detector_settings = self.config.get("detector", {}) | self.camera.get("detector", {})
+        detector_settings = resolve_detector_settings(self.config.get("detector", {}) | self.camera.get("detector", {}))
         _, threshold_offset = sensitivity_adjustments(self.runtime.settings["sensitivity"])
-        score_threshold = float(detector_settings.get("score_threshold", 0.45)) + threshold_offset
+        score_threshold, high_score = detection_thresholds(detector_settings, threshold_offset)
         try:
             detector = create_detector(detector_settings, score_threshold)
             source = open_source(self.camera, self.config)
@@ -65,7 +65,7 @@ class CameraWorker(threading.Thread):
             self.runtime.update_camera_status(camera_id, connected=False, error=str(error))
             return
 
-        tracker = IoUTracker(camera_id, TrackerConfig.from_dict(self.config.get("tracker")))
+        tracker = IoUTracker(camera_id, TrackerConfig.from_dict((self.config.get("tracker") or {}) | {"high_score": high_score}))
         recorder = ClipRecorder(camera_id, self.runtime.media_root, self.config.get("recording", {}))
         recorder.enabled = recorder.enabled and self.config.get("privacy", {}).get("store_clips", True)
         self.runtime.recorders[camera_id] = recorder
@@ -74,7 +74,7 @@ class CameraWorker(threading.Thread):
         masks = self.camera.get("privacy_masks", [])
         motion = MotionGate(float(detector_settings.get("motion_min_fraction", 0.002)))
         idle_detect_ms = int(detector_settings.get("idle_detect_interval_s", 1.0) * 1000)
-        min_area = float(detector_settings.get("min_box_area", 0.0015))
+        min_area = float(detector_settings.get("min_box_area", 0.0004))
         track_classes = {label for label in detector_settings.get("track_labels", [])}
         frame_interval = 1.0 / float(self.camera.get("fps", 5))
         last_detect_ms = 0

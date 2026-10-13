@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import load_config, redact_url, sensitivity_adjustments
-from ..detectors import create_detector
+from ..detectors import create_detector, detection_thresholds, resolve_detector_settings
 from ..engine import ZoneMap
 from ..models import Notification, Track
 from ..notify import CallbackNotifier
@@ -37,7 +37,7 @@ from ..tracker import IoUTracker, TrackerConfig
 from ..vision import Frame, MotionGate, appearance_vector, apply_privacy_masks
 from . import degrade as degrade_module
 from .labels import GroundTruth, load_labels
-from .metrics import DetectionStats, ExpectedEvent, TrackingStats, match_boxes, match_events, percentiles
+from .metrics import DetectionStats, ExpectedEvent, TrackingStats, count_group_boxes, match_boxes, match_events, percentiles
 
 HEALTH_EVENTS = {"camera_offline", "camera_online"}
 EVENT_WINDOWS = {
@@ -176,6 +176,8 @@ class _Clip:
     wall_s: float = 0.0
     video_s: float = 0.0
     feeder: GroundTruthFeeder | None = None
+    report_threshold: float = 0.0  # boxes below this only feed the tracker; they are not reported detections
+    detector_settings: dict[str, Any] = field(default_factory=dict)
 
 
 def run_offline(
@@ -216,7 +218,7 @@ def run_offline(
     clips = [_open_clip(manifest["_clips"][clip_id], config, out, runtime) for clip_id in clip_ids]
     zones = ZoneMap(config)
     detector_defaults = config.get("detector", {})
-    min_area = float(detector_defaults.get("min_box_area", 0.0015))
+    min_area = float(detector_defaults.get("min_box_area", 0.0004))
     idle_ms = int(detector_defaults.get("idle_detect_interval_s", 1.0) * 1000)
     max_missed = int(config.get("tracker", {}).get("max_missed_ms", 2500))
     for clip in clips:
@@ -289,10 +291,10 @@ def run_offline(
                     reference_runtime.process_camera_update(camera_id, now_ms, gt_active, gt_ended)
 
                 if clip.gt is not None and run_detector:
-                    persons = [det.bbox for det in detections if det.label == "person"]
+                    persons = [det.bbox for det in detections if det.label == "person" and det.confidence >= clip.report_threshold]
                     gt_boxes = [box for box in clip.gt.at_frame(gt_index) if box.label == "person"]
                     matches, unmatched, missed = match_boxes(persons, gt_boxes)
-                    clip.detection.add(matches, unmatched, missed)
+                    clip.detection.add(matches, unmatched, missed, count_group_boxes(persons, unmatched, gt_boxes))
                     track_boxes = [track for track in active if track.label == "person"]
                     track_matches, _, _ = match_boxes([track.bbox for track in track_boxes], gt_boxes)
                     clip.tracking.add([(track_boxes[i].track_id, gt) for i, gt in track_matches], [b for b in gt_boxes if not b.ignore])
@@ -351,7 +353,8 @@ def run_offline(
             "resources": resources,
             "host": _host(),
             "motion_gate": motion_gate,
-            "detector": {key: config["detector"].get(key) for key in ("type", "model", "score_threshold", "delegate", "tiles")},
+            "detector": {key: (clips[0].detector_settings if clips else config["detector"]).get(key) for key in ("type", "model", "score_threshold", "low_score_threshold", "input_size", "keep_aspect", "providers", "delegate", "tiles")}
+            | {"runtime": getattr(clips[0].detector, "describe", lambda: {})() if clips else {}},
         }
     )
     runtime.close()
@@ -383,9 +386,10 @@ def _open_clip(spec: dict[str, Any], config: dict[str, Any], out: Path, runtime:
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     gt = load_labels(spec.get("labels"), width, height, src_fps)
-    settings = config.get("detector", {}) | camera.get("detector", {})
+    settings = resolve_detector_settings(config.get("detector", {}) | camera.get("detector", {}))
     _, offset = sensitivity_adjustments(runtime.settings["sensitivity"])
-    detector = create_detector(settings, float(settings.get("score_threshold", 0.45)) + offset)
+    detector_threshold, report_threshold = detection_thresholds(settings, offset)
+    detector = create_detector(settings, detector_threshold)
     clip_dir = out / "clips" / spec["id"]
     clip_dir.mkdir(parents=True, exist_ok=True)
     return _Clip(
@@ -397,7 +401,9 @@ def _open_clip(spec: dict[str, Any], config: dict[str, Any], out: Path, runtime:
         height=height,
         frame_count=frame_count,
         gt=gt,
-        tracker=IoUTracker(camera["id"], TrackerConfig.from_dict(config.get("tracker"))),
+        tracker=IoUTracker(camera["id"], TrackerConfig.from_dict((config.get("tracker") or {}) | {"high_score": report_threshold})),
+        report_threshold=report_threshold,
+        detector_settings=settings,
         detector=detector,
         gate=MotionGate(float(settings.get("motion_min_fraction", 0.002))),
         log=(clip_dir / "frames.jsonl").open("w", encoding="utf-8"),

@@ -70,7 +70,7 @@
     "delegate": "cpu",
     "score_threshold": 0.45,
     "classes": ["person", "car", "truck", "bus", "motorcycle", "bicycle", "dog", "cat"],
-    "min_box_area": 0.0015,
+    "min_box_area": 0.0004,
     "idle_detect_interval_s": 1.0
   },
   "tracker": {"iou_threshold": 0.25, "min_hits": 3, "max_missed_ms": 2500},
