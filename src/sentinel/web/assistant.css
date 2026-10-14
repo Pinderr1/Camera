@@ -1,0 +1,52 @@
+/* Sentinel AI Guide (assistant.js). Uses the tokens defined in style.css. */
+.guide-open { background: var(--accent); border-color: var(--accent); color: #fff; }
+.guide-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) 280px; align-items: start; }
+.guide-chat { display: flex; flex-direction: column; height: min(78vh, 900px); min-height: 420px; padding: 0; overflow: hidden; }
+.guide-mode { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.guide-mode.external { background: color-mix(in srgb, var(--medium) 10%, var(--surface)); }
+.guide-mode details { display: inline-block; margin-left: 8px; }
+.guide-mode summary { cursor: pointer; color: var(--accent); }
+.guide-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.guide-composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
+.guide-composer textarea { flex: 1; resize: none; font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.guide-welcome { margin: auto; text-align: center; max-width: 560px; }
+.guide-welcome h2 { font-size: 20px; margin: 0 0 6px; }
+.guide-msg { max-width: min(680px, 92%); display: flex; flex-direction: column; gap: 6px; }
+.guide-msg.user { align-self: flex-end; }
+.guide-msg.assistant { align-self: flex-start; }
+.guide-bubble { padding: 9px 12px; border-radius: 12px; background: var(--surface-2); overflow-wrap: anywhere; }
+.guide-msg.user .guide-bubble { background: var(--accent); color: #fff; }
+.guide-bubble p { margin: 0 0 6px; }
+.guide-bubble p:last-child, .guide-bubble ul:last-child, .guide-bubble ol:last-child { margin-bottom: 0; }
+.guide-bubble ul, .guide-bubble ol { margin: 4px 0 6px; padding-left: 20px; }
+.guide-source { font-size: 11px; color: var(--muted); }
+.guide-note { align-self: center; max-width: 92%; color: var(--muted); text-align: center; }
+.guide-note p { margin: 0; }
+.guide-typing { align-self: flex-start; }
+.chips-row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: inherit; }
+.guide-welcome .chips-row { justify-content: center; }
+.chip { border-radius: 999px; padding: 5px 12px; font-size: 13px; }
+.guide-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.link-button { background: transparent; border-color: var(--accent); color: var(--accent); font-size: 13px; padding: 4px 10px; }
+.guide-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); }
+.guide-card.proposal { border-left: 4px solid var(--accent); }
+.guide-card.proposal.status-applied { border-left-color: var(--low); }
+.guide-card.proposal.status-failed { border-left-color: var(--high); }
+.guide-card.proposal.status-cancelled, .guide-card.proposal.status-expired { border-left-color: var(--border); opacity: 0.8; }
+.guide-card ul { margin: 6px 0; padding-left: 18px; }
+.guide-card input[type="text"] { max-width: 160px; }
+.guide-previews { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(150px, 42%), 1fr)); }
+.guide-previews figure { margin: 0; }
+.guide-previews img, .guide-previews .no-frame { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #000; display: grid; place-items: center; }
+.guide-previews .no-frame { background: var(--surface-2); }
+.guide-conversations li { display: flex; flex-direction: column; }
+.guide-conversations li.selected button { font-weight: 600; }
+.guide-conversations button.link { all: unset; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guide-conversations button.link:focus-visible { outline: 2px solid var(--accent); }
+.guide-settings-box { margin-top: 10px; }
+.guide-settings-box summary { cursor: pointer; }
+@media (max-width: 860px) {
+  .guide-layout { grid-template-columns: minmax(0, 1fr); }
+  .guide-chat { height: 72vh; }
+  .guide-open { padding: 6px 10px; }
+}

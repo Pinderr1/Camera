@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sentinel</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/assistant.css">
 </head>
 <body>
   <header class="topbar">
@@ -23,10 +24,12 @@
       <button data-arm="vacation">Vacation</button>
     </div>
     <div class="coverage" id="coverage" role="status" title="Security coverage: how many cameras are actually being monitored">Coverage …</div>
+    <button type="button" class="guide-open" id="guide-open" title="Ask Sentinel's guide">Ask Sentinel</button>
     <div class="live-dot" id="live-dot" title="Live connection">offline</div>
   </header>
 
   <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="guide">Guide</button>
     <button role="tab" data-tab="live" class="active">Live</button>
     <button role="tab" data-tab="map">Map</button>
     <button role="tab" data-tab="timeline">Timeline <span class="badge" id="open-count" hidden></span></button>
@@ -39,6 +42,34 @@
   </nav>
 
   <main>
+    <section id="tab-guide" class="tab">
+      <div class="guide-layout">
+        <div class="card guide-chat">
+          <div class="guide-mode" id="guide-mode" role="status">Loading…</div>
+          <div class="guide-messages" id="guide-messages" aria-live="polite"></div>
+          <form class="guide-composer" id="guide-form">
+            <textarea id="guide-input" rows="2" maxlength="2000" placeholder="Tell Sentinel what you want to do… (never type passwords here)" aria-label="Message to Sentinel"></textarea>
+            <button type="submit" class="primary" id="guide-send">Send</button>
+          </form>
+        </div>
+        <aside class="card guide-side">
+          <div class="row-between"><h3>Conversations</h3><div class="button-row tight"><button type="button" id="guide-new">New</button><button type="button" id="guide-delete" class="danger">Delete</button></div></div>
+          <ul class="list compact guide-conversations" id="guide-conversations"></ul>
+          <details class="guide-settings-box">
+            <summary>Assistant settings</summary>
+            <form id="guide-settings" class="install-form" autocomplete="off">
+              <label class="field">Answers from
+                <select name="provider"><option value="none">Built-in guide (nothing leaves this hub)</option><option value="anthropic">Claude by Anthropic (external AI service)</option></select></label>
+              <label class="field">Model <input type="text" name="model" maxlength="60" placeholder="claude-opus-5-5"></label>
+              <label class="field">API key <input type="password" name="api_key" maxlength="200" autocomplete="new-password" placeholder="stored on this hub only; leave blank to keep"></label>
+              <label class="field checkbox"><input type="checkbox" name="share_network_details"> Send real network addresses to the AI (off: they are replaced by placeholders)</label>
+              <button type="submit">Save</button>
+            </form>
+          </details>
+        </aside>
+      </div>
+    </section>
+
     <section id="tab-live" class="tab active">
       <div class="camera-grid" id="camera-grid"></div>
     </section>
@@ -355,5 +386,6 @@
   <script src="/static/troubleshoot.js"></script>
   <script src="/static/intel.js"></script>
   <script src="/static/install.js"></script>
+  <script src="/static/assistant.js"></script>
 </body>
 </html>

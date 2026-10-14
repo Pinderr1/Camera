@@ -239,6 +239,9 @@ def validate_config(config: dict[str, Any]) -> None:
     from .devices import validate_devices
 
     validate_devices(config, camera_ids, zone_ids, errors)
+    from .assistant.settings import validate_assistant
+
+    validate_assistant(config, errors)
     _validate_drone_and_channels(config, errors)
 
     defaults = config.get("settings_defaults", {})

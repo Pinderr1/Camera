@@ -53,6 +53,7 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Installation journey (Install tab): four paths (existing cameras, new cameras, drone-first, complete package), ten saved steps, readiness that separates registered / connected / video / AI verified, completion with acknowledged issues | Built; backend, service and Edge tests on simulated cameras, drone and sensors. **Not yet used with physical hardware or by a non-technical person** |
 | Device registry: recorders, drones, docks, sensors beside cameras; hardware compatibility profiles with support levels; sites with no cameras; several drones (primary takes inspections) | Built and tested. Only this computer is `verified`; every camera/recorder profile is `expected` or `limited`; sensors are simulated or planned (registration only, never incidents) |
 | Property planner: features, cameras with aim/FOV, sensors, network, drone docks/points; approximate coverage with line of sight, gaps, privacy warnings; camera suggestions; PoE/cable estimates; printable plan | Built and unit-tested. **Approximate geometry; never compared with a real installation** |
+| Sentinel AI Guide (Guide tab): conversational setup, troubleshooting with retest, rule configuration, everyday questions; read tools on live data, proposals confirmed by a person, secure sign-in form; built-in offline guide plus optional Claude provider with address placeholders | Built; backend tests (scripted provider, fake Messages API) and Edge tests on simulated hardware. **Not yet run against the live Claude API or real hardware** |
 | Accounts/multi-user, mobile app, cloud relay, HTTPS deployment | Not started (see `ROADMAP.md`) |
 
 ## Repository map
@@ -80,6 +81,8 @@ src/sentinel/            the Sentinel brain (current product)
   devices.py             device registry (stdlib): categories, capabilities, hardware profiles + support levels, validation, live levels, simulated sensors
   planner.py             property planner (stdlib): plan validation, coverage with line of sight, recommendations, PoE/cable estimates, checklists, report
   installation.py        installation journey (stdlib): saved progress (<storage>/installation.json) and honest readiness checks
+  assistant/             Sentinel AI Guide: tools (read / ui / propose), core (conversation + provider loop), guide (offline),
+                         provider (Anthropic, optional SDK), privacy (secret scrubbing, address placeholders), store, routes, settings
   environment.py         scene conditions (light, IR, rain, shadows, vegetation, lens) + unknown-motion proposals
   detectors.py           Detector protocol, hardware profiles (`model: auto`), tiling, NMS, MediaPipe + scripted detectors
   detectors_onnx.py      ONNX Runtime detectors (YOLOX, DETR family), model registry with licence/training-data metadata
@@ -122,6 +125,7 @@ docs/benchmarking.md           how to measure Sentinel on real footage, and what
 docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
 docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
 docs/reliability.md            24/7 operation: health states, outages, recovery, background start, storage, backups
+docs/assistant.md              Sentinel AI Guide: modes, tools, confirmations, privacy, provider configuration
 docs/installation.md           Install tab: four paths, readiness levels, device registry and profiles, planner, drone-first
 docs/intelligence.md           rules and rule builder, rule testing, explanations, activity insights, investigation and feedback
 ROADMAP.md                     phased implementation roadmap
@@ -205,6 +209,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - Do not modify `src/senior_safety/` or `webapp/` except to keep shared helpers working. Do not delete them without asking.
 - New hardware kinds get a profile in `devices.PROFILES` with an honest support level (only hardware we tested is `verified`); never record prices or unchecked specifications. Device fields are validated in `devices.validate_devices`.
 - Installation progress and plans live in `installation.json`, not the site config, so planning never restarts cameras. Readiness is computed from live data on every request; never store it as a claim.
+- The assistant only reads through tools and changes things through `propose_*` tools that a person confirms; `Toolbox.apply` calls the same validated backend paths as the dashboard. Never add tools that run commands, read files, return secrets, change network or device settings, or command a drone. Passwords stay in the secure sign-in form, and addresses are aliased before anything reaches an external provider.
 - Run the full test suite before committing.
 
 ## Roadmap pointer

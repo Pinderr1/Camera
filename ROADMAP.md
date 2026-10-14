@@ -157,6 +157,16 @@ So the cause is not yet confirmed. Next on site:
 - Indoor drones need positioning without GPS, which the geofence does not model.
 - A Sentinel Hub hardware profile once hardware is chosen.
 
+## Phase 0.12: Sentinel AI Guide (done, October 2026)
+- [x] Guide tab, opened first while installation is unfinished: welcome, five conversational starting points, saved conversations (on the hub) with resume and deletion, desktop and phone layouts.
+- [x] Fixed tool set over existing services: installation progress and readiness, devices, camera health, hardware profiles, installation guidance, plan coverage, camera suggestions, network overview, diagnosis of one private address, camera connection tests, rules and zones, rule validation and testing, incidents and explanations, insights, system health, drone status, notification settings.
+- [x] Changes only as proposals the person confirms (installation type and steps, network search, rules, rule switches, notifications, device registration and removal, drone inspection requests); applied through the existing validated backend, audited, results reported from the backend. Rules can only be turned on after a test of the same version.
+- [x] Camera onboarding in conversation: permission before searching, one next step per diagnosis with confirmed/possible causes kept apart, Retest, secure sign-in form for recorder channels (passwords never enter the conversation), add selected cameras, then verify.
+- [x] Built-in offline guide over the same tools; optional Claude provider (`assistant.provider: "anthropic"`, key from the environment or credential store) with address placeholders, prompt caching, refusal fallback, bounded tool rounds, and fallback to the guide on any failure.
+- [x] 27 new tests (backend with a scripted provider and a fake Messages API, and Edge). Two defects found by them were fixed: addresses ending a sentence escaped the placeholders, and a confirmed cause was labelled as unconfirmed.
+
+**Not yet verified:** the live Claude API (only a fake API was used), real hardware through the guide, and use by non-technical customers.
+
 ## Detector upgrade findings (2026-10-13)
 
 Host: i7-2600K (4 cores, no AVX2), 16 GB RAM, GTX 1070 via DirectML (ONNX Runtime 1.24). Every number comes from human annotations (MOTChallenge MOT16, CAVIAR). Thresholds are each model's operating point from a score sweep on sampled frames **of the same footage**: a single scalar per model, but not an independent test. Raw tables: `bench_runs/detectors_v2/comparison.md` and `bench_runs/final_default/report.md` (git-ignored; regenerate with `scripts/bench_detectors.sh` and `sentinel.bench run --all`).

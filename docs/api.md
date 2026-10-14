@@ -133,6 +133,20 @@ See [installation.md](./installation.md). Device registration records what is in
 | POST | `/api/v1/installation/complete` | `{"acknowledge_issues": bool}`. 409 while a blocking check fails, or when open issues are not acknowledged |
 | POST | `/api/v1/installation/reopen` / `reset` | Reopen a completed installation; reset the journey (`{"keep_plan": true}`), keeping cameras, devices and settings |
 
+### Assistant
+
+Sentinel AI Guide; see [assistant.md](./assistant.md). Conversations live on the hub. Messages, cards and actions never contain passwords, API keys or stream addresses.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/assistant` | `mode` (`ai` or `guide`), `provider`, `model`, `external`, `reason` (why the built-in guide is answering), `privacy` (what is shared), `starters`, `welcome` |
+| PUT | `/api/v1/assistant/settings` | `{"provider"?: "none\|anthropic", "model"?, "effort"?, "share_network_details"?, "api_key"? (write-only, credential store), "forget_api_key"?}`. Validated through the config editor; returns the status |
+| GET / POST | `/api/v1/assistant/conversations` | List (id, title, updated, message count) / create |
+| GET / DELETE | `/api/v1/assistant/conversations/{id}` | `messages[]`: `{id, role: user\|assistant\|note, text, source: ai\|guide\|system, cards[], actions[], ms}` / delete permanently |
+| POST | `/api/v1/assistant/conversations/{id}/messages` | `{"text"}` (≤ 2000 chars; passwords and keys are removed before storing). Returns the new messages. Cards: `choices`, `proposal` (`action_id`, `title`, `summary`, `effects`, `status`), `recorder_login` (host, brand, template, port), `preview` (camera ids), `devices_found`. Actions: `{"type": "open", "target", "label", ...}` |
+| POST | `/api/v1/assistant/conversations/{id}/actions/{action_id}` | `{"confirm": bool}`. Confirm runs the existing backend call and returns its result; 409 if the proposal is no longer pending |
+| POST | `/api/v1/assistant/conversations/{id}/events` | `{"event": "channels_scanned\|cameras_added"}` after the secure sign-in form; the outcome is read from Sentinel's own audit log and config, not from the browser |
+
 Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unknown id), 409 (drone rejected, for example preflight blocked; camera processing not running), 422 (validation), 507 (backup could not be written).
 
 ## Object shapes

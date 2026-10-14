@@ -888,6 +888,10 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
         runtime.store.audit(actor, "installation_reset", {"keep_plan": body.keep_plan})
         return service.installation_view()
 
+    from .assistant.routes import add_routes  # Sentinel AI Guide: /api/v1/assistant
+
+    add_routes(app, service, require_auth)
+
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
