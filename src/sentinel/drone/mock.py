@@ -78,6 +78,9 @@ class SimulatedDrone(DroneAdapter):
             link_ok=self.connected and self.link_ok,
             last_heartbeat_ms=self._last_heartbeat_ms,
             video_url=self.video_url,
+            home_lat=self.home[0],
+            home_lon=self.home[1],
+            telemetry_ms=int(time.time() * 1000),
         )
 
     def takeoff(self, altitude_m: float) -> None:

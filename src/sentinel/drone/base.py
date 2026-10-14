@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 EARTH_M_PER_DEG = 111_320.0
@@ -28,6 +28,25 @@ class DroneTelemetry:
     link_ok: bool = False
     last_heartbeat_ms: int = 0
     video_url: str = ""
+    # Richer state from real flight controllers; None means "not reported".
+    vehicle_state: str = ""  # MAV_STATE name: standby, active, critical, emergency, ...
+    landed_state: str = ""  # on_ground | in_air | takeoff | landing ("" when not reported)
+    roll_deg: float | None = None
+    pitch_deg: float | None = None
+    gimbal_pitch_deg: float | None = None  # reported camera pitch (negative = down), None if no gimbal report
+    gimbal_yaw_deg: float | None = None  # relative to the vehicle heading
+    home_lat: float | None = None
+    home_lon: float | None = None
+    hdop: float | None = None
+    ekf_ok: bool | None = None
+    prearm_ok: bool | None = None
+    wind_mps: float | None = None
+    temperature_c: float | None = None
+    autopilot_version: str = ""
+    sitl: bool | None = None  # True only when the vehicle proved it is a simulator (SIM_* parameters)
+    messages: list[str] = field(default_factory=list)  # recent STATUSTEXT, newest last
+    message_count: int = 0  # STATUSTEXT messages received so far (to find new ones)
+    telemetry_ms: int = 0  # when the newest position/attitude sample arrived
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -44,6 +63,21 @@ class DroneAdapter(ABC):
 
     kind = "abstract"
     is_physical = False
+    flight_controller = ""  # "ardupilot" when parameters can be audited
+
+    def commands_allowed(self) -> tuple[bool, str]:
+        """(may Sentinel send flight commands, why). Physical aircraft: never in
+        this build. Only simulators may say yes."""
+        return (not self.is_physical, "simulator" if not self.is_physical else "physical aircraft: telemetry only")
+
+    def parameters(self) -> dict[str, float]:
+        """Flight-controller parameters read from the vehicle (read-only)."""
+        return {}
+
+    def fence_polygon(self) -> list[list[float]] | None:
+        """The polygon fence loaded on the flight controller as [lat, lon]
+        pairs, None when unknown or not applicable."""
+        return None
 
     @abstractmethod
     def connect(self) -> None: ...
@@ -85,6 +119,17 @@ def geo_to_offset(origin: tuple[float, float], lat: float, lon: float) -> tuple[
     north = (lat - lat0) * EARTH_M_PER_DEG
     east = (lon - lon0) * EARTH_M_PER_DEG * math.cos(math.radians(lat0))
     return east, north
+
+
+def distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Horizontal distance between two [lat, lon] points (flat-earth; fine over a property)."""
+    east, north = geo_to_offset(a, b[0], b[1])
+    return math.hypot(east, north)
+
+
+def geo_to_map_point(origin: tuple[float, float], lat: float, lon: float) -> tuple[float, float]:
+    east, north = geo_to_offset(origin, lat, lon)
+    return east, -north
 
 
 def map_point_to_geo(origin: tuple[float, float], x_m: float, y_m: float) -> tuple[float, float]:

@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from .base import DroneAdapter, DroneTelemetry, FlightCommandRejected, map_point_to_geo
 from .geofence import Geofence
-from .manager import DroneManager, DroneSafetyConfig, InspectionRequest
+from .manager import DroneManager, DroneSafetyConfig, InspectionRequest, WeatherLimits
 
 __all__ = [
     "DroneAdapter",
@@ -26,6 +26,7 @@ def build_drone_manager(
     audit: Callable[[str, str, dict[str, Any]], None],
     on_change: Callable[[dict[str, Any]], None],
     device: dict[str, Any] | None = None,
+    records: Any = None,
 ) -> DroneManager | None:
     """One manager for one aircraft. `device` is a registered drone from
     `devices[]`; without it the legacy `drone` section describes the aircraft."""
@@ -41,6 +42,7 @@ def build_drone_manager(
     if "map_polygon" in fence:
         fence["polygon"] = [list(map_point_to_geo(origin, x, y)) for x, y in fence.pop("map_polygon")]
     adapter_kind = aircraft.get("adapter", "simulated")
+    link = {"gcs_system_id": int(drone.get("gcs_system_id", 245))}
     if adapter_kind == "simulated":
         from .mock import SimulatedDrone
 
@@ -48,7 +50,12 @@ def build_drone_manager(
     elif adapter_kind == "mavlink":
         from .mavlink import MavlinkTelemetryAdapter
 
-        adapter = MavlinkTelemetryAdapter(aircraft["connection"])  # telemetry only: flight commands are refused
+        adapter = MavlinkTelemetryAdapter(aircraft["connection"], **link)  # telemetry only: flight commands are refused
+    elif adapter_kind == "sitl":
+        from .mavlink import SitlMavlinkAdapter
+
+        # Commands only for a verified simulator on a loopback link (see mavlink.py).
+        adapter = SitlMavlinkAdapter(aircraft["connection"], allow_flight_commands=bool(aircraft.get("allow_flight_commands", False)), **link)
     else:
         raise ValueError(f"unknown drone adapter {adapter_kind!r}")
     adapter.connect()
@@ -59,6 +66,11 @@ def build_drone_manager(
         DroneSafetyConfig.from_dict(drone.get("safety")),
         audit=audit,
         on_change=on_change,
+        drone_id=(device or {}).get("id", "drone"),
+        home=home,
+        records=records,
+        weather=WeatherLimits.from_dict(drone.get("weather")),
+        firmware_tested=tuple(drone.get("firmware_tested", ())),
     )
 
 
@@ -67,6 +79,7 @@ def build_drone_fleet(
     *,
     audit: Callable[[str, str, dict[str, Any]], None],
     on_change: Callable[[dict[str, Any]], None],
+    records: Any = None,
 ) -> tuple[str, dict[str, DroneManager]]:
     """(primary id, managers by device id). The primary drone takes inspection
     requests and publishes on the bus; others report telemetry and readiness.
@@ -77,7 +90,7 @@ def build_drone_fleet(
     if not config.get("drone", {}).get("enabled", False):
         return "", {}
     if not has_registered_drones(config):
-        manager = build_drone_manager(config, audit=audit, on_change=on_change)
+        manager = build_drone_manager(config, audit=audit, on_change=on_change, records=records)
         return ("drone", {"drone": manager}) if manager else ("", {})
     registered = drone_devices(config)  # planned hardware is registered but never given an adapter
     primary = primary_drone_id(config)
@@ -85,6 +98,6 @@ def build_drone_fleet(
     for device in registered:
         fleet[device["id"]] = build_drone_manager(
             config, audit=lambda actor, action, body, d=device["id"]: audit(actor, action, body | {"drone": d}),
-            on_change=on_change if device["id"] == primary else (lambda status: None), device=device,
+            on_change=on_change if device["id"] == primary else (lambda status: None), device=device, records=records,
         )
     return primary, fleet

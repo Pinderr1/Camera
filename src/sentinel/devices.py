@@ -164,10 +164,17 @@ PROFILES: list[dict[str, Any]] = [
         "notes": ["Kinematic simulator: approvals, geofence and safety checks are real; the aircraft is not."],
     },
     {
-        "id": "mavlink_drone", "category": "drone", "name": "ArduPilot / PX4 drone over MAVLink", "support": "limited", "adapter": "mavlink",
-        "protocols": ["MAVLink"], "codecs": [], "power": ["Battery"], "capabilities": ["telemetry", "battery", "health_monitoring"],
-        "notes": ["Telemetry only: every flight command is refused in this build (docs/drone-integration.md).",
-                  "Not yet tested against ArduPilot SITL or a physical aircraft."],
+        "id": "mavlink_drone", "category": "drone", "name": "ArduPilot drone over MAVLink", "support": "limited", "adapter": "mavlink",
+        "protocols": ["MAVLink"], "codecs": [], "power": ["Battery"], "capabilities": ["telemetry", "battery", "health_monitoring", "inspection"],
+        "notes": ["Telemetry only: every flight command is refused in this build (docs/drone-integration.md). Approved inspections are "
+                  "exported as a route for the pilot's ground station.",
+                  "Telemetry, parameter audit and fence reading tested against ArduPilot SITL; not yet against a physical aircraft."],
+    },
+    {
+        "id": "ardupilot_sitl", "category": "drone", "name": "ArduPilot SITL (software simulator)", "support": "simulated", "adapter": "sitl",
+        "protocols": ["MAVLink"], "codecs": [], "power": ["Simulated"], "capabilities": ["telemetry", "battery", "inspection", "health_monitoring"],
+        "notes": ["Real ArduCopter firmware running as a simulator. Flight commands only with allow_flight_commands, a loopback "
+                  "connection, and SIM_* parameters proving it is a simulator."],
     },
     {
         "id": "sentinel_drone_outdoor", "category": "drone", "name": "Sentinel outdoor drone", "support": "planned",
@@ -232,7 +239,7 @@ PROFILES: list[dict[str, Any]] = [
     },
 ]
 PROFILE_INDEX = {profile["id"]: profile for profile in PROFILES}
-DRONE_ADAPTERS = ("simulated", "mavlink")
+DRONE_ADAPTERS = ("simulated", "mavlink", "sitl")
 _ID = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
 _PASSWORD_IN_URL = re.compile(r"://[^/@\s]+:[^/@\s$]+@")
 
@@ -335,8 +342,14 @@ def validate_devices(config: dict[str, Any], camera_ids: set[str], zone_ids: set
             if profile and profile.get("adapter") and adapter != profile["adapter"]:
                 errors.append(f"{path}.adapter must be {profile['adapter']} for profile {profile['id']}")
             connection = device.get("connection", "")
-            if adapter == "mavlink" and not connection:
-                errors.append(f"{path}.connection is required for a MAVLink drone (e.g. udp:127.0.0.1:14550)")
+            if adapter in ("mavlink", "sitl") and not connection:
+                errors.append(f"{path}.connection is required for a MAVLink drone (e.g. udpin:127.0.0.1:14551)")
+            if "allow_flight_commands" in device and not isinstance(device["allow_flight_commands"], bool):
+                errors.append(f"{path}.allow_flight_commands must be true or false")
+            if device.get("allow_flight_commands") and adapter != "sitl":
+                errors.append(f"{path}.allow_flight_commands is only possible for an ArduPilot SITL simulator (physical aircraft are telemetry only)")
+            if "video" in device:
+                validate_drone_video(device["video"], f"{path}.video", errors)
             if connection and _PASSWORD_IN_URL.search(str(connection)):
                 errors.append(f"{path}.connection must not embed a password")
             if "indoor" in device and not isinstance(device["indoor"], bool):
@@ -358,6 +371,32 @@ def validate_devices(config: dict[str, Any], camera_ids: set[str], zone_ids: set
             errors.append(f"{path}.map must be [x, y] in metres")
 
 
+def validate_drone_video(video: Any, path: str, errors: list[str]) -> None:
+    """`video`: {source: {type: rtsp|http|file|simulated_aerial, ...}, camera: {hfov_deg, vfov_deg, default_pitch_deg}, fps, detector}."""
+    if not isinstance(video, dict):
+        errors.append(f"{path} must be an object")
+        return
+    source = video.get("source")
+    if not isinstance(source, dict) or source.get("type") not in ("rtsp", "http", "file", "simulated_aerial"):
+        errors.append(f"{path}.source.type must be rtsp, http, file or simulated_aerial")
+    elif source["type"] in ("rtsp", "http") and _PASSWORD_IN_URL.search(str(source.get("url", ""))):
+        errors.append(f"{path}.source.url must not embed a password (use a stored credential)")
+    elif source["type"] == "simulated_aerial":
+        for index, item in enumerate(source.get("objects", [])):
+            if not (isinstance(item, dict) and isinstance(item.get("path"), list) and item["path"]
+                    and all(isinstance(p, dict) and _is_number(p.get("t")) and isinstance(p.get("map"), list) and len(p["map"]) == 2 for p in item["path"])):
+                errors.append(f"{path}.source.objects[{index}] needs a path of {{t, map: [x, y]}} points")
+    camera = video.get("camera", {})
+    if not isinstance(camera, dict):
+        errors.append(f"{path}.camera must be an object")
+    else:
+        for key, low, high in (("hfov_deg", 10, 170), ("vfov_deg", 10, 150), ("default_pitch_deg", -90, 0)):
+            if key in camera and not (_is_number(camera[key]) and low <= camera[key] <= high):
+                errors.append(f"{path}.camera.{key} must be between {low} and {high}")
+    if "fps" in video and not (_is_number(video["fps"]) and 0.5 <= video["fps"] <= 15):
+        errors.append(f"{path}.fps must be between 0.5 and 15")
+
+
 def drone_devices(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Registered drones Sentinel can actually talk to: simulated ones and
     MAVLink (telemetry-only) ones. Planned hardware gets no adapter at all, so
@@ -367,7 +406,7 @@ def drone_devices(config: dict[str, Any]) -> list[dict[str, Any]]:
         if device.get("category") != "drone" or not device.get("enabled", True):
             continue
         adapter = device.get("adapter") or PROFILE_INDEX.get(device.get("profile", ""), {}).get("adapter")
-        if (adapter == "simulated" and device.get("simulated")) or adapter == "mavlink":
+        if (adapter == "simulated" and device.get("simulated")) or adapter in ("mavlink", "sitl"):
             operable.append(device)
     return operable
 
@@ -464,7 +503,8 @@ def device_entry(device: dict[str, Any], live: dict[str, Any] | None, cameras_by
                        else f"Not ready: {', '.join(b.replace('_', ' ') for b in blockers)}" if connected else "No telemetry link"),
             "battery_pct": telemetry.get("battery_pct"), "docked": telemetry.get("docked"), "charging": telemetry.get("charging"),
             "flight_mode": telemetry.get("flight_mode"), "safety_state": live.get("safety_state"), "primary": live.get("primary", False),
-            "physical": live.get("physical", False), "video": "Drone video is not ingested in this build",
+            "physical": live.get("physical", False), "mode": live.get("mode", ""),
+            "video": (live.get("video") or {}).get("detail") or "No drone video configured",
         }
         if not live.get("primary"):
             entry["warnings"].append("Only the primary drone accepts inspection requests in this build")

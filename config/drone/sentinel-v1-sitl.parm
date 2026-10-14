@@ -1,0 +1,40 @@
+# Sentinel V1 commissioning parameters (ArduCopter 4.6/4.7) for the SITL demo site
+# (config/sentinel.example.json: geofence ceiling 25 m, inspection altitude 12 m).
+#
+# On a real aircraft the commissioning engineer loads the equivalent set from
+# their ground station, then records "commissioning" on Sentinel's Drone tab.
+# Sentinel only READS and audits these values; it never writes parameters.
+#
+# ArduCopter 4.7 renamed some parameters (SYSID_MYGCS -> MAV_GCS_SYSID,
+# RTL_ALT cm -> RTL_ALT_M m, WPNAV_SPEED cm/s -> WP_SPD m/s). Both names are
+# listed; the firmware ignores the one it does not know.
+
+# Ground-station link loss: return home after 5 s. SYSID_MYGCS is the ground
+# station whose heartbeat the FC watches. In this SITL demo that is the Hub
+# (drone.gcs_system_id 245); on a pilot-flown aircraft it is the pilot's GCS (255).
+FS_GCS_ENABLE 1
+FS_GCS_TIMEOUT 5
+SYSID_MYGCS 245
+MAV_GCS_SYSID 245
+# Pilot radio loss
+FS_THR_ENABLE 1
+# Navigation failure
+FS_EKF_ACTION 1
+# Battery: low -> RTL, critical -> land (SITL battery is 3S, 12.6 V full)
+BATT_FS_LOW_ACT 2
+BATT_FS_CRT_ACT 1
+BATT_LOW_VOLT 10.5
+BATT_CRT_VOLT 10.0
+# Fence: altitude + polygon (the polygon is loaded from Sentinel's exported plan)
+FENCE_ENABLE 1
+FENCE_TYPE 5
+FENCE_ACTION 1
+FENCE_ALT_MAX 25
+FENCE_MARGIN 2
+# Return home at 15 m: above the 12 m transit altitude, below the 25 m ceiling
+RTL_ALT 1500
+RTL_ALT_M 15
+# Missions: 5 m/s, arm and take off in AUTO from the ground station's "start mission"
+WPNAV_SPEED 500
+WP_SPD 5
+AUTO_OPTIONS 3

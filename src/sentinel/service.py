@@ -14,6 +14,7 @@ from .config import cameras, resolve_env
 from .daemon import RunState, downtime
 from .devices import SimulatedSensors
 from .drone import build_drone_fleet
+from .drone.pairing import CompanionRegistry
 from .installation import InstallationManager
 from .netdiag import SystemNetwork
 from .pipeline import CameraWorker
@@ -89,10 +90,13 @@ class SentinelService:
         if self.mqtt:
             self.runtime.bus.subscribe(self.mqtt.on_bus)
         self.drones: dict[str, Any] = {}
+        self.drone_video: dict[str, Any] = {}
         self.primary_drone = ""
         self._drone_key = ""
         self._drone_rebuild_pending: dict[str, Any] | None = None
         self._drone_lock = threading.RLock()
+        self.companions = CompanionRegistry(self.runtime.secrets, load=self.runtime.store.list_drone_companions,
+                                            save=self.runtime.store.save_drone_companion, audit=self.runtime.store.audit)
         self._build_drones(config)
         self.sensors = SimulatedSensors()
         self.sensors.sync(config, int(time.time() * 1000))
@@ -146,6 +150,9 @@ class SentinelService:
                          threading.Thread(target=self._drone_loop, name="sentinel-drone", daemon=True)]
         for thread in self._threads:
             thread.start()
+        for worker in self.drone_video.values():
+            if not worker.is_alive():
+                worker.start()
 
     def stop(self) -> None:
         """Graceful: stop cameras (clips are finalised), close open outages,
@@ -154,6 +161,7 @@ class SentinelService:
         self.supervisor.stop()
         for thread in self._threads:
             thread.join(timeout=5)
+        self._stop_drone_video()
         if self.mqtt:
             self.mqtt.close()
         self.runtime.health.close_all(int(time.time() * 1000), "service stopped")
@@ -204,6 +212,7 @@ class SentinelService:
                 self._drone_rebuild_pending = config
                 log.warning("drone settings changed during a flight; they apply after landing")
                 return
+            self._stop_drone_video()
             for manager in self.drones.values():
                 try:
                     manager.adapter.disconnect()
@@ -211,10 +220,46 @@ class SentinelService:
                     log.exception("drone adapter disconnect failed")
             self.primary_drone, self.drones = build_drone_fleet(
                 config, audit=self.runtime.store.audit, on_change=lambda status: self.runtime.bus.publish("drone", status),
+                records=self.runtime.store,
             )
             self.runtime.drone = self.drones.get(self.primary_drone)
+            for drone_id, manager in self.drones.items():
+                self._wire_drone(drone_id, manager, config)
             self._drone_key = key
             self._drone_rebuild_pending = None
+
+    def _wire_drone(self, drone_id: str, manager: Any, config: dict[str, Any]) -> None:
+        """Companion status, drone video, and inspection results for one aircraft."""
+        def companion() -> dict[str, Any] | None:
+            paired = self.companions.for_drone(drone_id)
+            return paired.public(int(time.time() * 1000)) if paired else None
+
+        manager.companion_status = companion
+        manager.on_inspection_finished = lambda request: self.runtime.bus.publish("drone_inspection", request)
+        device = next((d for d in config.get("devices", []) if d.get("id") == drone_id), None)
+        settings = (device or {}).get("video") or (config.get("drone", {}).get("video") if drone_id == self.primary_drone else None)
+        if not settings:
+            return
+        from .drone.video import DroneVideoWorker
+
+        worker = DroneVideoWorker(manager, settings, config=config, media_root=self.runtime.media_root,
+                                  record_evidence=self.runtime.store.record_evidence, secrets=self.runtime.secrets.get)
+        manager.video_status = worker.status
+        self.drone_video[drone_id] = worker
+        if getattr(self, "_started", False):
+            worker.start()
+
+    def _stop_drone_video(self) -> None:
+        for worker in self.drone_video.values():
+            worker.stop()
+        for worker in self.drone_video.values():
+            if worker.is_alive():
+                worker.join(timeout=3)
+        self.drone_video = {}
+
+    def drone_manager(self, drone_id: str | None = None) -> Any:
+        with self._drone_lock:
+            return self.drones.get(drone_id or self.primary_drone)
 
     # ---- devices and installation ------------------------------------------------
 
@@ -482,7 +527,20 @@ class SentinelService:
         # The same subject's earlier observations (e.g. first sighting on another camera) belong to the story too.
         events += [event for event in self.runtime.store.list_events(since_ms=incident["opened_ms"] - 600_000, until_ms=incident["updated_ms"], limit=1000)
                    if event["site_track_id"] in subjects and event["event_id"] not in known and not event.get("incident_id")]
-        return explain_incident(incident, events, self.config, notify_thresholds=self.runtime.policy.config.notify_min_severity)
+        explanation = explain_incident(incident, events, self.config, notify_thresholds=self.runtime.policy.config.notify_min_severity)
+        inspections = self.runtime.store.list_drone_inspections(incident_id=incident_id, limit=20)
+        if inspections:
+            # Drone observations are reported beside, never merged into, what the fixed cameras saw.
+            explanation["drone_inspections"] = [{
+                key: inspection.get(key) for key in ("request_id", "drone_id", "status", "target_label", "reason", "requested_by", "decided_by",
+                                                     "decided_ms", "started_ms", "reached_target_ms", "ended_ms", "mode", "note")
+            } | {"observations": {key: inspection.get("observations", {}).get(key) for key in ("text", "max_visible", "frames", "tracks", "observations", "pose_sources")}}
+                for inspection in inspections]
+            explanation["evidence"] += [
+                {"type": "drone_snapshot", "path": row["snapshot_path"], "camera": "Drone camera", "time_ms": row["first_ms"], "request_id": inspection["request_id"]}
+                for inspection in inspections for row in inspection.get("observations", {}).get("observations", []) if row.get("snapshot_path")
+            ]
+        return explanation
 
     def export_incident(self, incident_id: str, actor: str, *, include_media: bool) -> bytes:
         from .reports import export_incident
@@ -663,6 +721,20 @@ class SentinelService:
 
         threading.Thread(target=ping, name="sentinel-heartbeat", daemon=True).start()
 
+    def _drone_health(self, manager: Any) -> None:
+        """Losing the telemetry link is a component outage; it is pushed to
+        people only when it happens with the aircraft in the air."""
+        if manager.adapter.kind == "simulated":
+            return
+        telemetry = manager.adapter.telemetry()
+        now = int(time.time() * 1000)
+        if telemetry.link_ok:
+            self.runtime.health.set_component("drone_link", "ok", "receiving telemetry", now)
+        else:
+            airborne = manager.flight_state in ("link_lost",) and manager._flight is not None
+            self.runtime.health.set_component("drone_link", "degraded", "no telemetry from the drone" + (" during a flight" if airborne else ""),
+                                              now, notify=airborne)
+
     def _drone_loop(self) -> None:
         last = time.monotonic()
         published = 0.0
@@ -679,6 +751,7 @@ class SentinelService:
                 if primary is not None and now - published >= 2.0:
                     published = now
                     self.runtime.bus.publish("drone", primary.status())
+                    self._drone_health(primary)
                 self.sensors.step(int(time.time() * 1000))
             except Exception:
                 log.exception("drone safety loop failed")

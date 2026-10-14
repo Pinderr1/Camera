@@ -315,45 +315,182 @@ function renderActivity() {
 }
 
 // ---- drone -----------------------------------------------------------------
+// The tab is laid out once (forms keep their input across live updates); the
+// SSE "drone" topic refreshes the dynamic parts every 2 s.
 
 async function requestInspection(body) {
   try {
     await api("/drone/inspections", { method: "POST", body: JSON.stringify(body) });
-    toast("Inspection requested", "Approve it on the Drone tab to fly.", "medium");
+    toast("Inspection requested", "Review and approve it on the Drone tab.", "medium");
     renderDrone(await api("/drone"));
   } catch (error) {
     toast("Inspection not requested", error.message);
   }
 }
 
+const DRONE_STATE_LABELS = { offline: "Offline", link_lost: "LINK LOST", docked: "Docked", on_ground: "On the ground", armed: "Armed",
+  taking_off: "Taking off", airborne: "Airborne", returning: "Returning home", landing: "Landing" };
+
+function droneLayout() {
+  if ($("#drone-readiness")) return;
+  $("#tab-drone").innerHTML = `
+    <div class="notice" id="drone-mode-notice"></div>
+    <div class="notice" id="drone-advisories" hidden></div>
+    <div class="tiles" id="drone-tiles"></div>
+    <div class="drone-layout">
+      <div>
+        <div class="card"><h3>Inspection requests</h3>
+          <p class="muted small">Sentinel proposes inspections of places; only an operator approves, and the pilot in command decides how to fly.</p>
+          <ul class="list" id="drone-requests"></ul></div>
+        <div class="card" id="drone-video-card" hidden><h3>Drone camera</h3>
+          <p class="muted small" id="drone-video-detail"></p><img id="drone-video" alt="Drone camera during the inspection" style="width:100%;border-radius:8px"></div>
+        <div class="card"><h3>Flight log</h3><div class="scroll"><table class="table" id="drone-flights"></table></div></div>
+      </div>
+      <div>
+        <div class="card"><h3>Readiness</h3><ul class="list compact" id="drone-readiness"></ul>
+          <details><summary class="small">Flight-controller settings audit</summary><div class="scroll"><table class="table" id="drone-audit"></table></div>
+            <p class="small muted">Sentinel only reads these values. Change them with the ground station, then record commissioning below.</p></details></div>
+        <div class="card"><h3>Weather and conditions</h3>
+          <p class="muted small">Confirm on site before each flight session (valid 1 hour).</p>
+          <form id="drone-conditions" class="form-grid">
+            <label><input type="checkbox" name="precipitation"> Rain, snow or fog</label>
+            <label><input type="checkbox" name="visibility_ok" checked> Visibility good</label>
+            <label>Wind (m/s) <input type="number" name="wind_mps" min="0" max="60" step="0.5"></label>
+            <label>Temperature (°C) <input type="number" name="temperature_c" min="-60" max="60" step="1"></label>
+            <button class="primary" type="submit">Confirm conditions</button>
+          </form><div class="small muted" id="drone-conditions-state"></div></div>
+        <div class="card" id="drone-commands-card"><h3>Simulator commands</h3>
+          <p class="muted small">Only for simulators. Real aircraft are flown by the pilot; Sentinel refuses flight commands for them.</p>
+          <div class="button-row"><button data-cmd="hold">Hold</button><button data-cmd="return_home">Return home</button><button data-cmd="land" class="danger">Land now</button></div></div>
+        <div class="card"><h3>Companion computer</h3><div id="drone-companion"></div>
+          <div class="button-row"><button id="drone-pair">Show pairing code</button></div><div class="small" id="drone-pair-code"></div></div>
+        <div class="card"><h3>Maintenance</h3><div class="small" id="drone-maintenance"></div>
+          <form id="drone-maintenance-form" class="form-grid">
+            <label>Record <select name="kind"><option value="inspection">Pre-flight inspection</option><option value="propellers">Propellers replaced</option>
+              <option value="battery">Battery service</option><option value="repair">Repair</option><option value="firmware">Firmware update</option>
+              <option value="calibration">Calibration</option><option value="commissioning">Commissioning (save FC settings as reference)</option><option value="note">Note</option></select></label>
+            <label>Note <input name="note" maxlength="1000"></label><button type="submit">Add record</button></form></div>
+        <div class="card"><h3>Inspection locations</h3>
+          <p class="muted small">Places a drone may be asked to look at. Each request still needs an operator's approval.</p><ul class="list compact" id="drone-points"></ul></div>
+      </div>
+    </div>`;
+  $("#drone-conditions").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const number = (key) => (form.get(key) === "" ? null : Number(form.get(key)));
+    try {
+      await api("/drone/conditions", { method: "POST", body: JSON.stringify({ precipitation: form.has("precipitation"), visibility_ok: form.has("visibility_ok"),
+        wind_mps: number("wind_mps"), temperature_c: number("temperature_c") }) });
+      renderDrone(await api("/drone"));
+    } catch (error) { toast("Conditions not saved", error.message); }
+  });
+  $("#drone-maintenance-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    try {
+      await api("/drone/maintenance", { method: "POST", body: JSON.stringify({ kind: form.get("kind"), note: form.get("note") }) });
+      event.target.reset();
+      toast("Maintenance recorded", "", "low");
+      renderDrone(await api("/drone"));
+    } catch (error) { toast("Not recorded", error.message); }
+  });
+  $("#drone-pair").addEventListener("click", async () => {
+    try {
+      const code = await api("/drone/companions/code", { method: "POST", body: JSON.stringify({}) });
+      $("#drone-pair-code").innerHTML = `On the companion run <code>python -m sentinel.companion pair --hub ${esc(location.origin)} --code ${esc(code.code)}</code>
+        <div class="muted">Valid once, until ${time(code.expires_ms)}.</div>`;
+    } catch (error) { toast("No pairing code", error.message); }
+  });
+  document.querySelectorAll("#drone-commands-card [data-cmd]").forEach((button) => button.addEventListener("click", async () => {
+    try { renderDrone(await api("/drone/commands", { method: "POST", body: JSON.stringify({ action: button.dataset.cmd, params: {} }) })); }
+    catch (error) { toast("Command rejected", error.message); }
+  }));
+  loadDroneLogs();
+}
+
+async function loadDroneLogs() {
+  try {
+    const flights = await api("/drone/flights?limit=10");
+    $("#drone-flights").innerHTML = "<tr><th>Started</th><th>Duration</th><th>Max alt.</th><th>Distance</th><th>Battery</th><th>Inspection</th></tr>" +
+      (flights.map((f) => `<tr><td>${dateTime(f.started_ms)}${f.simulated ? ' <span class="muted small">sim</span>' : ""}${f.interrupted ? ' <span class="muted small">interrupted</span>' : ""}</td>
+        <td>${f.duration_s == null ? "in flight" : `${Math.round(f.duration_s)} s`}</td><td>${f.max_alt_m} m</td><td>${f.distance_m} m</td>
+        <td>${f.battery_start_pct ?? "?"}% → ${f.battery_end_pct ?? "?"}%</td><td class="small">${esc(f.request_id || "")}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">No flights yet.</td></tr>');
+  } catch { /* the tab still works without the log */ }
+}
+
 function renderDrone(status) {
   state.drone = status;
+  droneLayout();
   const t = status.telemetry;
-  $("#drone-mode-notice").textContent = status.physical
-    ? "Physical drone connected in TELEMETRY-ONLY mode. Flight commands are disabled in this build."
-    : "SIMULATION: no real aircraft is connected. Commands drive the simulator only.";
+  $("#drone-mode-notice").textContent = status.mode === "command"
+    ? `SIMULATION (${status.adapter === "sitl" ? "ArduPilot SITL" : "built-in simulator"}): approved inspections are flown by Sentinel in the simulator.`
+    : `${status.physical ? "Real or unverified aircraft" : "Simulator in pilot mode"}: approving an inspection exports a route for the pilot's ground station. Sentinel sends no flight commands (${status.mode_reason}).`;
+  const advisories = status.advisories || [];
+  $("#drone-advisories").hidden = !advisories.length || !["airborne", "returning", "landing", "link_lost"].includes(status.flight_state);
+  $("#drone-advisories").textContent = advisories.length ? `${time(advisories.at(-1).ms)}: ${advisories.at(-1).text}` : "";
   const tile = (label, value) => `<div class="tile"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`;
+  const companion = status.companion;
   $("#drone-tiles").innerHTML = [
-    tile("Mode", t.flight_mode),
+    tile("State", DRONE_STATE_LABELS[status.flight_state] || status.flight_state),
+    tile("Flight mode", t.flight_mode),
     tile("Battery", t.battery_pct == null ? "?" : `${Math.round(t.battery_pct)}%`),
     tile("Altitude", `${t.alt_m.toFixed(1)} m`),
     tile("Speed", `${t.ground_speed_mps.toFixed(1)} m/s`),
-    tile("GPS", t.gps_fix >= 3 ? `3D · ${t.satellites} sats` : "no fix"),
+    tile("GPS", t.gps_fix >= 3 ? `${t.satellites} sats${t.hdop != null ? ` · HDOP ${t.hdop}` : ""}` : "no fix"),
     tile("Link", t.link_ok ? "ok" : "LOST"),
-    tile("Dock", t.docked ? (t.charging ? "charging" : "docked") : "away"),
+    tile("Wind (FC estimate)", t.wind_mps == null ? "–" : `${t.wind_mps} m/s`),
+    tile("Companion", companion ? companion.state : "none"),
     tile("Safety", status.safety_state),
   ].join("");
-  $("#drone-blockers").textContent = status.preflight_blockers.length ? `Launch blocked: ${status.preflight_blockers.join(", ")}` : "Preflight checks pass.";
-  $("#drone-requests").innerHTML =
-    status.requests
-      .map(
-        (request) => `<li>
-        <div><strong>${esc(request.target_label || "Custom point")}</strong> <span class="muted small">${esc(request.status.replace("_", " "))}${request.phase ? ` · ${esc(request.phase)}` : ""}</span></div>
-        <div class="small muted">${dateTime(request.created_ms)} · by ${esc(request.requested_by)}${request.incident_id ? ` · ${esc(request.incident_id)}` : ""}</div>
-        ${request.status === "pending_approval" ? `<div class="button-row"><button class="primary" data-approve="${esc(request.request_id)}">Approve flight</button><button data-deny="${esc(request.request_id)}">Deny</button></div>` : ""}
-      </li>`,
-      )
-      .join("") || '<li class="muted">No inspection requests.</li>';
+  const icon = { pass: "✓", fail: "✗", warn: "!", na: "–" };
+  $("#drone-readiness").innerHTML = status.readiness.checks.map((c) => `<li class="row-between" data-check="${esc(c.id)}" data-state="${esc(c.state)}"><span>${icon[c.state]} ${esc(c.label)}</span>
+    <span class="small muted wrap">${esc(c.detail)}</span></li>`).join("") +
+    `<li><strong>${status.readiness.ready ? "Ready for an operator-approved inspection" : "Not ready"}</strong></li>`;
+  const audit = status.parameter_audit;
+  $("#drone-audit").innerHTML = audit ? "<tr><th>Setting</th><th>Now</th><th>Needed</th></tr>" + audit.findings.map((f) =>
+    `<tr><td>${f.ok ? "✓" : f.blocking ? "✗" : "!"} ${esc(f.param)}</td><td class="wrap">${esc(f.actual)}</td><td class="wrap small">${esc(f.expected)}<div class="muted">${esc(f.why)}</div></td></tr>`).join("")
+    : '<tr><td class="muted">Not applicable for the built-in simulator.</td></tr>';
+  const conditions = status.conditions;
+  $("#drone-conditions-state").textContent = conditions ? `Last confirmed ${time(conditions.recorded_ms)} by ${conditions.by}` : "Not confirmed yet.";
+  $("#drone-commands-card").hidden = status.mode !== "command";
+  const report = (companion && companion.report) || {};
+  $("#drone-companion").innerHTML = companion
+    ? `<div><strong>${esc(companion.name)}</strong> <span class="muted small">${esc(companion.state)}${companion.last_report_age_s != null ? ` · ${companion.last_report_age_s} s ago` : ""}</span></div>
+       <div class="small muted">${esc((companion.hardware || {}).model || "")} · CPU ${(report.health || {}).cpu_temp_c ?? "?"} °C ·
+       ${(report.relay || {}).hub_frames_dropped ?? 0} Hub message(s) blocked by the relay</div>
+       <button class="danger small" data-revoke="${esc(companion.companion_id)}">Unpair</button>`
+    : '<p class="small muted">No companion paired. Pairing gives the companion its own identity; its health then appears here.</p>';
+  document.querySelectorAll("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Unpair this companion computer? It will stop reporting until paired again.")) return;
+    try { await api(`/drone/companions/${encodeURIComponent(b.dataset.revoke)}`, { method: "DELETE" }); renderDrone(await api("/drone")); }
+    catch (error) { toast("Not unpaired", error.message); }
+  }));
+  const maintenance = status.maintenance;
+  $("#drone-maintenance").innerHTML = `${maintenance.flights} flight(s), ${Math.round(maintenance.flight_time_s / 60)} min in total ·
+    ${maintenance.flights_since_inspection} since the last inspection${maintenance.inspection_due ? " <strong>(inspection due)</strong>" : ""} ·
+    ${maintenance.commissioned ? "commissioned" : "<strong>not commissioned</strong>"}`;
+  const video = status.video;
+  $("#drone-video-card").hidden = !video;
+  if (video) {
+    $("#drone-video-detail").textContent = video.detail || video.state;
+    const img = $("#drone-video");
+    const live = video.state === "streaming";
+    if (live && !img.getAttribute("src")) img.src = `${API}/drone/video.mjpg`;
+    if (!live && img.getAttribute("src")) img.removeAttribute("src");
+  }
+  $("#drone-requests").innerHTML = status.requests.map((r) => {
+    const obs = r.observations || {};
+    const id = encodeURIComponent(r.request_id);
+    return `<li data-request="${esc(r.request_id)}">
+      <div><strong>${esc(r.target_label || "Custom point")}</strong> <span class="muted small">${esc(r.status.replace(/_/g, " "))}${r.phase && r.phase !== "done" ? ` · ${esc(r.phase.replace(/_/g, " "))}` : ""}</span></div>
+      <div class="small muted">${dateTime(r.created_ms)} · by ${esc(r.requested_by)}${r.reason ? ` · ${esc(r.reason)}` : ""}${r.incident_id ? ` · ${esc(r.incident_id)}` : ""}</div>
+      ${r.note ? `<div class="small">${esc(r.note)}</div>` : ""}
+      <div class="small"><a href="${API}/drone/inspections/${id}/mission" download>Route (.plan)</a> · <a href="${API}/drone/inspections/${id}/mission?format=waypoints" download>.waypoints</a></div>
+      ${r.status === "approved" ? `<div class="small"><strong>Approved:</strong> load the route in the ground station and fly it before ${time(r.approved_until_ms)}. Sentinel follows the flight from telemetry.</div>` : ""}
+      ${(obs.text || []).length ? `<ul class="small">${obs.text.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+      ${r.status === "pending_approval" ? `<div class="button-row"><button class="primary" data-approve="${esc(r.request_id)}">Approve</button><button data-deny="${esc(r.request_id)}">Deny</button></div>` : ""}
+    </li>`;
+  }).join("") || '<li class="muted">No inspection requests.</li>';
   $("#drone-points").innerHTML = (state.site.drone_points || []).map((point) => `<li class="row-between"><span>${esc(point.name)}</span>
       <button data-inspect-point="${esc(point.id)}">Request inspection</button></li>`).join("") || '<li class="muted">None. Add them in Install → Zones and privacy.</li>';
   document.querySelectorAll("[data-inspect-point]").forEach((b) => b.addEventListener("click", () => requestInspection({ point_id: b.dataset.inspectPoint })));
@@ -363,26 +500,17 @@ function renderDrone(status) {
 }
 
 async function droneDecision(requestId, decision) {
-  if (decision === "approve" && !confirm("Approve this inspection flight? The drone will take off.")) return;
+  const command = state.drone && state.drone.mode === "command";
+  if (decision === "approve" && !confirm(command ? "Approve this inspection? Sentinel will fly it in the simulator."
+    : "Approve this inspection? The route is exported for the pilot, who decides whether and how to fly it.")) return;
   try {
     await api(`/drone/inspections/${encodeURIComponent(requestId)}/${decision}`, { method: "POST", body: JSON.stringify({}) });
     renderDrone(await api("/drone"));
+    loadDroneLogs();
   } catch (error) {
     toast(`Could not ${decision}`, error.message);
   }
 }
-
-document.querySelectorAll("[data-cmd]").forEach((button) =>
-  button.addEventListener("click", async () => {
-    const action = button.dataset.cmd;
-    if (action === "takeoff" && !confirm("Take off now?")) return;
-    try {
-      renderDrone(await api("/drone/commands", { method: "POST", body: JSON.stringify({ action, params: {} }) }));
-    } catch (error) {
-      toast("Command rejected", error.message);
-    }
-  }),
-);
 
 // ---- settings --------------------------------------------------------------
 
@@ -587,6 +715,11 @@ function connectStream() {
   });
   source.addEventListener("settings", (message) => renderSettings(JSON.parse(message.data)));
   source.addEventListener("drone", (message) => renderDrone(JSON.parse(message.data)));
+  source.addEventListener("drone_inspection", (message) => {
+    const request = JSON.parse(message.data);
+    toast(`Drone inspection ${request.status.replace(/_/g, " ")}`, request.target_label || "", "low");
+    loadDroneLogs();
+  });
   source.addEventListener("config", () => refreshAfterConfigChange());
   source.addEventListener("health", (message) => renderCoverage(JSON.parse(message.data)));
 }

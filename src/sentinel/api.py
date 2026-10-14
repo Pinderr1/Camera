@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from . import backup, devices, netdiag, onboarding, onvif, planner
 from .config import public_camera_view
 from .drone import FlightCommandRejected
+from .drone.pairing import PairingError
 from .installation import InstallationError
 from .service import SentinelService
 from .site_config import WRITE_ONLY_FIELDS, SiteConfigError
@@ -145,6 +146,43 @@ class ResetBody(BaseModel):
 class DroneCommandBody(BaseModel):
     action: Literal["takeoff", "goto", "hold", "return_home", "land"]
     params: dict[str, float] = Field(default_factory=dict)
+
+
+class ConditionsBody(BaseModel):
+    precipitation: bool
+    visibility_ok: bool
+    wind_mps: float | None = Field(default=None, ge=0, le=60)
+    temperature_c: float | None = Field(default=None, ge=-60, le=60)
+    note: str = Field(default="", max_length=300)
+
+
+class MaintenanceBody(BaseModel):
+    kind: Literal["inspection", "repair", "battery", "propellers", "firmware", "calibration", "commissioning", "note"]
+    note: str = Field(default="", max_length=1000)
+
+
+class PairingCodeBody(BaseModel):
+    drone_id: str | None = Field(default=None, max_length=80)
+
+
+class CompanionPairBody(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+    name: str = Field(default="", max_length=60)
+    hardware: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompanionSessionBody(BaseModel):
+    companion_id: str = Field(max_length=40)
+    timestamp_ms: int
+    nonce: str = Field(min_length=8, max_length=64)
+    mac: str = Field(min_length=64, max_length=64)
+
+
+class CompanionReportBody(BaseModel):
+    health: dict[str, Any] = Field(default_factory=dict)
+    relay: dict[str, Any] = Field(default_factory=dict)
+    video: dict[str, Any] = Field(default_factory=dict)
+    sent_ms: int | None = None
 
 
 def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
@@ -507,6 +545,14 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(error)) from None
         return request.as_dict()
 
+    @app.get("/api/v1/drone/inspections/{request_id}/route")
+    def drone_route(request_id: str, _: str = Depends(require_auth)) -> dict[str, Any]:
+        drone = drone_or_404()
+        request = drone.requests.get(request_id)
+        if request is None:
+            raise HTTPException(status_code=404, detail="unknown request")
+        return request.route or drone.plan(request).as_dict() | {"preview": True}
+
     @app.post("/api/v1/drone/inspections/{request_id}/approve")
     def approve(request_id: str, actor: str = Depends(require_auth)) -> dict[str, Any]:
         try:
@@ -533,6 +579,122 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
         except (FlightCommandRejected, ValueError, KeyError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         return drone.status()
+
+    @app.get("/api/v1/drone/readiness")
+    def drone_readiness(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return drone_or_404().readiness()
+
+    @app.get("/api/v1/drone/link")
+    def drone_link(_: str = Depends(require_auth)) -> dict[str, Any]:
+        adapter = drone_or_404().adapter
+        return adapter.link_status() if hasattr(adapter, "link_status") else {"state": "simulated", "connection": "built-in simulator"}
+
+    @app.post("/api/v1/drone/conditions")
+    def drone_conditions(body: ConditionsBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return drone_or_404().set_conditions(actor, precipitation=body.precipitation, visibility_ok=body.visibility_ok,
+                                             wind_mps=body.wind_mps, temperature_c=body.temperature_c, note=body.note)
+
+    @app.get("/api/v1/drone/inspections")
+    def drone_inspections(incident_id: str | None = None, limit: int = 50, _: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        drone_or_404()
+        return runtime.store.list_drone_inspections(incident_id=incident_id, limit=max(1, min(limit, 500)))
+
+    @app.get("/api/v1/drone/inspections/{request_id}")
+    def drone_inspection(request_id: str, _: str = Depends(require_auth)) -> dict[str, Any]:
+        found = drone_or_404().inspection(request_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="unknown request")
+        return found
+
+    @app.get("/api/v1/drone/inspections/{request_id}/mission")
+    def drone_mission(request_id: str, format: Literal["plan", "waypoints"] = "plan", actor: str = Depends(require_auth)) -> Response:
+        try:
+            filename, content = drone_or_404().mission_export(request_id, format)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown request") from None
+        runtime.store.audit(actor, "drone_mission_exported", {"request_id": request_id, "format": format})
+        media_type = "application/json" if format == "plan" else "text/plain"
+        return Response(content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})
+
+    @app.get("/api/v1/drone/flights")
+    def drone_flights(limit: int = 50, _: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return drone_or_404().flights(max(1, min(limit, 500)))
+
+    @app.get("/api/v1/drone/maintenance")
+    def drone_maintenance(_: str = Depends(require_auth)) -> dict[str, Any]:
+        drone = drone_or_404()
+        return {"summary": drone.maintenance_summary(), "records": drone.maintenance()}
+
+    @app.post("/api/v1/drone/maintenance")
+    def add_drone_maintenance(body: MaintenanceBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return drone_or_404().add_maintenance(body.kind, actor, body.note)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.get("/api/v1/drone/video.mjpg")
+    async def drone_video(request: Request, _: str = Depends(require_auth)) -> StreamingResponse:
+        drone = drone_or_404()
+        worker = service.drone_video.get(drone.drone_id)
+        if worker is None:
+            raise HTTPException(status_code=404, detail="no drone video configured")
+
+        async def frames():
+            last = None
+            while not await request.is_disconnected():
+                jpeg = worker.latest_jpeg
+                if jpeg and jpeg is not last:
+                    last = jpeg
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n"
+                await asyncio.sleep(0.2)
+
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame", headers={"Cache-Control": "no-store"})
+
+    # ---- drone companion computers ------------------------------------------------
+    # Operator endpoints use the normal token. Companion endpoints authenticate the
+    # device itself: a one-time pairing code, then HMAC-proven sessions.
+
+    @app.get("/api/v1/drone/companions")
+    def companions(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return [row | {"report": row.get("report", {})} for row in service.companions.list()]
+
+    @app.post("/api/v1/drone/companions/code")
+    def companion_code(body: PairingCodeBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        drone_id = body.drone_id or service.primary_drone
+        if not drone_id or service.drone_manager(drone_id) is None:
+            raise HTTPException(status_code=404, detail="no such drone")
+        return service.companions.create_code(drone_id, actor)
+
+    @app.delete("/api/v1/drone/companions/{companion_id}")
+    def revoke_companion(companion_id: str, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return service.companions.revoke(companion_id, actor)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown companion") from None
+
+    @app.post("/api/v1/drone/companion/pair")
+    def companion_pair(body: CompanionPairBody) -> dict[str, Any]:
+        try:
+            return service.companions.pair(body.code, body.name, body.hardware)
+        except PairingError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from None
+
+    @app.post("/api/v1/drone/companion/session")
+    def companion_session(body: CompanionSessionBody) -> dict[str, Any]:
+        try:
+            return service.companions.open_session(body.companion_id, body.timestamp_ms, body.nonce, body.mac)
+        except PairingError as error:
+            raise HTTPException(status_code=401, detail=str(error)) from None
+
+    @app.post("/api/v1/drone/companion/report")
+    def companion_report(body: CompanionReportBody, request: Request) -> dict[str, Any]:
+        header = request.headers.get("authorization", "")
+        token = header[10:] if header.lower().startswith("companion ") else ""
+        try:
+            companion = service.companions.report(token, body.model_dump())
+        except PairingError as error:
+            raise HTTPException(status_code=401, detail=str(error)) from None
+        return {"ok": True, "companion_id": companion.companion_id}
 
     # ---- setup: site configuration -------------------------------------------
 

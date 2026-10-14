@@ -291,6 +291,7 @@ class DroneFirstInstallUiTests(_Server, unittest.TestCase):
         page.locator("#plan-svg").press("Delete")
         expect(page.locator("#plan-status")).to_have_text("Unsaved changes")
         page.click("#plan-save")
+        expect(page.locator("#plan-status")).to_have_text("")  # the save request has finished
         saved = len(self.service.installation.state["plan"]["items"])
         page.reload()
         page.click('nav.tabs [data-tab="install"]')

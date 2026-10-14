@@ -172,7 +172,14 @@ function explanationHtml(x) {
     <h4>7 · Why this severity</h4>
     ${list(x.severity.reasons.map((r) => `<li>${esc(r)}</li>`))}
     <h4>8 · Supporting recordings</h4>
-    ${list(x.evidence.map((e) => `<li>${e.type === "clip" ? "Clip" : "Snapshot"} · ${esc(e.camera)} · ${time(e.started_ms || e.time_ms)} · <a href="${mediaUrl(e.path)}" target="_blank" rel="noopener">open</a></li>`))}`;
+    ${list(x.evidence.map((e) => `<li>${e.type === "clip" ? "Clip" : e.type === "drone_snapshot" ? "Drone snapshot" : "Snapshot"} · ${esc(e.camera)} · ${time(e.started_ms || e.time_ms)} · <a href="${mediaUrl(e.path)}" target="_blank" rel="noopener">open</a></li>`))}
+    ${(x.drone_inspections || []).length ? `<h4>9 · Drone inspection</h4>
+      <p class="small muted">Reported separately from the fixed cameras: a moving camera has no zones, and the drone cannot tell whether it sees the same person.</p>
+      ${x.drone_inspections.map((d) => `<div class="card inner" data-drone-inspection="${esc(d.request_id)}">
+        <div><strong>${esc(d.target_label || "Inspection")}</strong> <span class="muted small">${esc(d.status.replace(/_/g, " "))} · ${esc(d.mode === "command" ? "flown by Sentinel (simulator)" : "flown by the pilot")}</span></div>
+        <div class="small muted">Requested by ${esc(d.requested_by)}${d.reason ? ` because: ${esc(d.reason)}` : ""} · approved by ${esc(d.decided_by || "nobody")} ${d.decided_ms ? time(d.decided_ms) : ""}${d.note ? ` · ${esc(d.note)}` : ""}</div>
+        ${list(((d.observations || {}).text || ["No drone video was analysed."]).map((line) => `<li>${esc(line)}</li>`))}
+      </div>`).join("")}` : ""}`;
 }
 
 let timelineScale = null;

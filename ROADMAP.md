@@ -1,6 +1,6 @@
 # Sentinel roadmap
 
-Last updated: 2026-10-13. Priority: **a working security brain on real cameras before any drone hardware.** Sentinel runs unattended with honest coverage reporting and self-recovery (Phase 0.9), and its rules are now testable and its incidents explained (Phase 0.10); the next proof is days of continuous operation on real cameras. The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
+Last updated: 2026-10-14. Priority: **a working security brain on real cameras before any drone hardware.** Sentinel runs unattended with honest coverage reporting and self-recovery (Phase 0.9), and its rules are now testable and its incidents explained (Phase 0.10); the next proof is days of continuous operation on real cameras. The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
 
 ## Phase 0: Pivot foundation (done, October 2026)
 - [x] Audit the CameraAI codebase. Archive the senior-safety docs and keep that code frozen.
@@ -348,13 +348,65 @@ Exit: measured improvement on a held-out set of real household incidents.
 - [ ] Optional integrations: door and window contacts, smart locks, and lights over MQTT/Home Assistant as extra rule inputs.
 
 ## Phase 5: Drone (gated, see `docs/drone-integration.md`)
-Exit for each step is listed in the drone doc. Never skip steps.
-- [ ] ArduPilot SITL telemetry through `MavlinkTelemetryAdapter`.
-- [ ] Flight commands implemented against SITL only, behind an explicit config flag and a SITL check.
-- [ ] Failsafe injection tests in SITL.
-- [ ] Drone video stream ingested as a mobile camera source.
-- [ ] Dock adapter (status and charging).
-- [ ] Regulatory review, then bench, tethered, and supervised field trials with a certified pilot.
+Exit for each step is listed in the drone doc. Never skip steps. The drone track runs alongside Phase 1 and must not delay it.
+
+### Phase 5.0: SITL integration and V1 architecture (done, 2026-10-14; no hardware bought, no physical flight)
+- [x] Hardware architecture, re-evaluated without a price target (`docs/drone-hardware-v1.md`):
+  - **recommended:** Holybro X650, Pixhawk 6X on the Pixhawk RPi CM4 baseboard (ArduCopter 4.7), SIYI ZT6 (thermal + 4K), SIYI HM30, ExpressLRS, dual M10, LightWare SF45/B;
+  - day variant with the A8 mini;
+  - alternatives: X500 V2, Herelink, ModalAI, enterprise docks;
+  - weight/power budget, wiring, bench procedure, BOM (about $7.2–8.5k full, $4.3–5.1k day, $1.0–1.4k bench rig), product-readiness gaps, Canadian scenarios and blockers.
+- [x] ArduPilot SITL telemetry through `MavlinkTelemetryAdapter`:
+  - real ArduCopter 4.7.2 in WSL2 (`scripts/sitl/start_sitl.sh`);
+  - reconnect after EOF, Hub ground-station heartbeat, stream requests;
+  - 1,369 parameters in about 3 s, read-only fence download, gimbal attitude, pre-arm and EKF state.
+- [x] Read-only parameter audit:
+  - failsafes, fence type/action/ceiling, RTL altitude, arming checks;
+  - the FC polygon inside Sentinel's geofence;
+  - changes since recorded commissioning;
+  - ArduCopter 4.7 renames handled.
+
+  It blocks approval; SITL defaults correctly failed it until commissioning.
+- [x] Propose mode for real aircraft:
+  - approval exports QGroundControl `.plan` / `.waypoints` (vertical climb to the safe transit altitude, transit, hover, RTL; every leg checked against the geofence);
+  - the pilot flies it, and Sentinel follows the phases from telemetry.
+
+  Flown in SITL by a ground-station stand-in.
+- [x] Command mode for simulators only (`SitlMavlinkAdapter`): requires `allow_flight_commands`, a loopback link and SIM_* parameters. Physical aircraft refuse every command.
+- [x] Readiness (15 checks, including operator-confirmed weather and conditions), operator advisories instead of commands for real aircraft, flight log, maintenance and commissioning records, `drone_link` health component, restart recovery (an inspection in flight is marked interrupted, never resumed).
+- [x] Companion computer software (`sentinel.companion`):
+  - MAVLink relay with a CRC-checked Hub→FC allowlist;
+  - health agent;
+  - one-time pairing codes and HMAC sessions (secret in the credential store);
+  - Pi provisioning (MediaMTX, systemd).
+- [x] Drone video:
+  - analysed on the Hub only during inspections;
+  - tracked across frames;
+  - ground position with stated uncertainty (or the reason none is possible);
+  - fingerprinted snapshots;
+  - observations reported beside the fixed cameras in the incident explanation, never merged.
+- [x] Failsafe tests in SITL: link loss → the FC's own GCS failsafe returned home; low battery → return home.
+- [x] End-to-end demo (`scripts/drone_sitl_demo.py`), through the real service and API:
+  1. A simulated camera's high incident ("Person entered Shed") created a request.
+  2. The companion paired, commissioning was recorded, and an operator approved.
+  3. The pilot stand-in flew the exported plan (25 s, 60 m).
+  4. The simulated drone camera found a person in 23 of 125 frames, 1.4 m (±3.3 m) from the inspection point (scripted truth about 1.1–1.7 m).
+  5. A fingerprinted snapshot was attached to the incident.
+- [x] Tests: 44 new (unit, interface, API, Edge) plus 6 SITL integration tests (`SENTINEL_SITL=1`). 448 in total pass (6 SITL skipped without a simulator); `reliability_smoke.py` 17/17.
+
+**Still simulated:** aircraft physics, both cameras, the scripted drone detector, the pilot, the companion (ran on the Hub, not a Pi), and the radio link (loopback UDP). No real gimbal attitude, video latency, link range, endurance or wind has been measured.
+
+### Phase 5.1 onwards: physical prototype (owner approval needed for each purchase)
+- [ ] Bench rig (Pixhawk 6X + CM4 baseboard, M10, A8 mini; about $1.0–1.4k): bench steps 8.1–8.4 and 8.10 of the hardware doc; companion pairing on a real Pi; record results here.
+- [ ] Video on real hardware: latency (target under 400 ms), the gimbal attitude source, `drone.video.camera` from the datasheet.
+- [ ] Full V1 airframe, props off: assembly, weighing, every FC failsafe on the bench, companion power-loss, EMI, lidar check.
+- [ ] SITL: fence-breach and EKF-failure injection; SF45/B proximity and BendyRuler configuration tested in SITL before hardware.
+- [ ] MAVLink 2 signing between the companion and the FC (key derived from the pairing secret); mavlink-router with the same relay policy for the product.
+- [ ] Regulatory and business track: aviation-law review, Standard 922 test plan, insurance (manufacturer and operator), operator model (customer pilots or a Sentinel service), privacy notice for drone video.
+- [ ] Tethered, then open-field pilot-flown trials with Sentinel observing and proposing. Measure endurance, wind behaviour, link range around a house, thermal and visible image quality, and ground-position accuracy against surveyed markers.
+- [ ] Thermal detection: licence-cleared thermal/aerial detector and labeled aerial footage before any thermal detection is claimed.
+- [ ] Dock adapter (status and charging); manual charging is fine for V1.
+- [ ] Later: "bring your own DJI Mini" (sub-250 g) as a software-only integration; NDAA parts list for any US version; Sentinel-commanded flight on a real aircraft only as a separate, gated decision.
 
 ## Phase 6: Commercial readiness
 - [ ] Multi-site backend option (Postgres, object storage) behind the same store interface.
@@ -366,4 +418,5 @@ Exit for each step is listed in the drone doc. Never skip steps.
 ## Open risks
 - Real-world detector accuracy at night and in bad weather is unknown until Phase 1.
 - Alert fatigue is the main product risk. Every rule needs a measured nuisance rate.
-- Drone operations face strict regulation. A commercial unattended drone may never be legal in some markets, so the product must stand on cameras alone.
+- Drone operations face strict regulation. A commercial unattended drone may never be legal in some markets, so the product must stand on cameras alone. In Canada, a Sentinel-branded drone for residential use needs a Standard 922 declaration and customers with Advanced certificates. A US version would need a separate NDAA-style parts list because of the FCC Covered List.
+- Drone product risk: the value is the integration (incident-driven, audited, evidence-linked inspections), but suburban use needs a Standard 922 declaration and Advanced-certificate pilots, and thermal detection is not yet validated. Validate demand with rural and small-business pilot customers before committing to production.

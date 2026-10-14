@@ -27,4 +27,4 @@ psutil>=5.9
 # MQTT mirror and legacy senior_safety bridge.
 paho-mqtt>=2.0
 # Optional, drone telemetry over MAVLink (LGPL-3.0, used unmodified as a library):
-# pymavlink>=2.4
+# pymavlink>=2.4   (also needed for the ArduPilot SITL tests and scripts/sitl/gcs_standin.py)

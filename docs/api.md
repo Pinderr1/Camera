@@ -27,7 +27,7 @@ The dashboard and any future mobile app share this one API. Interactive OpenAPI 
 | POST | `/api/v1/incidents/{id}/acknowledge` | Idempotent |
 | POST | `/api/v1/incidents/{id}/resolve` | `{"outcome": "expected_activity\|false_alarm\|real_concern\|unclear"}` |
 | GET | `/api/v1/search/incidents` | Filters: `since_ms`, `until_ms`, `camera_id`, `zone_id`, `label`, `min_severity`, `outcome` (`expected_activity\|false_alarm\|real_concern\|unclear\|unreviewed`), `rule_id`, `q` (text), `limit` |
-| GET | `/api/v1/incidents/{id}/explanation` | Structured explanation: `headline`, `objects`, `cameras` (with `basis`), `zones`, `sequence` (each `observed` or `inferred`), `rules` (plain description, matched details, downgrades), `confidence` (detection range, cross-camera links, uncertainty), `severity.reasons`, `evidence`, `statement` |
+| GET | `/api/v1/incidents/{id}/explanation` | Structured explanation: `headline`, `objects`, `cameras` (with `basis`), `zones`, `sequence` (each `observed` or `inferred`), `rules` (plain description, matched details, downgrades), `confidence` (detection range, cross-camera links, uncertainty), `severity.reasons`, `evidence` (drone snapshots as `drone_snapshot`), `statement`, and `drone_inspections` when the drone inspected for this incident (reported separately from the fixed cameras) |
 | POST | `/api/v1/incidents/{id}/notes` | `{"text"}`, appended (never edited) and audited |
 | GET | `/api/v1/incidents/{id}/export` | Zip: `report.html`, `report.json`, `manifest.json` (SHA-256 per file), and with `?include_media=true` the recordings. Evidence is reported as intact, changed, missing, or not fingerprinted. Audited |
 | POST / GET | `/api/v1/missed` | Report activity Sentinel did not report: `{"occurred_ms", "camera_id", "zone_id"?, "category"?, "description"?}`. Stores what Sentinel recorded on that camera within ±5 min. `GET ?days=` lists reports |
@@ -37,12 +37,28 @@ The dashboard and any future mobile app share this one API. Interactive OpenAPI 
 | GET | `/api/v1/media/{path}` | Clips and snapshots referenced by events and incidents |
 | GET / PATCH | `/api/v1/settings` | `arm_mode` (`disarmed\|home\|away`), `sensitivity` (`low\|normal\|high`), `notifications_enabled` |
 | GET | `/api/v1/audit` | Operator and system actions |
-| GET | `/api/v1/stream` | Server-sent events: `event`, `incident`, `notification`, `settings`, `drone`, `config`, `health` (the coverage object, on every health transition) |
-| GET | `/api/v1/drone` | Telemetry, safety state, preflight blockers, requests, geofence |
+| GET | `/api/v1/stream` | Server-sent events: `event`, `incident`, `notification`, `settings`, `drone`, `drone_inspection` (an inspection finished), `config`, `health` (the coverage object, on every health transition) |
+| GET | `/api/v1/drone` | Primary drone: `drone_id`, `adapter`, `physical`, `mode` (`propose`: the pilot flies exported routes; `command`: simulators only) and `mode_reason`, `telemetry` (including flight mode, landed state, EKF, pre-arm, HDOP, wind, gimbal angle, recent FC messages), `flight_state`, `safety_state`, `preflight_blockers`, `readiness`, `parameter_audit`, `conditions`, `advisories`, `companion`, `video`, `flight` (open flight), `maintenance`, `requests`, `geofence`, `safe_transit_altitude_m`, `home` |
+| GET | `/api/v1/drone/readiness` | `{"ready", "mode", "blockers", "checks": [{"id", "label", "state": "pass\|fail\|warn\|na", "detail", "blocker"}]}` |
+| GET | `/api/v1/drone/link` | MAVLink link state, reconnects, parameter count, fence vertices (never credentials) |
+| POST | `/api/v1/drone/conditions` | Operator's on-site confirmation: `{"precipitation": bool, "visibility_ok": bool, "wind_mps"?, "temperature_c"?, "note"?}` (valid `drone.weather.conditions_ttl_s`) |
 | POST | `/api/v1/drone/inspections` | `{"zone_id": "..."}`, `{"point_id": "..."}` (one of `drone.inspection_points`), or `{"lat":..,"lon":..}`, plus optional `incident_id`. Creates a pending request on the primary drone; this never flies |
-| POST | `/api/v1/drone/inspections/{id}/approve` | Operator approval. Runs preflight checks, then starts the mission |
+| GET | `/api/v1/drone/inspections` | Stored inspections (`?incident_id=`, `limit`), including finished ones with `observations` and `evidence_paths` |
+| GET | `/api/v1/drone/inspections/{id}` | One inspection: status, phase, mode, route, times, flight id, observations |
+| GET | `/api/v1/drone/inspections/{id}/route` | The approved route, or a `preview` of the route approval would produce |
+| GET | `/api/v1/drone/inspections/{id}/mission` | Download for a ground station: `?format=plan` (QGroundControl JSON, with the geofence) or `waypoints` (`QGC WPL 110`). Audited |
+| POST | `/api/v1/drone/inspections/{id}/approve` | Operator approval. Fails with 409 while readiness has blockers or the route leaves the geofence. `propose` mode: status `approved` until the pilot flies it within `approval_window_s`. `command` mode (simulators): Sentinel flies it |
 | POST | `/api/v1/drone/inspections/{id}/deny` | `{"note": "..."}` |
-| POST | `/api/v1/drone/commands` | `{"action": "takeoff\|goto\|hold\|return_home\|land", "params": {...}}` |
+| POST | `/api/v1/drone/commands` | `{"action": "takeoff\|goto\|hold\|return_home\|land", "params": {...}}`. Simulators only; real aircraft refuse (409) |
+| GET | `/api/v1/drone/flights` | Flight log: start/end, duration, max altitude, distance, battery, flight states, FC messages, safety events, linked inspection |
+| GET, POST | `/api/v1/drone/maintenance` | Records (`inspection`, `repair`, `battery`, `propellers`, `firmware`, `calibration`, `commissioning`, `note`) and a summary. `commissioning` stores the FC parameters as the reference for later change detection (not returned) |
+| GET | `/api/v1/drone/video.mjpg` | Annotated drone camera during an inspection (404 without `drone.video`) |
+| GET | `/api/v1/drone/companions` | Paired companion computers with state (`reporting`/`silent`/`revoked`) and their last health report. Never secrets |
+| POST | `/api/v1/drone/companions/code` | `{"drone_id"?}` → `{"code": "ABCD-EFGH", "expires_ms"}`: one-time pairing code, 10 minutes |
+| DELETE | `/api/v1/drone/companions/{id}` | Revoke: sessions end, the secret is deleted |
+| POST | `/api/v1/drone/companion/pair` | **Device endpoint** (no operator token): `{"code", "name", "hardware"}` → `{"companion_id", "drone_id", "secret"}` once. 403 for wrong or expired codes; pairing pauses after 10 failures |
+| POST | `/api/v1/drone/companion/session` | **Device endpoint**: `{"companion_id", "timestamp_ms", "nonce", "mac"}` with `mac = HMAC-SHA256(secret, "sentinel-companion-session-v1\|id\|timestamp\|nonce")` → `{"token", "expires_ms"}` (30 min). Replays and clocks off by more than 120 s are refused |
+| POST | `/api/v1/drone/companion/report` | **Device endpoint**, `Authorization: Companion <token>`: `{"health", "relay", "video"}` |
 
 ### Security rules
 

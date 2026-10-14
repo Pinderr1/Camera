@@ -43,7 +43,11 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | REST + SSE + MJPEG API with token auth | Built and tested |
 | Dashboard (live, map, timeline, drone, settings) | Built and smoke-tested |
 | Drone: simulated adapter, geofence, approval workflow, safety monitor | Built and tested |
-| Drone: MAVLink adapter | **Telemetry only. All flight commands are refused by design** |
+| Drone: MAVLink adapter, parameter/fence audit, readiness, propose mode (approval exports a `.plan` the pilot flies; Sentinel follows from telemetry), flight and maintenance logs, restart recovery | Built and **tested against ArduPilot SITL (ArduCopter 4.7.2)**. Real aircraft: **telemetry only, every flight command refused** |
+| Drone: SITL command adapter | Commands only with `allow_flight_commands` + loopback link + SIM_* parameters; SITL-tested (inspection, link-loss FC failsafe, low-battery return) |
+| Drone companion (relay with command filter, pairing, HMAC sessions, health agent, Pi provisioning) | Built and tested on the Hub and against SITL. **Not yet run on a Raspberry Pi** |
+| Drone video and observations (detection on the Hub, tracking, ground position with uncertainty, evidence on the incident) | Built; tested with a simulated aerial camera posed by SITL. **No real aerial footage** |
+| Drone V1 hardware | Architecture and prototype plan (`docs/drone-hardware-v1.md`): X650 + Pixhawk 6X/CM4 baseboard + ZT6 + HM30 + ExpressLRS + SF45/B. **No hardware bought, no physical flight** |
 | Camera liveness: independent frame, decoder, stream-clock, picture and inference signals; still scenes are `unverified`, never falsely `frozen`; recorder-clock freezes detected | Built and tested on simulated cameras with sensor noise and overlay freezes. **Thresholds not yet checked on real recorders** |
 | Evidence-preserving database recovery (originals moved aside with hashes, salvage from a copy, backup age and loss window reported and notified) | Built and tested |
 | Rule builder (types incl. combinations; modes Home/Away/Night/Vacation; days; cooldowns; notification preference; minimum observations; templates) with mandatory test before enabling (simulated walk, scenarios, recorded activity) | Built; backend and Edge tests. Recorded-activity tests are approximations |
@@ -105,7 +109,11 @@ src/sentinel/            the Sentinel brain (current product)
   service.py             process assembly: runtime + supervised workers + housekeeping (health, storage, backups) + drone loop + MQTT
   api.py                 FastAPI app (/api/v1) + dashboard host
   mqtt.py                MQTT mirror of bus traffic
-  drone/                 base (adapter ABC, telemetry), mock (simulator), geofence, manager, mavlink
+  drone/                 base (adapter ABC, telemetry), mock (simulator), geofence, manager (modes, readiness, phases, logs),
+                         mavlink (telemetry-only + SITL-only command adapters), ardupilot (modes, flight state, parameter audit),
+                         mission (routes, .plan/.waypoints export), pairing (companion identity), observation (pose, ground
+                         projection, inspection observations; stdlib), video (drone video worker, simulated aerial camera)
+  companion/             drone companion computer (stdlib): MAVLink relay with Hub command filter, health agent, pairing CLI, Pi provisioning
   web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors; install.js = Install tab + planner
   bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
                          metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
@@ -113,6 +121,9 @@ config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, 
 config/sentinel.drone-first.example.json   drone-first demo: no cameras, simulated drone, dock and sensors
 config/scenarios/              scripted scenarios (delivery, prowler, ambiguous handoff, demo loop)
 config/netsim/                 simulated network conditions for the troubleshooter (regression: Hikvision on another subnet)
+scripts/sitl/                  start_sitl.sh (official ArduCopter SITL in Linux/WSL2), gcs_standin.py (scripted commissioning engineer and pilot; simulators only)
+scripts/drone_sitl_demo.py     end-to-end drone demo: incident -> request -> approval -> SITL flight -> drone video -> evidence
+config/drone/sentinel-v1-sitl.parm   commissioning parameters (failsafes, fence, RTL) used with SITL
 scripts/reliability_smoke.py   one-minute failure drill on simulated cameras (disconnect, freeze, crash, stall, AI, disk, restart, DB)
 scripts/sentinel_launcher.py   starts Sentinel without PYTHONPATH (used by the Windows task)
 config/bench/                  benchmark site config (zones per public clip), manifest, live RTSP example
@@ -120,7 +131,8 @@ scripts/fetch_bench_footage.py downloads public annotated footage into data/benc
 tests/test_sentinel_*.py       Sentinel tests (tests/sentinel_helpers.py holds the fixtures); test_sentinel_ui.py drives Edge via Playwright
 docs/architecture.md           architecture and event-processing design
 docs/api.md                    API reference for dashboard and mobile clients
-docs/drone-integration.md      drone design, safety gates, ArduPilot/MAVLink path
+docs/drone-integration.md      drone architecture (Hub / companion / FC), modes, inspection workflow, video, pairing, config, SITL results, gates
+docs/drone-hardware-v1.md      drone V1 hardware: recommended architecture, alternatives, budgets, wiring, bench tests, BOM, product readiness, Canadian rules
 docs/benchmarking.md           how to measure Sentinel on real footage, and what each metric means
 docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
 docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
@@ -150,6 +162,9 @@ python -m sentinel run --config config/sentinel.local.json --env-file <secrets.e
 python -m sentinel service install|start|status|stop|uninstall --config ...   # Windows background start (Task Scheduler)
 python -m sentinel backup create|list|verify|restore [NAME] --config ...
 python scripts/reliability_smoke.py                       # failure drill, ~35 s, prints PASS/FAIL
+bash scripts/sitl/start_sitl.sh 3                          # ArduCopter SITL (Linux/WSL2); then:
+$env:SENTINEL_SITL='1'; python -m unittest tests.test_sentinel_drone_sitl   # SITL integration tests (~5 min)
+python scripts/drone_sitl_demo.py --out bench_runs/drone_demo   # end-to-end drone inspection demo and report
 python -m unittest tests.test_sentinel_ui                  # browser tests (pip install playwright; uses installed Edge)
 python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
 python -m sentinel.bench run --all --out bench_runs/NAME   # real-footage benchmark -> report.md/html
@@ -172,7 +187,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 4. **Privacy by default.** Processing is local. Privacy masks are applied before detection, recording, and streaming. Clips and snapshots stay on local disk under retention limits. Snapshots go to third-party push services only when `attach_snapshot` is explicitly enabled. Never commit media, recordings, `data/sentinel/`, or real site configs.
 5. **No public camera exposure.** The API binds to `127.0.0.1` by default and refuses to bind elsewhere without `SENTINEL_API_TOKEN`. Camera source URLs are never returned by the API. Remote access goes through a VPN or an authenticated HTTPS reverse proxy, never port-forwarding.
 6. **Secrets never sit in config, API responses, or logs.** Camera passwords entered in the dashboard go to the credential store, and configs reference them (`credential` / `${secret:NAME}`). Deployment secrets use `${ENV_VAR}`, which is never resolved into the persisted config. Validation rejects literal passwords in URLs. Stream URLs and paths are write-only over the API. MQTT credentials come from `MQTT_USERNAME`/`MQTT_PASSWORD`.
-7. **Drone safety.** No autonomous real-world flight. Sentinel may *request* inspections, but only an operator can approve them. Every command is checked against the geofence and written to the audit log. The flight controller owns stabilisation, failsafes, fences, and landing. Do not write custom flight controllers or landing algorithms. The MAVLink adapter stays telemetry-only until every gate in `docs/drone-integration.md` is met and recorded.
+7. **Drone safety.** No autonomous real-world flight. Sentinel may *request* inspections, but only an operator can approve them. Every command is checked against the geofence and written to the audit log. The flight controller owns stabilisation, failsafes, fences, and landing. Do not write custom flight controllers or landing algorithms. The MAVLink adapter stays telemetry-only until every gate in `docs/drone-integration.md` is met and recorded. Flight commands exist only in `SitlMavlinkAdapter`, which requires `allow_flight_commands`, a loopback link and SIM_* parameters; never relax those checks, and never add commands to the telemetry-only adapter. Sentinel never writes flight-controller parameters. Drone video never feeds zone rules, and drone observations are never linked to fixed-camera identities.
 8. **No automatic calls to police or emergency services.** Escalation goes to people only.
 9. **Network diagnostics are read-only and local.** Sentinel never changes router, firewall, computer, or device network settings; it explains what to change. It probes only private/link-local/CGNAT/loopback addresses, searches a network only after the person confirms they manage it (port checks at most the local /24), never collects MAC addresses, serial numbers, Wi-Fi names, or public IPs, and tries a recorder password once per test (accounts lock).
 10. **Never claim coverage that does not exist.** A camera is reported as monitoring only while new frames reach a working detector and nothing shows the picture is frozen; a still picture that cannot be proven live is shown as `unverified`, not as fine and not as frozen. Offline, frozen, AI-failed, stalled, and restarting cameras are shown as not monitoring (Live overlay, coverage badge, System tab, API), recorded as outages, and pushed to people when they last. Health events never open security incidents, and health notifications do not depend on the arm mode.
@@ -194,7 +209,8 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 
 - Every new rule type, event type, or alert behaviour needs a unit test, and ideally a scenario in `config/scenarios/` with an assertion in `tests/test_sentinel_scenarios.py`. Tune rules with `replay` before touching thresholds in live config.
 - **Detection, tracking, or rule changes must be re-measured with `sentinel.bench` against the previous run, and the result recorded in the ROADMAP findings.** Never quote accuracy without naming the labeled footage behind it. Synthetic degradations and unlabeled clips never support accuracy claims.
-- Keep the core (`models`, `tracker`, `engine`, `correlation`, `incidents`, `store`, `health`, `supervisor`, `drone/manager`) free of OpenCV, numpy, and FastAPI imports.
+- Keep the core (`models`, `tracker`, `engine`, `correlation`, `incidents`, `store`, `health`, `supervisor`, `drone/manager`, `drone/ardupilot`, `drone/mission`, `drone/pairing`, `drone/observation`, `companion/`) free of OpenCV, numpy, and FastAPI imports.
+- Drone changes that touch MAVLink, routes or failsafes need a SITL test in `tests/test_sentinel_drone_sitl.py` (run with SITL up) besides unit tests.
 - New config keys must be validated in `config.validate_config` and documented in `docs/architecture.md`.
 - API changes are additive under `/api/v1`. Breaking changes go to `/api/v2`. Update `docs/api.md`.
 - Match the surrounding style: dataclasses, type hints, small modules, comments only where the *why* is non-obvious.

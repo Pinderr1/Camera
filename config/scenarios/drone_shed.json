@@ -1,0 +1,19 @@
+{
+  "name": "drone_shed",
+  "description": "A person crosses the backyard and stays at the shed (restricted zone). Used by the drone inspection demo.",
+  "duration_s": 900,
+  "loop": false,
+  "actors": [
+    {
+      "id": "visitor",
+      "label": "person",
+      "noise": 0.003,
+      "miss_rate": 0.02,
+      "path": [
+        {"t": 0, "camera": "cam_backyard", "x": 0.30, "y": 0.80},
+        {"t": 8, "camera": "cam_backyard", "x": 0.86, "y": 0.75},
+        {"t": 900, "camera": "cam_backyard", "x": 0.88, "y": 0.76}
+      ]
+    }
+  ]
+}

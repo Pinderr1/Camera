@@ -297,7 +297,8 @@ class SentinelRuntime:
         centroid = (sum(p[0] for p in polygon) / len(polygon), sum(p[1] for p in polygon) / len(polygon))
         try:
             self.drone.request_inspection(
-                requested_by="sentinel", map_point=centroid, label=zone.get("name", zone["id"]), source="incident", incident_id=incident.incident_id
+                requested_by="sentinel", map_point=centroid, label=zone.get("name", zone["id"]), source="incident", incident_id=incident.incident_id,
+                reason=f"{incident.title} (incident severity {incident.severity})",
             )
         except Exception as error:
             log.warning("drone inspection request not created: %s", error)

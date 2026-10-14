@@ -91,6 +91,34 @@ CREATE TABLE IF NOT EXISTS evidence (
     bytes INTEGER NOT NULL,
     recorded_ms INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS drone_inspections (
+    request_id TEXT PRIMARY KEY,
+    drone_id TEXT NOT NULL,
+    incident_id TEXT,
+    created_ms INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS drone_inspections_incident ON drone_inspections (incident_id);
+CREATE TABLE IF NOT EXISTS drone_flights (
+    flight_id TEXT PRIMARY KEY,
+    drone_id TEXT NOT NULL,
+    started_ms INTEGER NOT NULL,
+    ended_ms INTEGER,
+    body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS drone_maintenance (
+    record_id TEXT PRIMARY KEY,
+    drone_id TEXT NOT NULL,
+    recorded_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS drone_companions (
+    companion_id TEXT PRIMARY KEY,
+    drone_id TEXT NOT NULL,
+    body TEXT NOT NULL
+);
 """
 VISIT_COLUMNS = ("visit_id", "site_track_id", "label", "kind", "camera_id", "zone_id", "zone_type", "start_ms", "end_ms", "dwell_s", "arrived")
 # Incidents whose media and rows outlive normal retention (until `protected_media` days).
@@ -452,7 +480,76 @@ class EventStore:
             ):
                 event = json.loads(row["body"])
                 keep.update(path for path in (event.get("snapshot_path"), event.get("clip_path")) if path)
+            for row in self._db.execute(
+                f"SELECT body FROM drone_inspections WHERE incident_id IN (SELECT incident_id FROM incidents WHERE {PROTECTED})"
+            ):
+                keep.update(json.loads(row["body"]).get("evidence_paths", []))
         return keep
+
+    # ---- drone records -------------------------------------------------------
+    # Inspections follow incident retention. Flight and maintenance logs are
+    # aircraft records (no images, no people) and are kept.
+
+    def upsert_drone_inspection(self, inspection: dict[str, Any]) -> None:
+        self._write(
+            "INSERT OR REPLACE INTO drone_inspections VALUES (?,?,?,?,?,?)",
+            (inspection["request_id"], inspection.get("drone_id", ""), inspection.get("incident_id") or None, int(inspection["created_ms"]),
+             inspection["status"], json.dumps(inspection)),
+        )
+
+    def list_drone_inspections(self, *, drone_id: str | None = None, incident_id: str | None = None,
+                               statuses: tuple[str, ...] | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        for column, value in (("drone_id", drone_id), ("incident_id", incident_id)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' * len(statuses))})")
+            params.extend(statuses)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._db.execute(f"SELECT body FROM drone_inspections {where} ORDER BY created_ms DESC LIMIT ?", (*params, limit)).fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
+    def upsert_drone_flight(self, flight: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO drone_flights VALUES (?,?,?,?,?)",
+                    (flight["flight_id"], flight["drone_id"], int(flight["started_ms"]), flight.get("ended_ms"), json.dumps(flight)))
+
+    def list_drone_flights(self, *, drone_id: str | None = None, open_only: bool = False, limit: int = 100) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        if drone_id is not None:
+            clauses.append("drone_id = ?")
+            params.append(drone_id)
+        if open_only:
+            clauses.append("ended_ms IS NULL")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._db.execute(f"SELECT body FROM drone_flights {where} ORDER BY started_ms DESC LIMIT ?", (*params, limit)).fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
+    def add_drone_maintenance(self, record: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO drone_maintenance VALUES (?,?,?,?,?)",
+                    (record["record_id"], record["drone_id"], int(record["recorded_ms"]), record["kind"], json.dumps(record)))
+
+    def list_drone_maintenance(self, *, drone_id: str | None = None, kind: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        for column, value in (("drone_id", drone_id), ("kind", kind)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._db.execute(f"SELECT body FROM drone_maintenance {where} ORDER BY recorded_ms DESC LIMIT ?", (*params, limit)).fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
+    def save_drone_companion(self, companion: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO drone_companions VALUES (?,?,?)", (companion["companion_id"], companion["drone_id"], json.dumps(companion)))
+
+    def list_drone_companions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("SELECT body FROM drone_companions").fetchall()
+        return [json.loads(row["body"]) for row in rows]
 
     def purge(
         self,
@@ -480,6 +577,11 @@ class EventStore:
                     (events_before_ms, protected_before_ms),
                 ).rowcount
                 self._db.execute("DELETE FROM audit WHERE timestamp_ms < ?", (events_before_ms,))
+                self._db.execute(
+                    "DELETE FROM drone_inspections WHERE created_ms < ? AND status NOT IN ('pending_approval', 'approved', 'in_progress') AND "
+                    f"(created_ms < ? OR incident_id IS NULL OR incident_id NOT IN (SELECT incident_id FROM incidents WHERE {PROTECTED}))",
+                    (events_before_ms, protected_before_ms),
+                )
                 self._db.execute("DELETE FROM outages WHERE ended_ms IS NOT NULL AND ended_ms < ?", (events_before_ms,))
         except sqlite3.Error as error:
             log.error("retention purge of rows failed: %s", error)

@@ -16,6 +16,7 @@ This project is reuse-first, but code is copied only when the upstream license c
 | paho-mqtt | EPL-2.0 / EDL-1.0 | MQTT mirror | Used unmodified as a library. |
 | pymavlink (optional) | LGPL-3.0 | Drone telemetry | Use unmodified as a dynamically imported library. Alternative: MAVSDK-Python (BSD-3). |
 | ArduPilot / PX4 | GPL-3.0 / BSD-3 | Flight stacks (run on the drone, not linked) | Sentinel talks MAVLink over a link; it does not link or distribute firmware. |
+| ArduPilot SITL binary and `copter.parm` | GPL-3.0 | Development and tests only: `scripts/sitl/start_sitl.sh` downloads the official build from firmware.ardupilot.org and runs it as a separate program | Not shipped. Customer aircraft carry their own firmware. |
 | ntfy | Apache-2.0 / GPL-2.0 dual | Push delivery (external service or self-hosted) | Not linked. |
 | psutil | BSD-3 | Benchmark resource sampling | |
 
@@ -26,7 +27,7 @@ This project is reuse-first, but code is copied only when the upstream license c
 | MOTChallenge MOT16 (train sequences 02, 04, 09) | CC BY-NC-SA 3.0 | Annotated pedestrian boxes for detection, tracking and derived-event metrics. Non-commercial: evaluation only. |
 | CAVIAR (INRIA lobby clips) | Research use; acknowledge "EC Funded CAVIAR project/IST 2001 37540" when publishing | Annotated indoor overhead footage. |
 | OpenCV `vtest.avi` | OpenCV sample data | Unlabeled ordinary-activity footage. |
-| MediaMTX | MIT | Local RTSP server for live-stream benchmarking (dev tool, not shipped). |
+| MediaMTX | MIT | Local RTSP server for live-stream benchmarking (dev tool), and the planned RTSP server on the drone companion image (`sentinel.companion.provision`; ships on the companion, so include its MIT notice). |
 | ffmpeg | LGPL/GPL builds | Re-encoding benchmark footage and publishing test RTSP streams (dev tool, not shipped). |
 
 ### Detector models (verified 2026-10-13)

@@ -304,6 +304,7 @@ def _validate_drone_and_channels(config: dict[str, Any], errors: list[str]) -> N
         home = drone.get("home_map")
         if home is not None and not (isinstance(home, list) and len(home) == 2 and all(_is_number(v) for v in home)):
             errors.append("drone.home_map must be [x, y] in metres")
+        _validate_drone_operations(drone, fence if isinstance(fence, dict) else {}, errors)
     for index, channel in enumerate(config.get("alerts", {}).get("channels", [])):
         path = f"alerts.channels[{index}]"
         if not isinstance(channel, dict) or channel.get("type") not in ("ntfy", "mqtt"):
@@ -315,6 +316,49 @@ def _validate_drone_and_channels(config: dict[str, Any], errors: list[str]) -> N
             server = str(channel.get("server", "https://ntfy.sh"))
             if not re.match(r"^(https?://[^\s/@]+(/[^\s@]*)?|\$\{[A-Z0-9_]+\})$", server):
                 errors.append(f"{path}.server must be an http(s) address without credentials")
+
+
+_DRONE_SAFETY = {  # key: (minimum, maximum)
+    "min_launch_battery_pct": (10, 100), "rth_battery_pct": (5, 90), "land_battery_pct": (1, 80), "inspection_altitude_m": (2, 120),
+    "safe_transit_altitude_m": (0, 120), "hover_s": (1, 600), "request_ttl_s": (10, 86400), "approval_window_s": (30, 7200),
+    "arrival_radius_m": (0.5, 30), "link_lost_s": (0.5, 60), "max_hdop": (0.5, 10), "min_satellites": (4, 40), "inspect_every_flights": (1, 1000),
+}
+_DRONE_WEATHER = {"max_wind_mps": (0, 30), "min_temperature_c": (-40, 30), "max_temperature_c": (0, 60), "conditions_ttl_s": (60, 86400)}
+
+
+def _validate_drone_operations(drone: dict[str, Any], fence: dict[str, Any], errors: list[str]) -> None:
+    """Safety numbers, weather limits, the legacy adapter fields, and drone video."""
+    from .devices import validate_drone_video
+
+    for section, limits in (("safety", _DRONE_SAFETY), ("weather", _DRONE_WEATHER)):
+        values = drone.get(section, {})
+        if not isinstance(values, dict):
+            errors.append(f"drone.{section} must be an object")
+            continue
+        for key, (low, high) in limits.items():
+            if key in values and not (_is_number(values[key]) and low <= values[key] <= high):
+                errors.append(f"drone.{section}.{key} must be between {low} and {high}")
+    weather = drone.get("weather", {})
+    if isinstance(weather, dict) and "require_attestation" in weather and not isinstance(weather["require_attestation"], bool):
+        errors.append("drone.weather.require_attestation must be true or false")
+    safety = drone.get("safety", {}) if isinstance(drone.get("safety", {}), dict) else {}
+    transit = max(safety.get("safe_transit_altitude_m") or 0, safety.get("inspection_altitude_m", 15))
+    ceiling = fence.get("max_altitude_m", 120)
+    if _is_number(transit) and _is_number(ceiling) and transit > ceiling:
+        errors.append("drone.safety: the transit/inspection altitude must not exceed drone.geofence.max_altitude_m")
+    if "gcs_system_id" in drone and not (isinstance(drone["gcs_system_id"], int) and 1 <= drone["gcs_system_id"] <= 254):
+        errors.append("drone.gcs_system_id must be an integer 1-254 (255 is usually the pilot's ground station)")
+    if "firmware_tested" in drone and not (isinstance(drone["firmware_tested"], list) and all(isinstance(v, str) for v in drone["firmware_tested"])):
+        errors.append("drone.firmware_tested must be a list of version prefixes such as \"4.7\"")
+    adapter = drone.get("adapter", "simulated")
+    if adapter not in ("simulated", "mavlink", "sitl"):
+        errors.append("drone.adapter must be simulated, mavlink or sitl")
+    if adapter in ("mavlink", "sitl") and not drone.get("connection") and not drone.get("device"):
+        errors.append("drone.connection is required for a MAVLink drone (e.g. udpin:127.0.0.1:14551)")
+    if drone.get("allow_flight_commands") and adapter != "sitl":
+        errors.append("drone.allow_flight_commands is only possible for an ArduPilot SITL simulator (physical aircraft are telemetry only)")
+    if "video" in drone:
+        validate_drone_video(drone["video"], "drone.video", errors)
 
 
 _HEALTH_NUMBERS = ("frame_timeout_s", "frozen_after_s", "startup_grace_s", "notify_after_s", "slow_after_s", "camera_offline_after_s", "inference_timeout_s")

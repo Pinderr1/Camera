@@ -16,7 +16,9 @@ flowchart LR
   rt --> bus(("EventBus"))
   bus --> api["FastAPI\nREST + SSE + MJPEG"] --> dash["Dashboard / mobile app"]
   bus --> mqtt["MQTT mirror"]
-  rt --> drone["DroneManager\napprovals, geofence, safety"] --> adapter["DroneAdapter\nsimulated / MAVLink (telemetry)"]
+  rt --> drone["DroneManager\nreadiness, approvals, routes, safety, flight log"] --> adapter["DroneAdapter\nsimulated / MAVLink (telemetry) / SITL"]
+  adapter -. "MAVLink via companion relay" .-> fc["ArduPilot flight controller"]
+  dvideo["DroneVideoWorker\nonly during inspections"] --> drone
 ```
 
 Data flows one way: frames → detections → tracks → events → incidents → notifications. Every stage after tracking runs on event timestamps only, so a scenario replays deterministically (`sentinel.replay`).
@@ -103,10 +105,10 @@ The engine also emits one `activity` event (severity `info`) the first time a pe
 ### 9. Recording and storage (`recorder.py`, `store.py`)
 - The pre-roll is a ring buffer of JPEG frames (`pre_roll_s`). An event in an incident starts or extends an MP4 clip, which stops after `post_roll_s` with no new triggers, or at `max_clip_s`. The writer tries H.264 (`avc1`) first and falls back to `mp4v`; many OpenCV pip wheels only provide mp4v, which browsers will not play inline, so the dashboard offers a download.
 - An annotated snapshot is saved for a new incident and for any event of medium severity or above.
-- SQLite tables: `events`, `incidents`, `audit` (settings changes, notifications, drone commands). An hourly purge applies `privacy.retention_days.events` and `.media`. Media paths are stored relative to `<storage.dir>/media`.
+- SQLite tables: `events`, `incidents`, `audit` (settings changes, notifications, drone commands), plus `drone_inspections` (purged with incident retention, protected with their incident), `drone_flights`, `drone_maintenance` and `drone_companions` (aircraft records, kept). An hourly purge applies `privacy.retention_days.events` and `.media`. Media paths are stored relative to `<storage.dir>/media`.
 
 ### 10. Distribution (`runtime.EventBus`, `api.py`, `mqtt.py`, `notify.py`)
-- Bus topics: `event`, `incident`, `notification`, `settings`, `drone`, `config`, `health`.
+- Bus topics: `event`, `incident`, `notification`, `settings`, `drone`, `drone_inspection`, `config`, `health`.
 - The API streams them over SSE, and `MqttPublisher` mirrors them to `<prefix>/<site_id>/<topic>`. Settings and drone topics are retained, and an LWT `status` topic reports online/offline.
 - Notifiers run on a background thread. A failure in one channel never blocks the others or the video loop.
 
@@ -149,6 +151,8 @@ Full detail: [assistant.md](./assistant.md).
 ## Config reference
 
 See `config/sentinel.example.json`. Top-level keys: `site` (id, name, `map` with `width_m`, `height_m`, `origin_geo`, `buildings`, `image`), `categories`, `environment`, `cameras[]` (id, name, fps, source, map pose, privacy_masks, zones, optional `recorder`; the list may be empty), `devices[]` (recorders, drones, docks, sensors: `id`, `category`, `name`, `profile`, `simulated`, `map`, `zone_id`, and per category `host`/`channels`/`model`, `adapter`/`connection`/`indoor`, `drone_id`), `topology.links[]`, `detector`, `tracker`, `engine`, `correlation`, `rules[]`, `incidents`, `alerts` (thresholds, rate limit, `channels[]`), `recording`, `privacy` (including `retention_days.protected`), `health` (timeouts, notifications, `supervisor`, `process`, `heartbeat`), `storage` (dir, free-space thresholds, `max_media_gb`, `backups`), `logging`, `mqtt`, `api`, `settings_defaults`, `assistant` (AI Guide provider settings; never a key), `drone` (plus `device` for the primary registered drone and `inspection_points[]`; when enabled it needs `site.map.origin_geo` and a `geofence`). An ntfy channel may use `topic_credential` (a credential-store entry) instead of `topic`. The reliability keys are listed in [reliability.md](./reliability.md#configuration-reference). Simulated cameras accept `source.faults` for failure testing. `python -m sentinel validate` checks identifiers, polygons, references between sections, rule parameters, and literal passwords.
+
+Drone keys (`drone.adapter`, `connection`, `allow_flight_commands` (SITL only), `gcs_system_id`, `firmware_tested`, and the extended `safety`, `weather` and `video`) are described in [drone-integration.md](./drone-integration.md#configuration).
 
 Runtime settings (arm mode, sensitivity, notifications on/off) are changed through the API and persisted to `<storage.dir>/settings.json`.
 
