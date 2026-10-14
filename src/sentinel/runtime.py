@@ -71,8 +71,11 @@ class SentinelRuntime:
         self.engine = TemporalEventEngine(config, arm_mode=self.settings["arm_mode"], sensitivity=self.settings["sensitivity"])
         self.incidents = IncidentManager(IncidentConfig.from_dict(config.get("incidents")))
         self.policy = AlertPolicy(AlertPolicyConfig.from_dict(config.get("alerts")))
+        self.secrets = SecretStore(self.storage_dir / "credentials.json")
+        self._mqtt_publish = mqtt_publish
+        self._fixed_notifiers = notifiers is not None
         self.dispatcher = NotificationDispatcher(
-            notifiers if notifiers is not None else build_notifiers(config, self.media_root, mqtt_publish)
+            notifiers if notifiers is not None else build_notifiers(config, self.media_root, mqtt_publish, self.secrets.get)
         )
         self.zones = zone_index(config)
         self.camera_configs = {camera["id"]: camera for camera in cameras(config)}
@@ -80,7 +83,6 @@ class SentinelRuntime:
         self.recorders: dict[str, Any] = {}
         self.latest_jpeg: dict[str, bytes] = {}  # annotated live view
         self.latest_frame: dict[str, bytes] = {}  # clean (privacy-masked, unannotated) frame for the setup editor
-        self.secrets = SecretStore(self.storage_dir / "credentials.json")
         self.drone = None
         self.started_ms = int(time.time() * 1000)
         self._lock = threading.RLock()
@@ -106,6 +108,8 @@ class SentinelRuntime:
             self.engine = TemporalEventEngine(config, arm_mode=self.settings["arm_mode"], sensitivity=self.settings["sensitivity"])
             self.incidents.config = IncidentConfig.from_dict(config.get("incidents"))
             self.policy.config = AlertPolicyConfig.from_dict(config.get("alerts"))
+            if not self._fixed_notifiers:  # channels edited in the dashboard apply without a restart
+                self.dispatcher.notifiers = build_notifiers(config, self.media_root, self._mqtt_publish, self.secrets.get)
             self.zones = zone_index(config)
             self.health.settings = HealthSettings.from_dict(config.get("health"))
             self.camera_configs = {camera["id"]: camera for camera in cameras(config)}

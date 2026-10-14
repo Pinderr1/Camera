@@ -12,7 +12,9 @@ from typing import Any, Callable
 from . import backup
 from .config import cameras, resolve_env
 from .daemon import RunState, downtime
-from .drone import build_drone_manager
+from .devices import SimulatedSensors
+from .drone import build_drone_fleet
+from .installation import InstallationManager
 from .netdiag import SystemNetwork
 from .pipeline import CameraWorker
 from .resources import ResourceSampler, directory_size_mb
@@ -86,11 +88,15 @@ class SentinelService:
         self.runtime = SentinelRuntime(config, mqtt_publish=self.mqtt.publish if self.mqtt else None, store=store)
         if self.mqtt:
             self.runtime.bus.subscribe(self.mqtt.on_bus)
-        self.runtime.drone = build_drone_manager(
-            config,
-            audit=self.runtime.store.audit,
-            on_change=lambda status: self.runtime.bus.publish("drone", status),
-        )
+        self.drones: dict[str, Any] = {}
+        self.primary_drone = ""
+        self._drone_key = ""
+        self._drone_rebuild_pending: dict[str, Any] | None = None
+        self._drone_lock = threading.RLock()
+        self._build_drones(config)
+        self.sensors = SimulatedSensors()
+        self.sensors.sync(config, int(time.time() * 1000))
+        self.installation = InstallationManager(self.storage_dir)
         self.site = SiteConfigManager(raw, self.storage_dir, self.runtime.secrets)
         self.network = SystemNetwork()  # onboarding diagnostics; tests and demos swap in a SimulatedNetwork
         self.site.subscribe(self.apply_config)
@@ -135,9 +141,9 @@ class SentinelService:
         self.resources.sample()  # CPU percentages need a baseline sample
         self._started = True
         self.supervisor.start()
-        self._threads = [threading.Thread(target=self._housekeeping_loop, name="sentinel-housekeeping", daemon=True)]
-        if self.drone is not None:
-            self._threads.append(threading.Thread(target=self._drone_loop, name="sentinel-drone", daemon=True))
+        # The drone loop always runs: drones and sensors can be registered while Sentinel is running.
+        self._threads = [threading.Thread(target=self._housekeeping_loop, name="sentinel-housekeeping", daemon=True),
+                         threading.Thread(target=self._drone_loop, name="sentinel-drone", daemon=True)]
         for thread in self._threads:
             thread.start()
 
@@ -166,6 +172,8 @@ class SentinelService:
             self.runtime.reconfigure(config)
             self.supervisor.settings = SupervisorSettings.from_dict(config.get("health", {}).get("supervisor"))
             self.storage_guard.settings = StorageSettings.from_dict(config.get("storage"))
+            self._build_drones(config)
+            self.sensors.sync(config, int(time.time() * 1000))
             if self.start_cameras:
                 current = {camera["id"]: camera for camera in cameras(config)}
                 for camera_id in list(self.supervisor.entries):
@@ -176,6 +184,175 @@ class SentinelService:
                         self.supervisor.add(camera)
         self.runtime.store.audit(change.get("actor", "system"), "config_changed", {"summary": change.get("summary", "")})
         self.runtime.bus.publish("config", {"summary": change.get("summary", "")})
+
+    # ---- drones ----------------------------------------------------------------
+
+    @staticmethod
+    def _drone_config_key(config: dict[str, Any]) -> str:
+        devices = [d for d in config.get("devices", []) if d.get("category") == "drone"]
+        return json.dumps([config.get("drone", {}), devices, config.get("site", {}).get("map", {}).get("origin_geo")], sort_keys=True)
+
+    def _build_drones(self, config: dict[str, Any]) -> None:
+        """(Re)build drone managers when drone settings change. Never while an
+        aircraft is flying or on a mission: the rebuild waits until all are down."""
+        key = self._drone_config_key(config)
+        with self._drone_lock:
+            if key == self._drone_key:
+                self._drone_rebuild_pending = None
+                return
+            if any(manager.adapter.telemetry().in_air or manager._mission for manager in self.drones.values()):
+                self._drone_rebuild_pending = config
+                log.warning("drone settings changed during a flight; they apply after landing")
+                return
+            for manager in self.drones.values():
+                try:
+                    manager.adapter.disconnect()
+                except Exception:
+                    log.exception("drone adapter disconnect failed")
+            self.primary_drone, self.drones = build_drone_fleet(
+                config, audit=self.runtime.store.audit, on_change=lambda status: self.runtime.bus.publish("drone", status),
+            )
+            self.runtime.drone = self.drones.get(self.primary_drone)
+            self._drone_key = key
+            self._drone_rebuild_pending = None
+
+    # ---- devices and installation ------------------------------------------------
+
+    def devices_view(self) -> list[dict[str, Any]]:
+        from .devices import camera_entry, device_entry, hub_entry
+
+        now = int(time.time() * 1000)
+        config = self.site.config
+        with self.runtime._lock:
+            statuses = {camera_id: dict(status) for camera_id, status in self.runtime.camera_status.items()}
+        entries = [hub_entry(self.resources.latest)]
+        running = self.start_cameras and self._started
+        cameras_view = [camera_entry(camera, statuses.get(camera["id"]), now, running=running) for camera in config.get("cameras", [])]
+        # A recorder's channels: cameras linked to it explicitly, or streaming from its address.
+        recorder_hosts = {device["host"]: device["id"] for device in config.get("devices", []) if device.get("category") == "recorder" and device.get("host")}
+        by_recorder: dict[str, list[dict[str, Any]]] = {}
+        for camera, entry in zip(config.get("cameras", []), cameras_view):
+            entry["recorder"] = entry["recorder"] or recorder_hosts.get(camera.get("source", {}).get("host", ""), "")
+            if entry["recorder"]:
+                by_recorder.setdefault(entry["recorder"], []).append(entry)
+        entries += cameras_view
+        with self._drone_lock:
+            drone_status = {drone_id: manager.status() | {"primary": drone_id == self.primary_drone} for drone_id, manager in self.drones.items()}
+        registered = {device["id"] for device in config.get("devices", [])}
+        for drone_id, status in drone_status.items():
+            if drone_id not in registered:  # legacy single-drone configuration
+                legacy = {"id": drone_id, "category": "drone", "name": "Drone (drone settings)", "simulated": status["adapter"] == "simulated",
+                          "profile": "simulated_drone" if status["adapter"] == "simulated" else "mavlink_drone"}
+                entries.append(device_entry(legacy, status, by_recorder) | {"removable": False})
+        for device in config.get("devices", []):
+            if not device.get("enabled", True):
+                continue
+            live = None
+            if device["category"] == "drone":
+                live = drone_status.get(device["id"])
+            elif device["category"] == "dock":
+                drone_id = device.get("drone_id") or self.primary_drone
+                if device.get("simulated") and drone_id in drone_status:
+                    live = {"drone_telemetry": drone_status[drone_id]["telemetry"]}
+            elif device.get("simulated"):
+                live = self.sensors.live(device["id"], now)
+            entries.append(device_entry(device, live, by_recorder))
+        return entries
+
+    def coverage_analysis(self, plan: dict[str, Any] | None = None) -> dict[str, Any]:
+        from .planner import analyse_coverage
+
+        config = self.site.config
+        site_map = config.get("site", {}).get("map", {})
+        plan = plan if plan is not None else self.installation.state["plan"]
+        return analyse_coverage(plan, float(site_map.get("width_m", 40)), float(site_map.get("height_m", 30)), config.get("cameras", []))
+
+    def installation_view(self) -> dict[str, Any]:
+        from .installation import PATH_LABELS, STEPS, readiness
+        from .planner import PROPERTY_TYPES
+
+        state = self.installation.state
+        config = self.site.config
+        devices = self.devices_view()
+        analysis = self.coverage_analysis() if state["plan"].get("items") else None
+        site_map = config.get("site", {}).get("map", {})
+        drone = config.get("drone", {})
+        return {
+            "state": state, "steps": [{"id": step, "label": label} for step, label in STEPS], "paths": PATH_LABELS, "property_types": PROPERTY_TYPES,
+            "site": {"id": config["site"]["id"], "name": config["site"].get("name", ""), "width_m": site_map.get("width_m"),
+                     "height_m": site_map.get("height_m"), "origin_geo": site_map.get("origin_geo"), "has_image": bool(site_map.get("image")),
+                     "buildings": site_map.get("buildings", [])},
+            "devices": devices,
+            "readiness": readiness(state=state, config=config, devices=devices, health=self.health_report(), coverage_analysis=analysis),
+            "drone": {"enabled": bool(drone.get("enabled")), "primary": self.primary_drone, "inspection_points": drone.get("inspection_points", []),
+                      "geofence": drone.get("geofence"), "home_map": drone.get("home_map")},
+            "notifications": self.notification_view(),
+            "processing": bool(self.start_cameras and self._started),
+            "recovered": self.installation.recovered,
+        }
+
+    def notification_view(self) -> dict[str, Any]:
+        config = self.site.config
+        channels = config.get("alerts", {}).get("channels", [])
+        ntfy = next((c for c in channels if c.get("type") == "ntfy"), {})
+        mqtt = next((c for c in channels if c.get("type") == "mqtt"), {})
+        topic_set = bool(ntfy.get("topic")) or bool(ntfy.get("topic_credential") and self.runtime.secrets.get(ntfy["topic_credential"]))
+        return {
+            "ntfy": {"enabled": bool(ntfy) and ntfy.get("enabled", True), "server": ntfy.get("server", "https://ntfy.sh"), "topic_set": topic_set,
+                     "attach_snapshot": bool(ntfy.get("attach_snapshot"))},
+            "mqtt": {"enabled": bool(mqtt) and mqtt.get("enabled", True), "broker_configured": bool(config.get("mqtt", {}).get("enabled"))},
+            "thresholds": config.get("alerts", {}).get("notify_min_severity", {}),
+            "last_test": self.installation.state.get("notification_test"),
+        }
+
+    def send_test_notification(self, actor: str, wait_s: float = 12.0) -> dict[str, Any]:
+        """An operator-requested test push through every enabled channel. It
+        bypasses arm mode and rate limits on purpose and says it is a test."""
+        from .incidents import DISCLAIMER
+        from .models import Notification
+
+        now = int(time.time() * 1000)
+        reference = f"test_{now}"
+        message = f"This is a test requested from Sentinel's installation wizard by {actor[:40]}. No activity was observed.\n{DISCLAIMER}"
+        self.runtime.dispatcher.submit(Notification(reference, "low", "Sentinel test notification", message, 3, (), now, kind="system"))
+        deadline = time.time() + wait_s
+        outcome = None
+        while outcome is None and time.time() < deadline:
+            outcome = next((sent for sent in reversed(self.runtime.dispatcher.sent) if sent["incident_id"] == reference), None)
+            if outcome is None:
+                time.sleep(0.1)
+        result = {"ms": now, "by": actor[:64], "outcomes": outcome["channels"] if outcome else {"dispatcher": "timed out"}}
+        self.installation.record_notification_test(result)
+        self.runtime.store.audit(actor, "test_notification", {"outcomes": result["outcomes"]})
+        return result
+
+    def test_sensor(self, device_id: str, actor: str) -> dict[str, Any]:
+        """A simulated sensor's test press, logged as an information event. Sensors never open incidents in this build."""
+        from .models import SecurityEvent
+
+        device = next((d for d in self.site.config.get("devices", []) if d["id"] == device_id), None)
+        if device is None:
+            raise KeyError(device_id)
+        if device_id not in self.sensors.state:
+            raise ValueError("only simulated sensors can be tested in this build")
+        now = int(time.time() * 1000)
+        self.sensors.trigger(device_id, now)
+        event = SecurityEvent(f"evt_sensor_{now}_{device_id}", "sensor_test", "info", "", now, now, 1.0, f"{device['name']}: test signal received",
+                              zone_id=device.get("zone_id", ""), reason_codes=["sensor_test"], details={"device_id": device_id, "simulated": True})
+        self.runtime.store.add_event(event)
+        self.runtime.bus.publish("event", event.as_dict())
+        self.runtime.store.audit(actor, "sensor_tested", {"device_id": device_id})
+        return event.as_dict()
+
+    def remove_device(self, device_id: str, actor: str) -> dict[str, Any]:
+        """Removes a camera or device from the configuration (credentials are
+        deleted with it) and unlinks it from the installation plan."""
+        if any(camera["id"] == device_id for camera in self.site.config.get("cameras", [])):
+            result = self.site.delete_camera(device_id, actor)
+        else:
+            result = self.site.delete_device(device_id, actor)
+        result["plan_items_unlinked"] = self.installation.unlink_device(device_id)
+        return result
 
     # ---- operator actions ------------------------------------------------------
 
@@ -214,6 +391,13 @@ class SentinelService:
             if "config" in parts and "site.json" in files:
                 self.site.replace(json.loads(archive.read("site.json")), actor, f"restored from backup {name}")
                 result["applied"].append("config")
+                if "installation.json" in files:
+                    target = self.storage_dir / "installation.json"
+                    temporary = target.with_suffix(".restoring")
+                    temporary.write_bytes(archive.read("installation.json"))
+                    temporary.replace(target)
+                    self.installation = InstallationManager(self.storage_dir)
+                    result["applied"].append("installation")
             if "settings" in parts and "settings.json" in files:
                 settings = json.loads(archive.read("settings.json"))
                 self.runtime.update_settings({key: settings[key] for key in ("arm_mode", "sensitivity", "notifications_enabled") if key in settings}, actor)
@@ -466,7 +650,7 @@ class SentinelService:
         power cut, the cases Sentinel cannot report itself. Pings carry no data."""
         settings = self.config.get("health", {}).get("heartbeat", {})
         coverage = self.runtime.health.coverage(self.runtime.camera_status)["state"]
-        url = settings.get("url") if coverage in ("full", "not_running") else settings.get("fail_url") or None
+        url = settings.get("url") if coverage in ("full", "not_running", "no_cameras") else settings.get("fail_url") or None
         if not url:
             return
 
@@ -485,10 +669,17 @@ class SentinelService:
         while not self._stop.wait(0.5):
             now = time.monotonic()
             try:
-                self.drone.step(now - last)
-                if now - published >= 2.0:
+                with self._drone_lock:
+                    for manager in self.drones.values():
+                        manager.step(now - last)
+                    pending = self._drone_rebuild_pending
+                    primary = self.runtime.drone
+                if pending is not None:
+                    self._build_drones(pending)
+                if primary is not None and now - published >= 2.0:
                     published = now
-                    self.runtime.bus.publish("drone", self.drone.status())
+                    self.runtime.bus.publish("drone", primary.status())
+                self.sensors.step(int(time.time() * 1000))
             except Exception:
                 log.exception("drone safety loop failed")
             last = now

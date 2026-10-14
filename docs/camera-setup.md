@@ -1,6 +1,6 @@
 # Camera setup and onboarding
 
-Cameras are added in the dashboard under **Setup → Cameras → Add camera**. The wizard runs a real connection test before saving, and every change is validated and applied to the running pipeline immediately. Only the edited camera restarts.
+Cameras are added in the dashboard under **Setup → Cameras → Add camera**, or from **Install → Register and connect hardware**, which wraps the same wizard and troubleshooter in the guided installation ([installation.md](./installation.md)). Registering a recorder there groups its channels (cameras linked to it, or streaming from its address). The wizard runs a real connection test before saving, and every change is validated and applied to the running pipeline immediately. Only the edited camera restarts.
 
 ## Supported sources
 

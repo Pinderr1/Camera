@@ -304,7 +304,9 @@ class HealthMonitor:
         total = len(states)
         unverified = sum(1 for state in states.values() if state == "unverified")
         monitoring = sum(1 for state in states.values() if state == "monitoring") + unverified
-        if total and all(state == "not_running" for state in states.values()):
+        if not total:
+            overall = "no_cameras"  # a drone- or sensor-first site: nothing to monitor continuously, nothing failing
+        elif all(state == "not_running" for state in states.values()):
             overall = "not_running"
         elif total and monitoring == total:
             overall = "unverified" if unverified else "full"
@@ -312,7 +314,7 @@ class HealthMonitor:
             overall = "none"
         else:
             overall = "degraded"
-        if overall in ("full", "unverified") and any(c["state"] != "ok" for c in self.components.values()):
+        if overall in ("full", "unverified", "no_cameras") and any(c["state"] != "ok" for c in self.components.values()):
             overall = "degraded"
         return {
             "state": overall, "monitoring": monitoring, "unverified": unverified, "total": total,

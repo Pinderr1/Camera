@@ -90,9 +90,9 @@ def validate_config(config: dict[str, Any]) -> None:
 
     camera_ids: set[str] = set()
     zone_ids: set[str] = set()
-    raw_cameras = config.get("cameras")
-    if not isinstance(raw_cameras, list) or not raw_cameras:
-        errors.append("cameras must be a non-empty list")
+    raw_cameras = config.get("cameras", [])
+    if not isinstance(raw_cameras, list):
+        errors.append("cameras must be a list (it may be empty: a site can start with drones or sensors)")
         raw_cameras = []
     for index, camera in enumerate(raw_cameras):
         path = f"cameras[{index}]"
@@ -236,6 +236,11 @@ def validate_config(config: dict[str, Any]) -> None:
 
     _validate_reliability(config, raw_cameras, errors)
 
+    from .devices import validate_devices
+
+    validate_devices(config, camera_ids, zone_ids, errors)
+    _validate_drone_and_channels(config, errors)
+
     defaults = config.get("settings_defaults", {})
     if defaults.get("arm_mode", "home") not in ARM_MODES:
         errors.append("settings_defaults.arm_mode is invalid")
@@ -277,6 +282,36 @@ def _validate_rule_extras(rule: dict[str, Any], path: str, rule_type: str, error
             errors.append(f"{path}.active_hours start and end must differ")
     if rule_type == "combination" and rule.get("zones"):
         errors.append(f"{path}: a combination rule takes its zones from the rules it combines")
+
+
+def _validate_drone_and_channels(config: dict[str, Any], errors: list[str]) -> None:
+    drone = config.get("drone", {})
+    if drone.get("enabled"):
+        if not config.get("site", {}).get("map", {}).get("origin_geo"):
+            errors.append("drone.enabled needs site.map.origin_geo (the property location) for the geofence")
+        fence = drone.get("geofence")
+        if not isinstance(fence, dict) or not (fence.get("map_polygon") or fence.get("polygon")):
+            errors.append("drone.enabled needs a geofence with a map_polygon")
+        else:
+            key = "map_polygon" if fence.get("map_polygon") else "polygon"
+            _polygon(fence[key], f"drone.geofence.{key}", errors, normalized=False)
+            low, high = fence.get("min_altitude_m", 0), fence.get("max_altitude_m", 120)
+            if not (_is_number(low) and _is_number(high) and 0 <= low < high <= 120):
+                errors.append("drone.geofence needs 0 <= min_altitude_m < max_altitude_m <= 120")
+        home = drone.get("home_map")
+        if home is not None and not (isinstance(home, list) and len(home) == 2 and all(_is_number(v) for v in home)):
+            errors.append("drone.home_map must be [x, y] in metres")
+    for index, channel in enumerate(config.get("alerts", {}).get("channels", [])):
+        path = f"alerts.channels[{index}]"
+        if not isinstance(channel, dict) or channel.get("type") not in ("ntfy", "mqtt"):
+            errors.append(f"{path}.type must be ntfy or mqtt")
+            continue
+        if channel["type"] == "ntfy" and channel.get("enabled", True):
+            if not (channel.get("topic") or channel.get("topic_credential")):
+                errors.append(f"{path} needs a topic (or topic_credential)")
+            server = str(channel.get("server", "https://ntfy.sh"))
+            if not re.match(r"^(https?://[^\s/@]+(/[^\s@]*)?|\$\{[A-Z0-9_]+\})$", server):
+                errors.append(f"{path}.server must be an http(s) address without credentials")
 
 
 _HEALTH_NUMBERS = ("frame_timeout_s", "frozen_after_s", "startup_grace_s", "notify_after_s", "slow_after_s", "camera_offline_after_s", "inference_timeout_s")

@@ -274,4 +274,88 @@ legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
 .explain-headline { margin: 8px 0; }
 #tab-timeline .timeline-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); }
 @media (max-width: 860px) { #tab-timeline .timeline-layout { grid-template-columns: minmax(0, 1fr); } }
+/* Install tab: journey, device registry, planner */
+.install-layout { display: grid; gap: 16px; grid-template-columns: 260px minmax(0, 1fr); align-items: start; }
+.install-nav { position: sticky; top: 8px; }
+.install-steps { list-style: none; padding: 0; margin: 10px 0; }
+.install-steps li > button { all: unset; box-sizing: border-box; display: flex; gap: 8px; align-items: center; width: 100%; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.install-steps li > button:focus-visible { outline: 2px solid var(--accent); }
+.install-steps li.current > button { background: var(--surface-2); font-weight: 600; }
+.install-steps .num { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); font-size: 12px; flex: none; }
+.install-steps li.done .num { background: var(--low); border-color: var(--low); color: #fff; }
+.install-steps li.skipped .num { border-style: dashed; }
+.install-steps .pill { margin: 0 0 0 auto; }
+.pill.warn { color: var(--medium); border-color: var(--medium); }
+.install-progress { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+.install-progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+.install-main .banner { margin-bottom: 12px; }
+.step-footer { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.path-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); }
+.path-grid .choice { display: flex; flex-direction: column; gap: 4px; min-height: 110px; }
+.install-form fieldset { margin: 10px 0; }
+.card.inner { background: var(--surface-2); margin: 10px 0; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 10px; }
+.checks { list-style: none; padding: 0; margin: 10px 0; }
+.checks li { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.checks .icon { flex: none; width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 50%; font-size: 12px; font-weight: 700; color: #fff; background: var(--info); }
+.checks .check-pass .icon { background: var(--low); }
+.checks .check-warn .icon { background: var(--medium); }
+.checks .check-fail .icon { background: var(--high); }
+.device-list .device { display: block; }
+.levels { display: inline-flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.lvl { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.lvl.on { border-color: var(--low); color: var(--low); }
+.support { font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); margin-left: 4px; }
+.support-verified { color: var(--low); border-color: var(--low); }
+.support-simulated, .support-planned { color: var(--accent); border-color: var(--accent); }
+.support-limited, .support-expected { color: var(--medium); border-color: var(--medium); }
+.add-devices { flex-wrap: wrap; }
+.preview-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); margin: 10px 0; }
+.preview-tile { margin: 0; background: var(--surface-2); border-radius: 8px; overflow: hidden; }
+.preview-tile img, .preview-tile .no-frame { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; }
+.preview-tile .no-frame { display: grid; place-items: center; background: var(--surface); }
+.preview-tile figcaption { padding: 6px 8px; }
+.planner-tools { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 8px; align-items: center; }
+.planner-tools .tool-group { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.planner-tools button { padding: 4px 9px; font-size: 13px; }
+.planner-tools button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.planner-layout { display: grid; gap: 12px; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); }
+.planner-canvas svg { touch-action: none; }
+#plan-svg { width: 100%; height: auto; max-height: 70vh; display: block; outline: none; }
+.plan-bg { fill: var(--surface-2); stroke: var(--border); stroke-width: 0.15; }
+.cov { fill: var(--accent); stroke: none; }
+.cov-1 { opacity: 0.16; } .cov-2 { opacity: 0.28; } .cov-3 { opacity: 0.4; }
+.pl { stroke: var(--text); stroke-width: 0.12; fill-opacity: 0.55; cursor: move; }
+.pl.selected { stroke: var(--accent); stroke-width: 0.3; }
+.pl-building { fill: var(--building); fill-opacity: 0.9; }
+.pl-driveway, .pl-parking { fill: #b9a77f; }
+.pl-garage { fill: #a08a5c; }
+.pl-yard { fill: #7fbf74; fill-opacity: 0.35; }
+.pl-public_area { fill: #f0b84a; fill-opacity: 0.35; }
+.pl-privacy_area { fill: #e06c6c; fill-opacity: 0.35; }
+.pl-room { fill: #9fb5e0; fill-opacity: 0.4; }
+.pl-obstruction { fill: #4f7a45; fill-opacity: 0.7; }
+.pl-fence { fill: none; stroke: #8a5a2b; stroke-width: 0.35; }
+.pl-fov { fill: var(--accent); fill-opacity: 0.1; stroke: var(--accent); stroke-width: 0.08; stroke-dasharray: 0.4 0.3; pointer-events: none; }
+.pl-fov.installed { stroke-dasharray: none; }
+.pt { stroke: var(--surface); stroke-width: 0.2; cursor: move; fill: var(--high); }
+.pt-camera { fill: var(--accent); } .pt-sensor { fill: #7c3aed; } .pt-network { fill: #0f766e; } .pt-drone_dock, .pt-drone_point { fill: var(--medium); }
+.pt.selected { stroke: var(--text); stroke-width: 0.3; }
+.pt-installed { fill: var(--muted); cursor: default; }
+.pt-label.muted-label { fill: var(--muted); }
+.pt-label { font-size: 1px; fill: var(--text); pointer-events: none; paint-order: stroke; stroke: var(--surface); stroke-width: 0.15; }
+.aim-line { stroke: var(--accent); stroke-width: 0.12; }
+.aim-handle { fill: var(--medium); stroke: var(--surface); stroke-width: 0.15; cursor: grab; }
+.vertex { fill: var(--surface); stroke: var(--accent); stroke-width: 0.12; cursor: grab; }
+.vertex.first { fill: var(--accent); }
+.drafting { fill: none; stroke: var(--accent); stroke-width: 0.15; stroke-dasharray: 0.4 0.3; }
+.drone-point { fill: var(--medium); opacity: 0.8; }
+.empty-state { max-width: 560px; }
+@media (max-width: 860px) {
+  .install-layout, .planner-layout { grid-template-columns: minmax(0, 1fr); }
+  .install-nav { position: static; }
+  .install-steps { display: flex; overflow-x: auto; gap: 4px; }
+  .install-steps li > button { white-space: nowrap; }
+  .grid3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
 [hidden] { display: none !important; }

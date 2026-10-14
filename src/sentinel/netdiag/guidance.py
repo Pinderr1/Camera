@@ -121,3 +121,53 @@ def temporary_alias_steps(platform: str, device_network: str) -> list[str]:
         "This needs a fixed address on the adapter. Use it only to reach the recorder's web page and change its network settings, "
         "then remove it. Sentinel never makes this change for you.",
     ]
+
+
+# New-camera installs: the usual power, network and pairing failures, as
+# symptom -> checks. Brand defaults are described as "often" because firmware
+# differs; nothing here is changed automatically.
+NEW_CAMERA_GUIDE: list[dict[str, Any]] = [
+    {"id": "poe", "title": "Wired (PoE) cameras", "problems": [
+        {"symptom": "The camera does not power up (no link light, no IR glow at night)", "checks": [
+            "Make sure the cable is in a PoE port: many switches power only some of their ports.",
+            "Check the switch's PoE budget against the cameras' maximum draw on their datasheets; infrared at night draws more.",
+            "Some cameras with heaters or motors need PoE+ (802.3at); check the datasheet.",
+            "Passive PoE injectors (often 24 V) are not the same as 802.3af/at PoE: do not mix them.",
+            "Try a short cable you know works; a bad crimp is the most common fault on new runs.",
+            "Ethernet allows about 100 m per run (90 m of fixed cable). Longer runs need a switch closer to the camera or a PoE extender."]},
+        {"symptom": "The camera powers up but cannot be found", "checks": [
+            "Cameras that get no address from a router fall back to a factory address on another range (often 192.168.1.64 on Hikvision, 192.168.1.108 on Dahua). Use 'Find & troubleshoot cameras': Hikvision's SADP search finds them even then.",
+            "Cameras plugged into a recorder's own PoE ports are usually on the recorder's private internal network. Add them through the recorder's channels instead of directly.",
+            "A brand-new Hikvision camera must be activated (admin password set) before it answers logins.",
+            "Give each camera a fixed address or a DHCP reservation in the router so it keeps the same address."]},
+        {"symptom": "The picture drops out at night", "checks": [
+            "Infrared lights raise power draw: check the PoE budget again.",
+            "Spider webs and insects near the lens are attracted by infrared and trigger motion; keep the lens clean."]},
+    ]},
+    {"id": "wifi", "title": "Wi-Fi cameras", "problems": [
+        {"symptom": "The camera will not join the Wi-Fi", "checks": [
+            "Most Wi-Fi cameras are set up with the maker's app first; Sentinel connects to them locally afterwards.",
+            "Many cameras only use 2.4 GHz Wi-Fi. If the router combines 2.4 and 5 GHz under one name, pairing can fail; use a 2.4 GHz network for setup.",
+            "Check the Wi-Fi password and that the router does not limit new devices (MAC filtering, device limits)."]},
+        {"symptom": "The camera is on Wi-Fi but Sentinel cannot reach it", "checks": [
+            "Guest networks and 'AP/client isolation' stop devices reaching each other: put the camera and this computer on the main network.",
+            "Turn on RTSP or ONVIF in the camera's app if the brand ships them turned off.",
+            "Cloud-only and most battery cameras never offer a local stream; Sentinel cannot use them."]},
+        {"symptom": "The video stutters or keeps reconnecting", "checks": [
+            "Check the signal at the mounting point; walls and metal siding weaken it a lot.",
+            "Move the access point closer, add a mesh node, or run a cable: a wired camera is always more reliable.",
+            "Use the camera's sub-stream (640x360-640x480, 5-10 fps) for Sentinel to keep the Wi-Fi load low."]},
+    ]},
+    {"id": "streams", "title": "Login and video", "problems": [
+        {"symptom": "Login fails", "checks": [
+            "Check the username and password on the camera's own web page first. Several wrong attempts lock most cameras for a while.",
+            "Some brands need a separate account or 'RTSP authentication' setting for streaming."]},
+        {"symptom": "Connected, but no picture", "checks": [
+            "Set the stream to H.264; turn off H.264+/H.265+ and 'smart codec' options for the stream Sentinel uses.",
+            "Use the connection test in Add camera: it reports the codec, resolution and frame rate it actually received."]},
+    ]},
+]
+
+
+def new_camera_guide() -> list[dict[str, Any]]:
+    return NEW_CAMERA_GUIDE

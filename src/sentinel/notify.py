@@ -112,16 +112,25 @@ class NotificationDispatcher:
             del self.sent[:-200]
 
 
-def build_notifiers(config: dict[str, Any], media_root: Path, mqtt_publish: Callable[[str, dict], None] | None) -> list[Notifier]:
+def build_notifiers(
+    config: dict[str, Any], media_root: Path, mqtt_publish: Callable[[str, dict], None] | None,
+    secret: Callable[[str], str | None] = lambda name: None,
+) -> list[Notifier]:
+    """`secret` looks up credential-store entries: a topic typed into the
+    dashboard is stored there (`topic_credential`), never in the config."""
     notifiers: list[Notifier] = [LogNotifier()]
     for channel in config.get("alerts", {}).get("channels", []):
         if not channel.get("enabled", True):
             continue
         if channel["type"] == "ntfy":
+            topic = secret(channel["topic_credential"]) if channel.get("topic_credential") else channel.get("topic")
+            if not topic:
+                log.error("ntfy channel has no topic (credential %s missing); channel skipped", channel.get("topic_credential", ""))
+                continue
             notifiers.append(
                 NtfyNotifier(
                     channel.get("server", "https://ntfy.sh"),
-                    channel["topic"],
+                    topic,
                     token=channel.get("token", ""),
                     click_url=channel.get("click_url", ""),
                     attach_snapshot=bool(channel.get("attach_snapshot", False)),

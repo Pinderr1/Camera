@@ -15,8 +15,8 @@ The dashboard and any future mobile app share this one API. Interactive OpenAPI 
 | Method | Path | Notes |
 | --- | --- | --- |
 | GET | `/api/v1/health` | No auth. Liveness only |
-| GET | `/api/v1/site` | Site map, cameras (no source URLs), zones, topology, rules, privacy |
-| GET | `/api/v1/state` | Settings, camera status, open incidents, active site tracks, `coverage` (`state`: `full\|degraded\|none\|not_running`, `monitoring`, `total`, `not_monitoring[]`, `components`) |
+| GET | `/api/v1/site` | Site map, cameras (no source URLs), zones, topology, rules, privacy, `drone_enabled`, `drone_points` (drone inspection locations) |
+| GET | `/api/v1/state` | Settings, camera status, open incidents, active site tracks, `coverage` (`state`: `full\|unverified\|degraded\|none\|not_running\|no_cameras`, `monitoring`, `total`, `not_monitoring[]`, `components`) |
 | GET | `/api/v1/cameras` | Cameras with `status`: `health` (`state`, `label`, `monitoring`, `since_ms`, `reason`, `warnings`), `connected`, `fps`, `target_fps`, `last_frame_ms`, `error`, `metrics`, `detector_state`, `worker_state`, `restarts_total` |
 | GET | `/api/v1/cameras/{id}/snapshot.jpg` | Latest annotated frame (privacy-masked). `X-Sentinel-Monitoring: true\|false` and `X-Frame-Age-Ms` say whether it is live |
 | POST | `/api/v1/cameras/{id}/restart` | Restart the camera's processing and reset its restart budget. 409 when cameras are not running in this session |
@@ -39,7 +39,7 @@ The dashboard and any future mobile app share this one API. Interactive OpenAPI 
 | GET | `/api/v1/audit` | Operator and system actions |
 | GET | `/api/v1/stream` | Server-sent events: `event`, `incident`, `notification`, `settings`, `drone`, `config`, `health` (the coverage object, on every health transition) |
 | GET | `/api/v1/drone` | Telemetry, safety state, preflight blockers, requests, geofence |
-| POST | `/api/v1/drone/inspections` | `{"zone_id": "..."}` or `{"lat":..,"lon":..}`, plus optional `incident_id`. Creates a pending request; this never flies |
+| POST | `/api/v1/drone/inspections` | `{"zone_id": "..."}`, `{"point_id": "..."}` (one of `drone.inspection_points`), or `{"lat":..,"lon":..}`, plus optional `incident_id`. Creates a pending request on the primary drone; this never flies |
 | POST | `/api/v1/drone/inspections/{id}/approve` | Operator approval. Runs preflight checks, then starts the mission |
 | POST | `/api/v1/drone/inspections/{id}/deny` | `{"note": "..."}` |
 | POST | `/api/v1/drone/commands` | `{"action": "takeoff\|goto\|hold\|return_home\|land", "params": {...}}` |
@@ -104,7 +104,34 @@ All changes are validated as a whole, saved to `<storage>/site.json` with backup
 | POST | `/api/v1/onboarding/network/discover` | `{"confirm": true, "sadp"?, "onvif"?, "port_check"?}`. User-approved search of this computer's own networks. `port_check` covers at most the /24 around each local address. Without `confirm`: 422. Returns `devices` (with `on_local_network` and `network`), `networks_searched`, `notes` |
 | POST | `/api/v1/onboarding/channels` | `{"source": {..., "password"?}}` or `{"draft_id"}`, `max_channels` (≤ 64). RTSP DESCRIBE per recorder channel (stops on the first login failure). Each channel that answers carries its own `draft_id` for `POST /config/cameras` |
 
+| GET | `/api/v1/onboarding/guidance/new-cameras` | Symptom → checks for new PoE, Wi-Fi and login/codec problems (read-only guidance) |
+
 A **finding** is `{"code", "status", "title", "explanation", "evidence": [...], "steps": [...], "data": {...}}`. `status` is `confirmed` (Sentinel observed the fault), `suspected` (a likely cause the evidence cannot prove), `ruled_out` (checked, not the problem), `info`, or `ok`. Codes are stable identifiers (for example `unreachable`, `subnet_mismatch`, `rtsp_closed`, `vpn_route`, `public_profile`, `found_elsewhere` with `data.host`); titles and text may change. Diagnosis, discovery, and channel searches are written to the audit log (address and outcome only).
+
+### Devices and installation
+
+See [installation.md](./installation.md). Device registration records what is installed; `level` (`registered\|connected\|video\|ai_verified`) is earned only from data Sentinel received.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/devices` | `devices[]`: this computer (`hub_local`), cameras, recorders, drones, docks, sensors. Each has `id`, `category`, `name`, `profile`, `support`, `simulated`, `capabilities`, `level`, `state`, `detail`, `warnings`, `removable`, plus category fields (camera `zones`/`privacy_masks`/`recorder`; recorder `host`/`channels_added`; drone `battery_pct`/`docked`/`primary`/`safety_state`; sensor `battery_pct`/`last_event`). Never stream addresses or passwords |
+| GET | `/api/v1/devices/catalog` | `categories`, `registrable`, `capabilities`, `support_levels`, `levels`, `profiles` (hardware compatibility profiles) |
+| POST | `/api/v1/devices` | Register a recorder, drone, dock or sensor: `{"category", "name", "profile"?, "simulated"?, "map"?: {"x","y"}, "zone_id"?, "host"?, "channels"?, "model"?, "connection"?, "indoor"?, "drone_id"?}`. Cameras use `/config/cameras`. Unsupported profiles: 422 |
+| PUT | `/api/v1/devices/{id}` | Same fields (category cannot change) |
+| DELETE | `/api/v1/devices/{id}` | Removes a device **or a camera** and unlinks it (recorder links, docks, primary drone, plan items). Returns `notes`, `plan_items_unlinked` |
+| POST | `/api/v1/devices/{id}/test` | Simulated sensors only: records an `info` `sensor_test` event (never an incident) |
+| PUT | `/api/v1/config/drone` | `{"enabled"?, "device"? (primary), "home_map"?, "geofence"?: {"property": true} or {"map_polygon", "min_altitude_m", "max_altitude_m"}, "inspection_points"?: [{"name", "map": [x, y]}]}`. Needs `site.map.origin_geo` |
+| PUT | `/api/v1/config/notifications` | `{"ntfy"?: {"enabled", "server", "topic"? (stored in the credential store), "attach_snapshot"}, "mqtt"?: {"enabled"}}`. Applied without a restart. Returns the notification view (never the topic) |
+| GET | `/api/v1/installation` | `state` (path, property, questionnaire, recommendation, plan, step marks, current step, completion), `steps`, `paths`, `property_types`, `site`, `devices`, `readiness` (`levels`, `statement`, `checks[]` with `step`/`status` `pass\|warn\|fail\|pending`/`blocking`, `steps`, `blocking`, `open_issues`, `can_complete`), `drone`, `notifications`, `processing` |
+| PUT | `/api/v1/installation` | `{"path"?, "property"?, "current_step"?, "steps"?: {"plan": "done\|skipped\|pending"}}` |
+| POST | `/api/v1/installation/property` | `{"name", "property_type", "width_m", "height_m", "latitude"?, "longitude"?, "notes"?}`. Saves the site name and map size (and location) through the config editor |
+| POST | `/api/v1/installation/recommend` | Questionnaire → camera suggestion (saved with the installation) |
+| GET / PUT | `/api/v1/installation/plan` | The property plan `{"items": [...]}`. PUT validates, saves, and returns the plan with `coverage` |
+| POST | `/api/v1/installation/plan/coverage` | Coverage analysis and equipment `estimate` for a posted (unsaved) plan, or the saved one when `items` is absent |
+| GET | `/api/v1/installation/report` / `report.html` | Installation plan as JSON, or as a printable self-contained page (`?download=true` for a file) |
+| POST | `/api/v1/installation/test-notification` | Sends a labelled test through every enabled channel and returns per-channel outcomes |
+| POST | `/api/v1/installation/complete` | `{"acknowledge_issues": bool}`. 409 while a blocking check fails, or when open issues are not acknowledged |
+| POST | `/api/v1/installation/reopen` / `reset` | Reopen a completed installation; reset the journey (`{"keep_plan": true}`), keeping cameras, devices and settings |
 
 Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unknown id), 409 (drone rejected, for example preflight blocked; camera processing not running), 422 (validation), 507 (backup could not be written).
 
@@ -116,10 +143,12 @@ Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unkn
 
 `Incident`: `incident_id`, `opened_ms`, `updated_ms`, `closed_ms`, `status`, `severity`, `title`, `cameras`, `zones`, `site_track_ids`, `event_ids`, `event_types`, `notified_severity`, `acknowledged_ms`, `acknowledged_by`, `resolution`, `resolved_by`, `clip_paths`, `snapshot_path`, `protected`.
 
-`Notification.kind` is `incident`, `escalation`, or `health` (coverage problems and recoveries; `incident_id` then holds the outage id).
+`SecurityEvent.event_type` `sensor_test` is a simulated sensor's test press (`info`, `camera_id` empty, `details.device_id`).
+
+`Notification.kind` is `incident`, `escalation`, `health` (coverage problems and recoveries; `incident_id` then holds the outage id), or `system` (for example the installer's test notification).
 
 ## Mobile app notes
 
 - Use the same endpoints. Live updates come from SSE, or from MQTT where a broker is reachable.
-- Push delivery today is ntfy (self-host for production). A native app would register for APNs/FCM through a future `/api/v1/devices` endpoint (Phase 3), with push payloads carrying only the incident id and title. The app fetches details over the authenticated API.
+- Push delivery today is ntfy (self-host for production). A native app would register for APNs/FCM through a future `/api/v1/push-clients` endpoint (Phase 3; `/api/v1/devices` is the hardware registry), with push payloads carrying only the incident id and title. The app fetches details over the authenticated API.
 - Treat `summary` and `title` as display text. Do not parse them; use `event_type`, `reason_codes`, and `details`.

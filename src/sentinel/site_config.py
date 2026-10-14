@@ -34,7 +34,10 @@ SOURCE_FIELDS = {
     "prefer_substream", "hw_decode", "transport", "index", "backend", "resolution", "mode", "loop", "scenario", "faults", "noise",
 }
 WRITE_ONLY_FIELDS = {"path", "sub_path", "url", "sub_url"}  # stream addresses: accepted, never returned
-CAMERA_FIELDS = {"name", "enabled", "fps", "zones", "privacy_masks", "map", "categories", "detector", "conditions"}
+CAMERA_FIELDS = {"name", "enabled", "fps", "zones", "privacy_masks", "map", "categories", "detector", "conditions", "recorder"}
+DEVICE_FIELDS = {"name", "profile", "simulated", "enabled", "map", "zone_id", "host", "http_port", "rtsp_port", "channels", "model",
+                 "adapter", "connection", "indoor", "drone_id"}
+NTFY_TOPIC_CREDENTIAL = "alerts.ntfy_topic"
 MAX_MAP_BYTES = 10 * 1024 * 1024
 
 
@@ -103,6 +106,9 @@ class SiteConfigManager:
         for camera in view.get("cameras", []):
             camera["source"] = public_source(camera.get("source", {}))
         view.pop("storage", None)
+        for channel in view.get("alerts", {}).get("channels", []):
+            # An ntfy topic works like a password on public servers: report only whether one is set.
+            channel["topic_set"] = bool(channel.pop("topic", None) or channel.pop("topic_credential", None))
         site_map = view.get("site", {}).get("map", {})
         if site_map.get("image"):
             site_map["image_url"] = "/api/v1/config/map/image"
@@ -203,9 +209,7 @@ class SiteConfigManager:
             camera = next((c for c in config.get("cameras", []) if c["id"] == camera_id), None)
             if camera is None:
                 raise KeyError(camera_id)
-            config["cameras"].remove(camera)
-            if not config["cameras"]:
-                raise SiteConfigError("a site needs at least one camera")
+            config["cameras"].remove(camera)  # a site may have no cameras (drone- or sensor-first installations)
             notes = _forget_zones(config, {zone["id"] for zone in camera.get("zones", [])})
             links = config.get("topology", {}).get("links", [])
             config.setdefault("topology", {})["links"] = [l for l in links if camera_id not in (l["from"], l["to"])]
@@ -327,6 +331,155 @@ class SiteConfigManager:
                 raise KeyError(camera_id)
             target["categories"] = {name: {key: bool(value) for key, value in settings.items()} for name, settings in categories.items()}
             self._commit(config, actor, "category settings saved")
+
+    # ---- devices (recorders, drones, sensors, docks) ----------------------------
+
+    def save_device(self, device_id: str | None, payload: dict[str, Any], actor: str) -> dict[str, Any]:
+        """Register (device_id None) or edit a non-camera device. Registration
+        records what is installed; it never claims the device is paired."""
+        from .devices import PROFILE_INDEX, REGISTRABLE, default_profile
+
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            devices = config.setdefault("devices", [])
+            existing = next((d for d in devices if d["id"] == device_id), None) if device_id else None
+            if device_id and existing is None:
+                raise KeyError(device_id)
+            category = existing["category"] if existing else payload.get("category")
+            if category not in REGISTRABLE:
+                raise SiteConfigError(f"category must be one of {list(REGISTRABLE)} (cameras are added with the camera wizard)")
+            taken = {d["id"] for d in devices} | {c["id"] for c in config.get("cameras", [])}
+            device = existing or {"id": _new_id(payload.get("name") or category, taken), "category": category}
+            for key in DEVICE_FIELDS & payload.keys():
+                value = payload[key]
+                if value in (None, ""):
+                    device.pop(key, None)
+                elif key in ("name", "model"):
+                    device[key] = str(value).strip()[:60]
+                elif key == "map":
+                    device[key] = {axis: round(float(value[axis]), 2) for axis in ("x", "y")}
+                elif key in ("http_port", "rtsp_port", "channels"):
+                    device[key] = int(value)
+                else:
+                    device[key] = value
+            if "profile" not in device:
+                device["profile"] = default_profile(category, bool(device.get("simulated")))
+            profile = PROFILE_INDEX.get(device["profile"], {})
+            device.setdefault("name", profile.get("name", category)[:60])
+            if category == "drone" and profile.get("adapter"):
+                device["adapter"] = profile["adapter"]
+            if existing is None:
+                devices.append(device)
+            self._commit(config, actor, f"device {device['id']} {'saved' if existing else 'registered'}")
+            return copy.deepcopy(device)
+
+    def delete_device(self, device_id: str, actor: str) -> dict[str, Any]:
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            devices = config.get("devices", [])
+            device = next((d for d in devices if d["id"] == device_id), None)
+            if device is None:
+                raise KeyError(device_id)
+            devices.remove(device)
+            notes = []
+            for camera in config.get("cameras", []):
+                if camera.get("recorder") == device_id:
+                    camera.pop("recorder")
+                    notes.append(f"camera {camera['id']} kept; it is no longer listed under the removed recorder")
+            for other in devices:
+                if other.get("drone_id") == device_id:
+                    other.pop("drone_id")
+            drone = config.get("drone", {})
+            if drone.get("device") == device_id:
+                drone.pop("device")
+            from .devices import drone_devices
+
+            if device["category"] == "drone" and drone.get("enabled") and not drone_devices(config):
+                drone["enabled"] = False  # never fall back to a drone the owner did not register
+                notes.append("drone features turned off: no drone is registered")
+            self._commit(config, actor, f"device {device_id} removed")
+            return {"deleted": device_id, "notes": notes}
+
+    def set_site_name(self, name: str, actor: str) -> None:
+        name = str(name).strip()[:80]
+        if not name:
+            raise SiteConfigError("the property needs a name")
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            config.setdefault("site", {})["name"] = name
+            self._commit(config, actor, "property name saved")
+
+    def set_drone(self, payload: dict[str, Any], actor: str) -> dict[str, Any]:
+        """Drone setup from the installer: primary aircraft, home position,
+        geofence (default: the property rectangle) and inspection points.
+        Flight commands for real aircraft stay disabled regardless."""
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            drone = config.setdefault("drone", {})
+            site_map = config.get("site", {}).get("map", {})
+            if "enabled" in payload:
+                drone["enabled"] = bool(payload["enabled"])
+            if payload.get("device"):
+                drone["device"] = str(payload["device"])
+            if payload.get("home_map"):
+                drone["home_map"] = [round(float(v), 2) for v in payload["home_map"]]
+            fence = payload.get("geofence")
+            if fence or (drone.get("enabled") and not drone.get("geofence")):
+                fence = fence or {"property": True}
+                width, height = float(site_map.get("width_m", 40)), float(site_map.get("height_m", 30))
+                polygon = [[0, 0], [width, 0], [width, height], [0, height]] if fence.get("property") else fence.get("map_polygon")
+                previous = drone.get("geofence", {})
+                drone["geofence"] = {
+                    "map_polygon": [[round(float(x), 2), round(float(y), 2)] for x, y in polygon or []],
+                    "min_altitude_m": float(fence.get("min_altitude_m", previous.get("min_altitude_m", 5))),
+                    "max_altitude_m": float(fence.get("max_altitude_m", previous.get("max_altitude_m", 25))),
+                }
+            if "inspection_points" in payload:
+                points, taken = [], set()
+                for point in payload["inspection_points"]:
+                    point_id = point.get("id") or _new_id(point.get("name") or "point", taken)
+                    taken.add(point_id)
+                    points.append({"id": point_id, "name": str(point.get("name") or point_id)[:60],
+                                   "map": [round(float(point["map"][0]), 2), round(float(point["map"][1]), 2)]})
+                drone["inspection_points"] = points
+            self._commit(config, actor, "drone settings saved")
+            return copy.deepcopy(drone)
+
+    def set_notifications(self, payload: dict[str, Any], actor: str) -> None:
+        """Push channels from the installer. A typed ntfy topic goes to the
+        credential store; the config keeps only a reference to it."""
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            channels = config.setdefault("alerts", {}).setdefault("channels", [])
+            pending = None
+            if "ntfy" in payload:
+                body = payload["ntfy"] or {}
+                channel = next((c for c in channels if c.get("type") == "ntfy"), None)
+                if channel is None:
+                    channel = {"type": "ntfy", "server": "https://ntfy.sh"}
+                    channels.append(channel)
+                channel["enabled"] = bool(body.get("enabled", True))
+                if body.get("server"):
+                    channel["server"] = str(body["server"]).strip()
+                if "attach_snapshot" in body:
+                    channel["attach_snapshot"] = bool(body["attach_snapshot"])
+                topic = str(body.get("topic") or "").strip()
+                if topic:
+                    if not re.fullmatch(r"[A-Za-z0-9_\-]{6,64}", topic):
+                        raise SiteConfigError("the ntfy topic must be 6-64 letters, digits, - or _ (use a long, hard-to-guess name)")
+                    channel.pop("topic", None)
+                    channel["topic_credential"] = NTFY_TOPIC_CREDENTIAL
+                    pending = (NTFY_TOPIC_CREDENTIAL, topic)
+                elif channel["enabled"] and not channel.get("topic") and not (
+                        channel.get("topic_credential") and self.secrets.get(channel["topic_credential"])):
+                    raise SiteConfigError("enter an ntfy topic to turn on push notifications")
+            if "mqtt" in payload:
+                channel = next((c for c in channels if c.get("type") == "mqtt"), None)
+                if channel is None:
+                    channel = {"type": "mqtt"}
+                    channels.append(channel)
+                channel["enabled"] = bool((payload["mqtt"] or {}).get("enabled", False))
+            self._commit(config, actor, "notification channels saved", before_save=lambda: pending and self.secrets.set(*pending))
 
     # ---- security rules ------------------------------------------------------
 
@@ -455,6 +608,10 @@ def _forget_zones(config: dict[str, Any], removed: set[str]) -> list[str]:
                 notes.append(f"rule {rule['id']} disabled: the zones it watched were removed")
             else:
                 notes.append(f"rule {rule['id']} no longer covers {sorted(removed)}")
+    for device in config.get("devices", []):
+        if device.get("zone_id") in removed:
+            device.pop("zone_id")
+            notes.append(f"device {device['id']} is no longer assigned to a removed zone")
     for link in config.get("topology", {}).get("links", []):
         for key in ("from_zones", "to_zones"):
             if set(link.get(key, [])) & removed:

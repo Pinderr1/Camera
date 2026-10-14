@@ -137,6 +137,26 @@ So the cause is not yet confirmed. Next on site:
 
 **Not yet validated:** rules, insights and nuisance rates on weeks of real household activity; content-monitor thresholds on real recorders and low-bitrate streams.
 
+## Phase 0.11: Installation and hardware management (done, October 2026)
+- [x] **Install tab:** one ten-step journey for four installation paths (existing cameras, new cameras, drone-first, complete package). Save and resume (`<storage>/installation.json`, included in backups), per-step issue counts, skip and revisit, completion that is refused while a blocking check fails and records acknowledged open issues, reopen and start over. Desktop and phone layouts.
+- [x] **Honest readiness:** registered, connected, video available and AI monitoring verified are separate levels earned from live data. The strongest statement is "AI monitoring verified on N of M cameras"; Sentinel never says a property is protected. Simulated devices are always called out.
+- [x] **Unified device registry** (`devices.py`): recorders, drones, docks and contact/motion/environmental sensors in `devices[]` beside `cameras[]`; capability lists; hardware compatibility profiles with support levels (verified, simulated, expected, limited, planned, unsupported). Cloud-only cameras cannot be registered. Planned hardware is never given an adapter, so it can never appear connected. Removal unlinks devices everywhere.
+- [x] **Sites without cameras:** `cameras` may be empty; coverage reports `no_cameras`; the Live tab says there is no continuous video monitoring.
+- [x] **Drones in the registry:** several drones (the primary takes inspection requests), registration from the installer with a property-rectangle geofence, inspection locations requested from the Drone tab and map, rebuilds deferred while a drone is flying. Flight commands for real aircraft stay disabled.
+- [x] **Property planner** (`planner.py`): buildings, driveways, gates, fences, public and privacy areas, rooms, cameras with aim and field of view, sensors, network equipment, drone docks and points. Approximate coverage with line of sight, door approaches, gaps and privacy warnings; a detection-range estimate from the benchmark (a person must fill about 10% of the picture height); camera suggestions from a questionnaire; PoE ports, budget and cable runs; printable installation plan with checklists. Every result states its assumptions.
+- [x] **Notifications from the installer:** ntfy topic kept in the credential store, channels applied without a restart, and a test notification with per-channel results.
+- [x] **Troubleshooting:** the existing troubleshooter is reachable from every camera path, from unverified cameras and from recorders. New gap filled: guidance for new PoE, Wi-Fi and login/codec problems.
+- [x] 34 new tests: backend, service (including simulated cameras earning "AI monitoring verified" from real frames, a fake ntfy server, backups) and Edge.
+
+**Not yet verified:** any physical camera, recorder, PoE switch, Wi-Fi camera or sensor through the installer; planner coverage against a real installation; a test notification on a real phone; the installer used by a non-technical person.
+
+**Remaining hardware integration requirements:**
+- Recorder channels found on the real ERI-K108-P8 (blocked on its network address; see Phase 0.8).
+- Real sensors: MQTT / Home Assistant ingestion, then sensors as rule inputs (Phase 4). Sensors are registration-only or simulated today.
+- Drone video ingested as a camera source, a dock adapter, and the gated MAVLink path (Phase 5; handled in the separate drone sessions).
+- Indoor drones need positioning without GPS, which the geofence does not model.
+- A Sentinel Hub hardware profile once hardware is chosen.
+
 ## Detector upgrade findings (2026-10-13)
 
 Host: i7-2600K (4 cores, no AVX2), 16 GB RAM, GTX 1070 via DirectML (ONNX Runtime 1.24). Every number comes from human annotations (MOTChallenge MOT16, CAVIAR). Thresholds are each model's operating point from a score sweep on sampled frames **of the same footage**: a single scalar per model, but not an independent test. Raw tables: `bench_runs/detectors_v2/comparison.md` and `bench_runs/final_default/report.md` (git-ignored; regenerate with `scripts/bench_detectors.sh` and `sentinel.bench run --all`).
@@ -305,7 +325,7 @@ Exit: a non-technical household runs it for 30 days without help.
 
 ## Phase 3: Mobile app
 Exit: an iOS/Android app with push, live view, timeline, and arm/disarm.
-- [ ] React Native/Expo app against `/api/v1`. Device registration endpoint (`/api/v1/devices`) and APNs/FCM relay.
+- [ ] React Native/Expo app against `/api/v1`. Phone registration endpoint (`/api/v1/push-clients`; `/api/v1/devices` is the hardware registry) and APNs/FCM relay.
 - [ ] Secure remote connectivity without port-forwarding: VPN-based first, then an optional relay service.
 - [ ] Live view over WebRTC (go2rtc or MediaMTX alongside Sentinel) instead of MJPEG for bandwidth.
 
@@ -328,7 +348,7 @@ Exit for each step is listed in the drone doc. Never skip steps.
 
 ## Phase 6: Commercial readiness
 - [ ] Multi-site backend option (Postgres, object storage) behind the same store interface.
-- [ ] Installer and onboarding wizard (camera discovery via ONVIF, zone drawing, test alerts).
+- [x] Installer and onboarding wizard (Phase 0.11: four installation paths, planner, device registry, test alerts). Still to do: run it with a non-technical household and a professional installer on real hardware.
 - [ ] Privacy review (recording notices, retention defaults, data export and deletion), security review, and a pentest.
 - [ ] Licence audit of every shipped model and dependency (`sources.md`).
 - [ ] Support tooling: remote diagnostics bundle without media.

@@ -65,6 +65,8 @@ def create_backup(
             files["site.json"].write_text(json.dumps({k: v for k, v in site.items() if not k.startswith("_")}, indent=1), encoding="utf-8")
         if (storage_dir / "settings.json").is_file():
             files["settings.json"] = storage_dir / "settings.json"
+        if (storage_dir / "installation.json").is_file():  # installation progress and property plan
+            files["installation.json"] = storage_dir / "installation.json"
         database = storage_dir / "sentinel.db"
         if store is not None or database.is_file():
             files["sentinel.db"] = work_dir / "sentinel.db"
@@ -195,14 +197,16 @@ def restore_backup(path: str | Path, storage_dir: str | Path, *, parts: tuple[st
                         (assets / Path(member).name).write_bytes(archive.read(member))
                     restored.append(part)
                 continue
-            member = _PART_FILES[part]
-            if member not in names:
-                continue
-            target = storage_dir / member
-            temporary = target.with_name(target.name + ".restoring")
-            temporary.write_bytes(archive.read(member))
-            temporary.replace(target)
-            restored.append(part)
+            members = [_PART_FILES[part]] + (["installation.json"] if part == "config" else [])
+            for member in members:
+                if member not in names:
+                    continue
+                target = storage_dir / member
+                temporary = target.with_name(target.name + ".restoring")
+                temporary.write_bytes(archive.read(member))
+                temporary.replace(target)
+                if part not in restored:
+                    restored.append(part)
     log.warning("restored %s from %s", ", ".join(restored), Path(path).name)
     return {"restored": restored, "safety_backup": safety, "backup": Path(path).name, "preserved": preserved}
 

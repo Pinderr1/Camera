@@ -14,6 +14,16 @@ The drone is Sentinel's **mobile camera, not its brain**. Sentinel decides *wher
 | Dashboard Drone tab and API | Built |
 | Live drone video | Interface field only (`telemetry.video_url`). Not ingested yet |
 
+## Registration (installation)
+
+Drones are registered as devices (`devices[]`, category `drone`) from the Install tab or `POST /api/v1/devices` ([installation.md](./installation.md)):
+- `simulated_drone` gets the simulator; `mavlink_drone` gets the telemetry-only adapter (needs `connection`); planned Sentinel drones get **no adapter**, so they can never appear connected or ready.
+- Several drones may be registered. The primary (`drone.device`, else the first operable drone) takes inspection requests and drives the Drone tab; the others report telemetry and readiness only.
+- A drone's `map` position is its home (dock). The installer creates a geofence over the property rectangle (editable), and `drone.inspection_points` lists named places an operator can request an inspection of (`point_id`).
+- Drone settings changed while a drone is airborne or on a mission are applied only after landing.
+- A config without registered drones keeps working with the single legacy `drone` section.
+- Removing the last registered drone turns drone features off.
+
 ## Inspection workflow
 
 1. A request is created by an operator (dashboard or API), or automatically by Sentinel when an incident reaches `drone.auto_request_min_severity`. The target is the centroid of the incident zone's `map_polygon`.

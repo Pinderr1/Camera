@@ -37,9 +37,13 @@ Run the tests:
 python -m unittest discover -s tests
 ```
 
+## Installing Sentinel
+
+Open the dashboard's **Install** tab and pick how you are starting: connect existing cameras, install new cameras, start with a drone (no fixed cameras needed), or build a complete Sentinel package. The journey saves as you go, plans cameras on a property map with approximate coverage, registers recorders, drones, docks and sensors, and ends with a readiness summary that separates "connected", "video available" and "AI monitoring verified". See [docs/installation.md](./docs/installation.md). A drone-first demo with no cameras: `python -m sentinel serve --config config/sentinel.drone-first.example.json`.
+
 ## Connecting real cameras
 
-The easy way: open the dashboard, go to **Setup → Cameras → Add camera**, and follow the wizard (RTSP brand templates, DVR/NVR channels, ONVIF discovery, HTTP snapshots, USB/capture devices). Then draw zones and privacy masks on the live frame. Details and troubleshooting: [docs/camera-setup.md](./docs/camera-setup.md).
+The easy way: open the dashboard, go to **Setup → Cameras → Add camera** (or Install → Register and connect hardware), and follow the wizard (RTSP brand templates, DVR/NVR channels, ONVIF discovery, HTTP snapshots, USB/capture devices). Then draw zones and privacy masks on the live frame. Details and troubleshooting: [docs/camera-setup.md](./docs/camera-setup.md).
 
 Or edit a config file by hand:
 

@@ -34,6 +34,7 @@
     <button role="tab" data-tab="drone">Drone</button>
     <button role="tab" data-tab="system">System <span class="badge" id="system-badge" hidden>!</span></button>
     <button role="tab" data-tab="settings">Settings</button>
+    <button role="tab" data-tab="install">Install <span class="badge" id="install-badge" hidden title="Installation not finished">!</span></button>
     <button role="tab" data-tab="setup">Setup</button>
   </nav>
 
@@ -119,6 +120,11 @@
           </div>
           <div class="muted small" id="drone-blockers"></div>
         </div>
+        <div class="card">
+          <h3>Inspection locations</h3>
+          <p class="muted small">Places a drone may be asked to look at. Each request still needs an operator's approval.</p>
+          <ul class="list compact" id="drone-points"></ul>
+        </div>
       </div>
     </section>
 
@@ -170,6 +176,22 @@
         </div>
       </div>
     </section>
+    <section id="tab-install" class="tab">
+      <div class="install-layout">
+        <aside class="card install-nav" aria-label="Installation steps">
+          <h3>Installation</h3>
+          <div class="small muted" id="install-path-label"></div>
+          <div class="install-progress" role="progressbar" aria-label="Installation progress"><div id="install-progress-bar"></div></div>
+          <ol class="install-steps" id="install-steps"></ol>
+          <div class="button-row tight"><button type="button" id="install-report" title="Printable installation plan">Installation plan</button><button type="button" id="install-reset">Start over</button></div>
+        </aside>
+        <div class="install-main">
+          <div class="banner" id="install-statement" role="status">Loading…</div>
+          <div class="card" id="install-step"></div>
+        </div>
+      </div>
+    </section>
+
     <section id="tab-setup" class="tab">
       <nav class="subtabs" role="tablist" aria-label="Setup sections">
         <button data-sub="cameras" class="active">Cameras</button>
@@ -332,5 +354,6 @@
   <script src="/static/setup.js"></script>
   <script src="/static/troubleshoot.js"></script>
   <script src="/static/intel.js"></script>
+  <script src="/static/install.js"></script>
 </body>
 </html>

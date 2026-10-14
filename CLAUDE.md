@@ -50,6 +50,9 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Explainable incidents (observed vs inferred, rules, confidence, severity reasons, evidence) with visual timeline and replay sync | Built and tested on replays |
 | Activity insights (patterns, changes, unusual observations as information only, approval-only suggestions) | Built; tested on synthetic history only |
 | Investigation: search, notes, feedback labels, nuisance reports per rule/camera, missed-event reports, fingerprinted exports | Built and tested |
+| Installation journey (Install tab): four paths (existing cameras, new cameras, drone-first, complete package), ten saved steps, readiness that separates registered / connected / video / AI verified, completion with acknowledged issues | Built; backend, service and Edge tests on simulated cameras, drone and sensors. **Not yet used with physical hardware or by a non-technical person** |
+| Device registry: recorders, drones, docks, sensors beside cameras; hardware compatibility profiles with support levels; sites with no cameras; several drones (primary takes inspections) | Built and tested. Only this computer is `verified`; every camera/recorder profile is `expected` or `limited`; sensors are simulated or planned (registration only, never incidents) |
+| Property planner: features, cameras with aim/FOV, sensors, network, drone docks/points; approximate coverage with line of sight, gaps, privacy warnings; camera suggestions; PoE/cable estimates; printable plan | Built and unit-tested. **Approximate geometry; never compared with a real installation** |
 | Accounts/multi-user, mobile app, cloud relay, HTTPS deployment | Not started (see `ROADMAP.md`) |
 
 ## Repository map
@@ -73,7 +76,10 @@ src/sentinel/            the Sentinel brain (current product)
                          routes, target policy, findings), probes (TCP, ICMP, HTTP id), sadp (Hikvision discovery),
                          diagnose (rules + discovery), guidance (brand/OS fix steps), simulated (scenario networks)
   credentials.py         SecretStore: DPAPI (Windows) / 0600 file credential storage
-  site_config.py         SiteConfigManager: validated, persisted, live-applied config edits; drafts; cascades
+  site_config.py         SiteConfigManager: validated, persisted, live-applied config edits; drafts; cascades; devices, drone setup, notification channels
+  devices.py             device registry (stdlib): categories, capabilities, hardware profiles + support levels, validation, live levels, simulated sensors
+  planner.py             property planner (stdlib): plan validation, coverage with line of sight, recommendations, PoE/cable estimates, checklists, report
+  installation.py        installation journey (stdlib): saved progress (<storage>/installation.json) and honest readiness checks
   environment.py         scene conditions (light, IR, rain, shadows, vegetation, lens) + unknown-motion proposals
   detectors.py           Detector protocol, hardware profiles (`model: auto`), tiling, NMS, MediaPipe + scripted detectors
   detectors_onnx.py      ONNX Runtime detectors (YOLOX, DETR family), model registry with licence/training-data metadata
@@ -97,10 +103,11 @@ src/sentinel/            the Sentinel brain (current product)
   api.py                 FastAPI app (/api/v1) + dashboard host
   mqtt.py                MQTT mirror of bus traffic
   drone/                 base (adapter ABC, telemetry), mock (simulator), geofence, manager, mavlink
-  web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors
+  web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors; install.js = Install tab + planner
   bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
                          metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
 config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, rules, drone
+config/sentinel.drone-first.example.json   drone-first demo: no cameras, simulated drone, dock and sensors
 config/scenarios/              scripted scenarios (delivery, prowler, ambiguous handoff, demo loop)
 config/netsim/                 simulated network conditions for the troubleshooter (regression: Hikvision on another subnet)
 scripts/reliability_smoke.py   one-minute failure drill on simulated cameras (disconnect, freeze, crash, stall, AI, disk, restart, DB)
@@ -115,6 +122,7 @@ docs/benchmarking.md           how to measure Sentinel on real footage, and what
 docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
 docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
 docs/reliability.md            24/7 operation: health states, outages, recovery, background start, storage, backups
+docs/installation.md           Install tab: four paths, readiness levels, device registry and profiles, planner, drone-first
 docs/intelligence.md           rules and rule builder, rule testing, explanations, activity insights, investigation and feedback
 ROADMAP.md                     phased implementation roadmap
 sources.md                     license and reuse audit
@@ -133,6 +141,7 @@ python -m sentinel validate --config config/sentinel.example.json
 python -m sentinel replay --scenario config/scenarios/prowler.json --at 2026-10-12T02:00:00
 python -m sentinel serve                                   # dashboard on http://127.0.0.1:8080
 python -m sentinel serve --simulate-network config/netsim/hikvision_wrong_subnet.json   # troubleshooter demo
+python -m sentinel serve --config config/sentinel.drone-first.example.json   # drone-first install, no cameras
 python -m sentinel run --config config/sentinel.local.json --env-file <secrets.env>   # supervised: restarts after crashes
 python -m sentinel service install|start|status|stop|uninstall --config ...   # Windows background start (Task Scheduler)
 python -m sentinel backup create|list|verify|restore [NAME] --config ...
@@ -163,6 +172,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 8. **No automatic calls to police or emergency services.** Escalation goes to people only.
 9. **Network diagnostics are read-only and local.** Sentinel never changes router, firewall, computer, or device network settings; it explains what to change. It probes only private/link-local/CGNAT/loopback addresses, searches a network only after the person confirms they manage it (port checks at most the local /24), never collects MAC addresses, serial numbers, Wi-Fi names, or public IPs, and tries a recorder password once per test (accounts lock).
 10. **Never claim coverage that does not exist.** A camera is reported as monitoring only while new frames reach a working detector and nothing shows the picture is frozen; a still picture that cannot be proven live is shown as `unverified`, not as fine and not as frozen. Offline, frozen, AI-failed, stalled, and restarting cameras are shown as not monitoring (Live overlay, coverage badge, System tab, API), recorded as outages, and pushed to people when they last. Health events never open security incidents, and health notifications do not depend on the arm mode.
+11. **Registration is not connection, and nothing is "protected".** Registering a device records what is installed; it is reported as connected, delivering video, or AI-verified only from data Sentinel received. Planned hardware gets no adapter and is never shown as connected. Simulated devices are always labelled. The strongest statement Sentinel makes is "AI monitoring verified on N of M cameras"; it never tells a person their property is protected or secure. Planner coverage is approximate and always carries its assumptions; no prices, purchasing claims or coverage guarantees.
 
 ## Technical decisions (and why)
 
@@ -193,6 +203,8 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - Writes on the detection path must not raise into camera threads: contain the error, report it as a health component, and keep alerts flowing.
 - New troubleshooter rules go in `netdiag/diagnose.py` with a `SimulatedNetwork` test. State `confirmed` only for faults Sentinel observed; anything inferred is `suspected` and must sit next to the alternatives.
 - Do not modify `src/senior_safety/` or `webapp/` except to keep shared helpers working. Do not delete them without asking.
+- New hardware kinds get a profile in `devices.PROFILES` with an honest support level (only hardware we tested is `verified`); never record prices or unchecked specifications. Device fields are validated in `devices.validate_devices`.
+- Installation progress and plans live in `installation.json`, not the site config, so planning never restarts cameras. Readiness is computed from live data on every request; never store it as a claim.
 - Run the full test suite before committing.
 
 ## Roadmap pointer

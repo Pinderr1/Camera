@@ -109,6 +109,11 @@ function renderSettings(settings) {
 
 function renderCameras(cameras) {
   const grid = $("#camera-grid");
+  if (!cameras.length) {
+    grid.innerHTML = `<article class="card empty-state"><h3>No cameras yet</h3><p class="muted">This installation has no fixed cameras, so there is no continuous video monitoring.
+      Add cameras, a drone or sensors from the Install tab.</p><button type="button" class="primary" onclick="document.querySelector('[data-tab=install]').click()">Open Install</button></article>`;
+    return;
+  }
   grid.innerHTML = cameras
     .map(
       (camera) => `
@@ -153,13 +158,14 @@ function renderCoverage(coverage) {
     degraded: `Coverage degraded ${coverage.monitoring}/${coverage.total}`,
     none: "NOT MONITORING",
     not_running: "Cameras not running",
+    no_cameras: "No cameras",
   }[coverage.state] || coverage.state;
   node.className = `coverage ${coverage.state}`;
   node.textContent = text;
   const problems = [...coverage.not_monitoring, ...(coverage.unverified_cameras || [])].filter((camera) => camera.state !== "starting").map((camera) => `${camera.name}: ${camera.label}`);
   const components = Object.values(coverage.components || {}).filter((c) => c.state !== "ok").map((c) => `${c.label}: ${c.detail}`);
   node.title = [...problems, ...components].join("\n") || "All cameras are being monitored";
-  $("#system-badge").hidden = coverage.state === "full" || coverage.state === "not_running";
+  $("#system-badge").hidden = ["full", "not_running", "no_cameras"].includes(coverage.state);
 }
 
 // ---- map -------------------------------------------------------------------
@@ -195,6 +201,9 @@ function renderMap() {
     const b = toRad(heading + fov / 2);
     parts.push(`<path class="fov" d="M${x},${y} L${x + reach * Math.cos(a)},${y + reach * Math.sin(a)} A${reach},${reach} 0 0 1 ${x + reach * Math.cos(b)},${y + reach * Math.sin(b)} Z"/>`);
     parts.push(`<circle class="camera-icon" cx="${x}" cy="${y}" r="0.7"><title>${esc(camera.name)}</title></circle>`);
+  }
+  for (const point of state.site.drone_points || []) {
+    parts.push(`<rect class="drone-point" x="${point.map[0] - 0.5}" y="${point.map[1] - 0.5}" width="1" height="1"><title>Drone inspection location: ${esc(point.name)}</title></rect>`);
   }
   if (state.drone) {
     const fence = state.drone.geofence.polygon.map(([lat, lon]) => geoToMap(lat, lon));
@@ -345,6 +354,9 @@ function renderDrone(status) {
       </li>`,
       )
       .join("") || '<li class="muted">No inspection requests.</li>';
+  $("#drone-points").innerHTML = (state.site.drone_points || []).map((point) => `<li class="row-between"><span>${esc(point.name)}</span>
+      <button data-inspect-point="${esc(point.id)}">Request inspection</button></li>`).join("") || '<li class="muted">None. Add them in Install → Zones and privacy.</li>';
+  document.querySelectorAll("[data-inspect-point]").forEach((b) => b.addEventListener("click", () => requestInspection({ point_id: b.dataset.inspectPoint })));
   document.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", () => droneDecision(b.dataset.approve, "approve")));
   document.querySelectorAll("[data-deny]").forEach((b) => b.addEventListener("click", () => droneDecision(b.dataset.deny, "deny")));
   if (document.querySelector("#tab-map.active")) renderMap();
@@ -439,13 +451,13 @@ function renderSystem(report, outages, backups) {
   const coverage = report.coverage;
   renderCoverage(coverage);
   const banner = $("#coverage-banner");
-  banner.className = `banner ${coverage.state === "full" ? "good" : coverage.state === "not_running" ? "" : "bad"}`;
+  banner.className = `banner ${coverage.state === "full" ? "good" : ["not_running", "no_cameras"].includes(coverage.state) ? "" : "bad"}`;
   const issues = [
     ...coverage.not_monitoring.map((camera) => `${camera.name}: ${camera.label}`),
     ...(coverage.unverified_cameras || []).map((camera) => `${camera.name}: ${camera.label} (check the picture)`),
     ...Object.values(coverage.components).filter((c) => c.state !== "ok").map((c) => `${c.label}: ${c.detail}`),
   ];
-  banner.innerHTML = `<strong>${esc({ full: "All cameras are being monitored.", unverified: "Monitoring, but a still picture cannot be confirmed as live on some cameras.", degraded: "Security coverage is degraded.", none: "No camera is being monitored.", not_running: "Camera processing is not running in this session." }[coverage.state] || coverage.state)}</strong>
+  banner.innerHTML = `<strong>${esc({ full: "All cameras are being monitored.", unverified: "Monitoring, but a still picture cannot be confirmed as live on some cameras.", degraded: "Security coverage is degraded.", none: "No camera is being monitored.", not_running: "Camera processing is not running in this session.", no_cameras: "There are no fixed cameras to monitor. Add them from the Install tab." }[coverage.state] || coverage.state)}</strong>
     ${issues.length ? `<ul class="small">${issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>` : ""}`;
   $("#health-updated").textContent = `Updated ${time(report.time_ms)}`;
   $("#health-cameras").innerHTML = `<tr><th>Camera</th><th>State</th><th>Processed fps</th><th>Detect p95</th><th>Delay p95</th><th>Skipped frames</th><th>Reconnects</th><th>Restarts</th><th>AI</th><th>Signals</th><th>Issue</th><th></th></tr>` +
@@ -597,6 +609,10 @@ async function refreshAfterConfigChange() {
     state.site = await api("/site");
     renderCameras(await api("/cameras"));
     renderStatic();
+    const droneTab = document.querySelector('[data-tab="drone"]');
+    droneTab.hidden = !state.site.drone_enabled;
+    if (state.site.drone_enabled) renderDrone(await api("/drone"));
+    else state.drone = null;
     renderMap();
     if (typeof onSetupConfigChanged === "function") onSetupConfigChanged();
     if (typeof fillSearchOptions === "function") fillSearchOptions();

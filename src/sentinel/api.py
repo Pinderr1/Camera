@@ -15,13 +15,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import backup, netdiag, onboarding, onvif
+from . import backup, devices, netdiag, onboarding, onvif, planner
 from .config import public_camera_view
 from .drone import FlightCommandRejected
+from .installation import InstallationError
 from .service import SentinelService
 from .site_config import WRITE_ONLY_FIELDS, SiteConfigError
 
@@ -45,6 +46,7 @@ class ResolveBody(BaseModel):
 
 class InspectionBody(BaseModel):
     zone_id: str | None = None
+    point_id: str | None = Field(default=None, max_length=60)  # one of drone.inspection_points
     lat: float | None = None
     lon: float | None = None
     incident_id: str = ""
@@ -122,6 +124,24 @@ class MissedBody(BaseModel):
     description: str = Field(default="", max_length=1000)
 
 
+class PropertyBody(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    property_type: Literal["house", "corner_lot", "townhouse", "storefront", "warehouse", "office", "other"] = "house"
+    width_m: float = Field(ge=1, le=5000)
+    height_m: float = Field(ge=1, le=5000)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    notes: str = Field(default="", max_length=500)
+
+
+class CompleteBody(BaseModel):
+    acknowledge_issues: bool = False
+
+
+class ResetBody(BaseModel):
+    keep_plan: bool = True
+
+
 class DroneCommandBody(BaseModel):
     action: Literal["takeoff", "goto", "hold", "return_home", "land"]
     params: dict[str, float] = Field(default_factory=dict)
@@ -178,6 +198,7 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
             "rules": config.get("rules", []),
             "privacy": config.get("privacy", {}),
             "drone_enabled": service.drone is not None,
+            "drone_points": config.get("drone", {}).get("inspection_points", []) if service.drone is not None else [],
         }
 
     @app.get("/api/v1/state")
@@ -475,6 +496,11 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
                 polygon = zone["map_polygon"]
                 centroid = (sum(p[0] for p in polygon) / len(polygon), sum(p[1] for p in polygon) / len(polygon))
                 request = drone.request_inspection(requested_by=actor, map_point=centroid, label=zone.get("name", zone["id"]), incident_id=body.incident_id)
+            elif body.point_id:
+                point = next((p for p in service.config.get("drone", {}).get("inspection_points", []) if p["id"] == body.point_id), None)
+                if point is None:
+                    raise HTTPException(status_code=404, detail="unknown inspection point")
+                request = drone.request_inspection(requested_by=actor, map_point=tuple(point["map"]), label=point["name"], incident_id=body.incident_id)
             else:
                 request = drone.request_inspection(requested_by=actor, lat=body.lat, lon=body.lon, label="custom point", incident_id=body.incident_id)
         except (FlightCommandRejected, ValueError) as error:
@@ -684,6 +710,11 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
         })
         return report
 
+    @app.get("/api/v1/onboarding/guidance/new-cameras")
+    def new_camera_guidance(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        """Power, network and pairing problems when installing new PoE or Wi-Fi cameras."""
+        return netdiag.guidance.new_camera_guide()
+
     @app.post("/api/v1/onboarding/network/discover")
     def network_discover(body: DiscoverBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
         if not body.confirm:
@@ -717,6 +748,145 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
         runtime.store.audit(actor, "channel_scan", {"host": clean.get("host", ""), "result": result["kind"],
                                                     "found": sum(1 for c in result["channels"] if c.get("draft_id"))})
         return result
+
+    # ---- devices and installation ----------------------------------------------------
+    # Registration records what is installed. A device counts as connected,
+    # delivering video, or AI-verified only from data Sentinel has received.
+
+    def installation_call(function, *args):
+        try:
+            return function(*args)
+        except InstallationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.get("/api/v1/devices")
+    def list_devices(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return {"devices": service.devices_view()}
+
+    @app.get("/api/v1/devices/catalog")
+    def device_catalog(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return devices.catalog()
+
+    @app.post("/api/v1/devices")
+    def register_device(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.save_device, None, body, actor)
+
+    @app.put("/api/v1/devices/{device_id}")
+    def update_device(device_id: str, body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.save_device, device_id, body, actor)
+
+    @app.delete("/api/v1/devices/{device_id}")
+    def remove_device(device_id: str, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(service.remove_device, device_id, actor)
+
+    @app.post("/api/v1/devices/{device_id}/test")
+    def test_device(device_id: str, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(service.test_sensor, device_id, actor)
+
+    @app.put("/api/v1/config/drone")
+    def save_drone(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.set_drone, body, actor)
+
+    @app.put("/api/v1/config/notifications")
+    def save_notifications(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        config_call(site.set_notifications, body, actor)
+        return service.notification_view()
+
+    @app.get("/api/v1/installation")
+    def installation(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return service.installation_view()
+
+    @app.put("/api/v1/installation")
+    def update_installation(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        installation_call(service.installation.update, body)
+        if body.get("path"):
+            runtime.store.audit(actor, "installation_path_chosen", {"path": body["path"]})
+        return service.installation_view()
+
+    @app.post("/api/v1/installation/property")
+    def save_property(body: PropertyBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        config_call(site.set_site_name, body.name, actor)
+        map_change: dict[str, Any] = {"width_m": body.width_m, "height_m": body.height_m}
+        if body.latitude is not None and body.longitude is not None:
+            map_change["origin_geo"] = [body.latitude, body.longitude]  # stored locally only, for the drone geofence
+        config_call(site.set_map, map_change, actor)
+        installation_call(service.installation.update, {"property": {"property_type": body.property_type, "notes": body.notes},
+                                                        "steps": {"property": "done"}})
+        return service.installation_view()
+
+    @app.post("/api/v1/installation/recommend")
+    def recommend(body: dict[str, Any], _: str = Depends(require_auth)) -> dict[str, Any]:
+        result = planner.recommend(body)
+        service.installation.set_recommendation(body, result)
+        return result
+
+    @app.get("/api/v1/installation/plan")
+    def get_plan(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return service.installation.state["plan"]
+
+    @app.put("/api/v1/installation/plan")
+    def save_plan(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        plan = installation_call(service.installation.set_plan, body)
+        runtime.store.audit(actor, "installation_plan_saved", {"items": len(plan["items"])})
+        return plan | {"coverage": service.coverage_analysis(plan)}
+
+    @app.post("/api/v1/installation/plan/coverage")
+    def plan_coverage(body: dict[str, Any], _: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            plan = planner.clean_plan(body) if body.get("items") is not None else None
+        except planner.PlanError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        result = service.coverage_analysis(plan)
+        return result | {"estimate": planner.estimate(plan or service.installation.state["plan"], service.site.config.get("cameras", []))}
+
+    def build_report() -> dict[str, Any]:
+        state = service.installation.state
+        config = service.site.config
+        site_map = config.get("site", {}).get("map", {})
+        return planner.build_report(
+            site_name=config["site"].get("name", config["site"]["id"]), path=state["path"], property_info=state["property"], plan=state["plan"],
+            width_m=float(site_map.get("width_m", 40)), height_m=float(site_map.get("height_m", 30)), installed=config.get("cameras", []),
+            devices=[d for d in service.devices_view() if d["category"] != "hub"], recommendation=state.get("recommendation"),
+        )
+
+    @app.get("/api/v1/installation/report")
+    def installation_report(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return build_report()
+
+    @app.get("/api/v1/installation/report.html", response_class=HTMLResponse)
+    def installation_report_html(download: bool = False, _: str = Depends(require_auth)) -> HTMLResponse:
+        headers = {"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:"}
+        if download:
+            headers["Content-Disposition"] = 'attachment; filename="sentinel-installation-plan.html"'
+        return HTMLResponse(planner.render_html(build_report()), headers=headers)
+
+    @app.post("/api/v1/installation/test-notification")
+    def test_notification(actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return service.send_test_notification(actor)
+
+    @app.post("/api/v1/installation/complete")
+    def complete_installation(body: CompleteBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        view = service.installation_view()
+        readiness = view["readiness"]
+        if not readiness["can_complete"]:
+            raise HTTPException(status_code=409, detail="Installation cannot be completed yet: " + "; ".join(readiness["blocking"]))
+        if readiness["open_issues"] and not body.acknowledge_issues:
+            raise HTTPException(status_code=409, detail=f"{len(readiness['open_issues'])} open issue(s) must be acknowledged first")
+        service.installation.complete(actor, readiness["open_issues"])
+        runtime.store.audit(actor, "installation_completed", {"open_issues": len(readiness["open_issues"]), "statement": readiness["statement"]["state"]})
+        return service.installation_view()
+
+    @app.post("/api/v1/installation/reopen")
+    def reopen_installation(actor: str = Depends(require_auth)) -> dict[str, Any]:
+        service.installation.reopen()
+        runtime.store.audit(actor, "installation_reopened", {})
+        return service.installation_view()
+
+    @app.post("/api/v1/installation/reset")
+    def reset_installation(body: ResetBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        service.installation.reset(keep_plan=body.keep_plan)
+        runtime.store.audit(actor, "installation_reset", {"keep_plan": body.keep_plan})
+        return service.installation_view()
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

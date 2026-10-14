@@ -214,7 +214,9 @@ def validate(args: argparse.Namespace) -> None:
     from .config import load_config
 
     config = load_config(args.config, resolve_secrets=False)
-    print(f"OK: {len(config['cameras'])} camera(s), {sum(len(c.get('zones', [])) for c in config['cameras'])} zone(s), {len(config.get('rules', []))} rule(s).")
+    cameras = config.get("cameras", [])
+    print(f"OK: {len(cameras)} camera(s), {sum(len(c.get('zones', [])) for c in cameras)} zone(s), {len(config.get('rules', []))} rule(s), "
+          f"{len(config.get('devices', []))} other device(s).")
 
 
 def main() -> None:

@@ -1,0 +1,38 @@
+{
+  "site": {
+    "id": "drone_first_demo",
+    "name": "Drone-first demo (simulated)",
+    "map": {
+      "width_m": 40,
+      "height_m": 30,
+      "origin_geo": [45.0, -75.0],
+      "buildings": [{"name": "House", "polygon": [[12, 6], [32, 6], [32, 20], [12, 20]]}]
+    }
+  },
+  "cameras": [],
+  "devices": [
+    {"id": "yard_drone", "category": "drone", "name": "Yard drone (simulated)", "profile": "simulated_drone", "simulated": true, "adapter": "simulated", "map": {"x": 4, "y": 26}},
+    {"id": "yard_dock", "category": "dock", "name": "Dock (simulated)", "profile": "simulated_dock", "simulated": true, "drone_id": "yard_drone", "map": {"x": 4, "y": 26}},
+    {"id": "front_door_contact", "category": "contact_sensor", "name": "Front door contact (simulated)", "profile": "simulated_contact", "simulated": true},
+    {"id": "hall_motion", "category": "motion_sensor", "name": "Hall motion (simulated)", "profile": "simulated_motion", "simulated": true}
+  ],
+  "rules": [],
+  "detector": {"type": "scripted"},
+  "alerts": {
+    "notify_min_severity": {"disarmed": "none", "home": "high", "away": "medium", "night": "medium", "vacation": "low"},
+    "channels": [{"type": "ntfy", "enabled": false, "server": "https://ntfy.sh", "topic": "${SENTINEL_NTFY_TOPIC}"}]
+  },
+  "storage": {"dir": "data/sentinel-drone-first"},
+  "api": {"host": "127.0.0.1", "port": 8080},
+  "drone": {
+    "enabled": true,
+    "device": "yard_drone",
+    "geofence": {"map_polygon": [[0, 0], [40, 0], [40, 30], [0, 30]], "min_altitude_m": 5, "max_altitude_m": 25},
+    "inspection_points": [
+      {"id": "back_fence", "name": "Back fence", "map": [22, 2]},
+      {"id": "driveway", "name": "Driveway", "map": [36, 26]}
+    ],
+    "safety": {"min_launch_battery_pct": 60, "rth_battery_pct": 30, "land_battery_pct": 15, "inspection_altitude_m": 12, "hover_s": 20, "request_ttl_s": 300},
+    "simulator": {"cruise_speed_mps": 4, "drain_pct_per_s": 0.12}
+  }
+}
