@@ -12,6 +12,14 @@ Long-term goal: a commercially viable platform for residential properties and sm
 
 History: the repo started as CameraAI, a senior night-safety monitor (`src/senior_safety/` plus the BedWatch phone app in `webapp/`). That direction ended in October 2026. Its documents live in `docs/history/senior-night-safety/`. Its code is frozen but kept, because Sentinel reuses parts of it.
 
+## Branch and workspace
+
+- **`main` is the primary development branch.** All Sentinel work happens on `main` in the original repository folder (`CameraAI`). Do not create extra worktrees or development folders.
+- The `sentinel` and `network-diagnostics` branches are historical; their work is fully merged into `main` (up to a08ef62). Do not develop on them.
+- Use a short-lived feature branch off `main` only when asked, and merge it back into `main`.
+- The working tree may hold the owner's uncommitted changes to unrelated files (legacy configs, labels, data). Never commit, stash, reset, or discard them unless asked. Stage only the files your change touches.
+- Commit and push only when asked.
+
 ## Current status (October 2026)
 
 | Area | Status |

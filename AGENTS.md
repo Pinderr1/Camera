@@ -2,6 +2,7 @@
 
 **Read `CLAUDE.md` first.** It is the authoritative development guide for this repository: product vision, architecture, boundaries, decisions, and commands. This file only repeats the essentials for agents that do not load `CLAUDE.md`.
 
+- Branch: **`main` is the primary development branch.** Work on `main` in the original `CameraAI` folder; do not create extra worktrees or development folders. `sentinel` and `network-diagnostics` are historical and fully merged. Never commit, stash, reset, or discard the owner's unrelated uncommitted changes; stage only the files you touched.
 - Product: **Sentinel**, a local-first multi-camera property security brain (`src/sentinel/`). A drone is a future mobile camera behind an operator-approval gate (`src/sentinel/drone/`).
 - Legacy and frozen: `src/senior_safety/` and `webapp/` (former CameraAI senior-safety project). Keep their tests passing and do not extend them.
 - Tests: `PYTHONPATH=src python -m unittest discover -s tests`. All tests must pass before a commit.
