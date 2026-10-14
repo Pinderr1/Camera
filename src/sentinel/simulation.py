@@ -83,21 +83,65 @@ def _clip(bbox: tuple[float, float, float, float]) -> tuple[float, float, float,
     return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
 
 
+FAULT_TYPES = {"disconnect", "freeze", "detector_error", "crash", "stall"}
+_FAULT_CLOCKS: dict[str, float] = {}  # camera id -> monotonic time of its first simulated source
+
+
+def reset_fault_clocks() -> None:
+    _FAULT_CLOCKS.clear()
+
+
 class SimulatedSource:
     """Renders a scenario for one camera in real time; ground-truth boxes ride
-    along in Frame.truth for the scripted detector."""
+    along in Frame.truth for the scripted detector.
+
+    `source.faults` injects failures for reliability tests and demos, each
+    `{"type", "at_s", "duration_s"}` on a clock that starts with the camera's
+    first source in this process (so a restarted worker sees the same timeline):
+    `disconnect` (no frames), `freeze` (the same picture repeats), `detector_error`
+    (inference raises), `crash` (the capture call raises), `stall` (the capture
+    call blocks, like a hung decoder)."""
 
     def __init__(self, camera: dict[str, Any], scenario: Scenario) -> None:
         self.camera = camera
         self.scenario = scenario
         self.started = time.monotonic()
+        self.fault_clock = _FAULT_CLOCKS.setdefault(camera["id"], self.started)
+        self.faults = list(camera["source"].get("faults", []))
         self.connected = True
         self.last_error = ""
+        self.error_kind = ""
+        self.reconnects = 0
+        self.frames_read = 0
+        self._frozen = None
+        self._closed = False
+
+    def _fault(self) -> str:
+        elapsed = time.monotonic() - self.fault_clock
+        for fault in self.faults:
+            if fault["at_s"] <= elapsed < fault["at_s"] + fault.get("duration_s", 10**9):
+                return fault["type"]
+        return ""
 
     def read(self) -> Frame | None:
         import cv2
         import numpy as np
 
+        fault = self._fault()
+        if fault == "disconnect":
+            if self.connected:
+                self.connected, self.reconnects = False, self.reconnects + 1
+                self.last_error, self.error_kind = "simulated disconnect", "unreachable"
+            return None
+        self.connected, self.last_error, self.error_kind = True, "", ""
+        if fault == "crash":
+            raise RuntimeError("simulated capture crash")
+        if fault == "stall":
+            while self._fault() == "stall" and not self._closed:
+                time.sleep(0.05)  # deliberately ignores stop requests, like a hung decoder call
+        if fault == "freeze" and self._frozen is not None:
+            self.frames_read += 1
+            return Frame(image=self._frozen.copy(), timestamp_ms=int(time.time() * 1000))
         elapsed = time.monotonic() - self.started
         if self.scenario.loop:
             elapsed %= self.scenario.duration_s
@@ -112,14 +156,17 @@ class SimulatedSource:
             x, y, w, h = det.bbox
             color = (90, 90, 230) if det.label == "person" else (230, 170, 60)
             cv2.rectangle(image, (int(x * SIM_WIDTH), int(y * SIM_HEIGHT)), (int((x + w) * SIM_WIDTH), int((y + h) * SIM_HEIGHT)), color, -1)
-        return Frame(image=image, timestamp_ms=int(time.time() * 1000), truth=truth)
+        self._frozen = image
+        self.frames_read += 1
+        return Frame(image=image, timestamp_ms=int(time.time() * 1000), truth=truth, meta={"fault": fault} if fault else {})
 
     def close(self) -> None:
+        self._closed = True
         self.connected = False
 
     def status(self) -> dict:
         return {"stream": "simulated", "resolution": [SIM_WIDTH, SIM_HEIGHT], "source_fps": None,
-                "hw_decode_active": False, "reconnects": 0, "error_kind": ""}
+                "hw_decode_active": False, "reconnects": self.reconnects, "error_kind": self.error_kind}
 
 
 def load_scenario_for(config: dict[str, Any], scenario_path: str) -> Scenario:

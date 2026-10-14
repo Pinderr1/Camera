@@ -30,6 +30,8 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Incidents, corroboration, alert policy (arm modes, rate limit, escalation) | Built and tested |
 | Event store (SQLite), clip and snapshot recording, retention purge | Built. Clip codec depends on the OpenCV build |
 | Notifications (ntfy, MQTT, log) | Built. Push delivery to a real phone not yet drilled |
+| 24/7 reliability: coverage health (offline/frozen/AI-failed/stalled), worker supervision with backoff and restart budget, GPU→CPU detector fallback, outage history, coverage notifications, disk guard and protected recordings, log rotation, backups and startup recovery, System tab | Built and tested with simulated faults (`scripts/reliability_smoke.py`, failure-scenario tests, Edge UI tests). **Not yet run for days on real cameras** |
+| Background running: `sentinel run` process supervisor, graceful stop, Windows Task Scheduler install, systemd unit | Supervisor and graceful stop tested with real processes. `service install` generates and is unit-tested but has not been installed on a machine yet |
 | REST + SSE + MJPEG API with token auth | Built and tested |
 | Dashboard (live, map, timeline, drone, settings) | Built and smoke-tested |
 | Drone: simulated adapter, geofence, approval workflow, safety monitor | Built and tested |
@@ -63,10 +65,16 @@ src/sentinel/            the Sentinel brain (current product)
   detectors_onnx.py      ONNX Runtime detectors (YOLOX, DETR family), model registry with licence/training-data metadata
   recorder.py            pre-roll ring buffer + MP4 clips + snapshots
   simulation.py          scripted multi-camera scenarios and simulated camera source
-  pipeline.py            CameraWorker thread: capture -> mask -> gate -> detect -> track -> engine
-  runtime.py             SentinelRuntime hub + EventBus (events -> incidents -> store/bus/alerts)
+  pipeline.py            CameraWorker thread: capture -> mask -> gate -> detect -> track -> engine; heartbeat, metrics, GPU->CPU fallback
+  health.py              HealthMonitor: per-camera monitoring state, outages, coverage, health notifications (stdlib)
+  supervisor.py          WorkerSupervisor: restart crashed/stalled workers, backoff, restart budget, circuit breaker (stdlib)
+  storage_guard.py       free-space guard: oldest-first purge of unprotected media, recording pause/resume
+  resources.py           CPU/memory/disk/NVIDIA GPU sampling (stdlib + ctypes)
+  backup.py              backups (config, settings, SQLite), verify, restore, staged restore, damaged-database recovery
+  daemon.py              run state, log rotation, stop requests, `sentinel run` process supervisor, Task Scheduler/systemd
+  runtime.py             SentinelRuntime hub + EventBus (events -> incidents -> store/bus/alerts) + health wiring
   replay.py              deterministic offline scenario replay (tests, rule tuning)
-  service.py             process assembly: runtime + workers + housekeeping + drone loop + MQTT
+  service.py             process assembly: runtime + supervised workers + housekeeping (health, storage, backups) + drone loop + MQTT
   api.py                 FastAPI app (/api/v1) + dashboard host
   mqtt.py                MQTT mirror of bus traffic
   drone/                 base (adapter ABC, telemetry), mock (simulator), geofence, manager, mavlink
@@ -76,6 +84,8 @@ src/sentinel/            the Sentinel brain (current product)
 config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, rules, drone
 config/scenarios/              scripted scenarios (delivery, prowler, ambiguous handoff, demo loop)
 config/netsim/                 simulated network conditions for the troubleshooter (regression: Hikvision on another subnet)
+scripts/reliability_smoke.py   one-minute failure drill on simulated cameras (disconnect, freeze, crash, stall, AI, disk, restart, DB)
+scripts/sentinel_launcher.py   starts Sentinel without PYTHONPATH (used by the Windows task)
 config/bench/                  benchmark site config (zones per public clip), manifest, live RTSP example
 scripts/fetch_bench_footage.py downloads public annotated footage into data/bench/ (git-ignored)
 tests/test_sentinel_*.py       Sentinel tests (tests/sentinel_helpers.py holds the fixtures); test_sentinel_ui.py drives Edge via Playwright
@@ -85,6 +95,7 @@ docs/drone-integration.md      drone design, safety gates, ArduPilot/MAVLink pat
 docs/benchmarking.md           how to measure Sentinel on real footage, and what each metric means
 docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
 docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
+docs/reliability.md            24/7 operation: health states, outages, recovery, background start, storage, backups
 ROADMAP.md                     phased implementation roadmap
 sources.md                     license and reuse audit
 src/senior_safety/, webapp/, scripts/, integrations/, data/   legacy CameraAI (frozen)
@@ -102,6 +113,10 @@ python -m sentinel validate --config config/sentinel.example.json
 python -m sentinel replay --scenario config/scenarios/prowler.json --at 2026-10-12T02:00:00
 python -m sentinel serve                                   # dashboard on http://127.0.0.1:8080
 python -m sentinel serve --simulate-network config/netsim/hikvision_wrong_subnet.json   # troubleshooter demo
+python -m sentinel run --config config/sentinel.local.json --env-file <secrets.env>   # supervised: restarts after crashes
+python -m sentinel service install|start|status|stop|uninstall --config ...   # Windows background start (Task Scheduler)
+python -m sentinel backup create|list|verify|restore [NAME] --config ...
+python scripts/reliability_smoke.py                       # failure drill, ~35 s, prints PASS/FAIL
 python -m unittest tests.test_sentinel_ui                  # browser tests (pip install playwright; uses installed Edge)
 python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
 python -m sentinel.bench run --all --out bench_runs/NAME   # real-footage benchmark -> report.md/html
@@ -114,7 +129,7 @@ Install dependencies with `pip install -r requirements.txt`. The engine, tracker
 
 ## Architecture in one paragraph
 
-Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skips the detector on static scenes (motion gate), runs the detector, drops tiny or ignore-zone boxes, and feeds a per-camera `IoUTracker`. Confirmed tracks go to the shared `SentinelRuntime`, which calls `TemporalEventEngine.process()`. The engine maps track ground points (bottom-centre of the box) into zones with enter/exit hysteresis. The correlator joins camera tracks into site tracks. The engine then evaluates rules over time and emits `SecurityEvent`s that carry reason codes, durations, and confidence. `IncidentManager` groups events by site track or camera, and `AlertPolicy` decides whether a push is warranted. Everything is persisted to SQLite and published on an in-process `EventBus`. The API (SSE), the MQTT mirror, and the dashboard are all bus subscribers. Full detail is in `docs/architecture.md`.
+Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skips the detector on static scenes (motion gate), runs the detector, drops tiny or ignore-zone boxes, and feeds a per-camera `IoUTracker`. Confirmed tracks go to the shared `SentinelRuntime`, which calls `TemporalEventEngine.process()`. The engine maps track ground points (bottom-centre of the box) into zones with enter/exit hysteresis. The correlator joins camera tracks into site tracks. The engine then evaluates rules over time and emits `SecurityEvent`s that carry reason codes, durations, and confidence. `IncidentManager` groups events by site track or camera, and `AlertPolicy` decides whether a push is warranted. Everything is persisted to SQLite and published on an in-process `EventBus`. The API (SSE), the MQTT mirror, and the dashboard are all bus subscribers. A `WorkerSupervisor` restarts crashed or stalled camera workers, and a `HealthMonitor` decides per camera whether it is really monitoring, records outages, and notifies people when coverage is lost (see `docs/reliability.md`). Full detail is in `docs/architecture.md`.
 
 ## Non-negotiable product boundaries
 
@@ -127,6 +142,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 7. **Drone safety.** No autonomous real-world flight. Sentinel may *request* inspections, but only an operator can approve them. Every command is checked against the geofence and written to the audit log. The flight controller owns stabilisation, failsafes, fences, and landing. Do not write custom flight controllers or landing algorithms. The MAVLink adapter stays telemetry-only until every gate in `docs/drone-integration.md` is met and recorded.
 8. **No automatic calls to police or emergency services.** Escalation goes to people only.
 9. **Network diagnostics are read-only and local.** Sentinel never changes router, firewall, computer, or device network settings; it explains what to change. It probes only private/link-local/CGNAT/loopback addresses, searches a network only after the person confirms they manage it (port checks at most the local /24), never collects MAC addresses, serial numbers, Wi-Fi names, or public IPs, and tries a recorder password once per test (accounts lock).
+10. **Never claim coverage that does not exist.** A camera is reported as monitoring only while new, changing frames reach a working detector. Offline, frozen, AI-failed, stalled, and restarting cameras are shown as not monitoring (Live overlay, coverage badge, System tab, API), recorded as outages, and pushed to people when they last. Health events never open security incidents, and health notifications do not depend on the arm mode.
 
 ## Technical decisions (and why)
 
@@ -144,12 +160,14 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 
 - Every new rule type, event type, or alert behaviour needs a unit test, and ideally a scenario in `config/scenarios/` with an assertion in `tests/test_sentinel_scenarios.py`. Tune rules with `replay` before touching thresholds in live config.
 - **Detection, tracking, or rule changes must be re-measured with `sentinel.bench` against the previous run, and the result recorded in the ROADMAP findings.** Never quote accuracy without naming the labeled footage behind it. Synthetic degradations and unlabeled clips never support accuracy claims.
-- Keep the core (`models`, `tracker`, `engine`, `correlation`, `incidents`, `store`, `drone/manager`) free of OpenCV, numpy, and FastAPI imports.
+- Keep the core (`models`, `tracker`, `engine`, `correlation`, `incidents`, `store`, `health`, `supervisor`, `drone/manager`) free of OpenCV, numpy, and FastAPI imports.
 - New config keys must be validated in `config.validate_config` and documented in `docs/architecture.md`.
 - API changes are additive under `/api/v1`. Breaking changes go to `/api/v2`. Update `docs/api.md`.
 - Match the surrounding style: dataclasses, type hints, small modules, comments only where the *why* is non-obvious.
 - Config edits go through `SiteConfigManager` (validated, persisted, applied live); never mutate `runtime.config` directly.
 - Environmental motion (scene conditions) must never open incidents; new environmental signals are `info` events.
+- New failure modes go through `HealthMonitor` (a camera state or a component), get a simulated fault or injected error, and a test in `tests/test_sentinel_reliability.py`. Run `scripts/reliability_smoke.py` after changing the pipeline, supervisor, or health code.
+- Writes on the detection path must not raise into camera threads: contain the error, report it as a health component, and keep alerts flowing.
 - New troubleshooter rules go in `netdiag/diagnose.py` with a `SimulatedNetwork` test. State `confirmed` only for faults Sentinel observed; anything inferred is `suspected` and must sit next to the alternatives.
 - Do not modify `src/senior_safety/` or `webapp/` except to keep shared helpers working. Do not delete them without asking.
 - Run the full test suite before committing.

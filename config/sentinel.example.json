@@ -101,9 +101,18 @@
     ]
   },
   "recording": {"enabled": true, "pre_roll_s": 5, "post_roll_s": 8, "max_clip_s": 60, "fps": 5, "max_width": 960},
-  "privacy": {"store_clips": true, "store_snapshots": true, "retention_days": {"events": 30, "media": 7}},
-  "health": {"camera_offline_after_s": 60},
-  "storage": {"dir": "data/sentinel"},
+  "privacy": {"store_clips": true, "store_snapshots": true, "retention_days": {"events": 30, "media": 7, "protected": 90}},
+  "health": {
+    "frame_timeout_s": 10, "frozen_after_s": 60, "startup_grace_s": 30, "notify_after_s": 120,
+    "notifications": true, "notify_recovery": true, "max_notifications_per_hour": 6,
+    "supervisor": {"stall_after_s": 30, "backoff_initial_s": 5, "backoff_max_s": 300, "max_restarts": 5, "window_s": 3600, "cooldown_s": 1800},
+    "heartbeat": {"url": "", "fail_url": "", "interval_s": 300}
+  },
+  "storage": {
+    "dir": "data/sentinel", "min_free_mb": 2048, "min_free_pct": 5, "max_media_gb": null,
+    "backups": {"enabled": true, "interval_h": 24, "keep": 7, "include_credentials": false}
+  },
+  "logging": {"level": "INFO", "max_mb": 10, "backups": 5},
   "mqtt": {"enabled": false, "host": "localhost", "port": 1883, "topic_prefix": "sentinel", "tls": false},
   "api": {"host": "127.0.0.1", "port": 8080},
   "settings_defaults": {"arm_mode": "home", "sensitivity": "normal", "notifications_enabled": true},

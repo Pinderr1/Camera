@@ -49,6 +49,29 @@ def appearance_vector(image: Any, bbox: tuple[float, float, float, float]) -> li
     return [round(float(value), 4) for value in hist.flatten()]
 
 
+class FreezeDetector:
+    """A live camera's picture is never bit-for-bit still: sensor noise and
+    periodic key frames keep changing it. Pixels are sampled (not averaged, so
+    noise survives); when the samples stay identical, the feed is frozen, e.g. a
+    decoder or recorder repeating its last image. Returns the timestamp since
+    which the picture has not changed, or 0."""
+
+    def __init__(self) -> None:
+        self._previous = None
+        self._previous_ms = 0
+        self.unchanged_since_ms = 0
+
+    def update(self, image: Any, timestamp_ms: int) -> int:
+        height, width = image.shape[:2]
+        sample = image[:: max(1, height // 90), :: max(1, width // 160)].copy()
+        if self._previous is not None and sample.shape == self._previous.shape and not (sample != self._previous).any():
+            self.unchanged_since_ms = self.unchanged_since_ms or self._previous_ms
+        else:
+            self.unchanged_since_ms = 0
+        self._previous, self._previous_ms = sample, timestamp_ms
+        return self.unchanged_since_ms
+
+
 class MotionGate:
     """Cheap frame differencing that lets the object detector idle on static
     scenes, which is what makes several CPU-only cameras practical."""

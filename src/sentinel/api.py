@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import netdiag, onboarding, onvif
+from . import backup, netdiag, onboarding, onvif
 from .config import public_camera_view
 from .drone import FlightCommandRejected
 from .service import SentinelService
@@ -75,6 +75,18 @@ class ChannelsBody(BaseModel):
     source: dict[str, Any] | None = None
     draft_id: str | None = None
     max_channels: int = Field(default=16, ge=1, le=64)
+
+
+class ProtectBody(BaseModel):
+    protected: bool = True
+
+
+class BackupBody(BaseModel):
+    label: str = Field(default="manual", max_length=24, pattern=r"^[a-z0-9_-]*$")
+
+
+class RestoreBody(BaseModel):
+    parts: list[Literal["config", "settings", "database"]] = Field(default_factory=lambda: ["config", "settings"])
 
 
 class DroneCommandBody(BaseModel):
@@ -152,7 +164,11 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
         jpeg = runtime.latest_jpeg.get(camera_id)
         if not jpeg:
             raise HTTPException(status_code=503, detail="no frame yet")
-        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        # The last frame stays available after a camera stops; clients must not mistake it for live video.
+        status = runtime.camera_status.get(camera_id, {})
+        age_ms = max(0, int(time.time() * 1000) - int(status.get("last_frame_ms") or 0))
+        monitoring = "true" if status.get("health", {}).get("monitoring") else "false"
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store", "X-Frame-Age-Ms": str(age_ms), "X-Sentinel-Monitoring": monitoring})
 
     @app.get("/api/v1/cameras/{camera_id}/stream.mjpg")
     async def stream(camera_id: str, request: Request, _: str = Depends(require_auth)) -> StreamingResponse:
@@ -208,6 +224,60 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
             return runtime.resolve(incident_id, actor, body.outcome)
         except KeyError:
             raise HTTPException(status_code=404, detail="unknown incident") from None
+
+    @app.post("/api/v1/incidents/{incident_id}/protect")
+    def protect(incident_id: str, body: ProtectBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return runtime.protect(incident_id, actor, body.protected)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown incident") from None
+
+    # ---- system health, outages, backups ----------------------------------------
+
+    @app.get("/api/v1/system/health")
+    def system_health(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return service.health_report()
+
+    @app.get("/api/v1/system/outages")
+    def outages(since_ms: int | None = None, camera_id: str | None = None, limit: int = 200, _: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return runtime.store.list_outages(since_ms=since_ms, camera_id=camera_id, limit=limit)
+
+    @app.post("/api/v1/cameras/{camera_id}/restart")
+    def restart_camera(camera_id: str, actor: str = Depends(require_auth)) -> dict[str, bool]:
+        camera_or_404(camera_id)
+        try:
+            service.restart_camera(camera_id, actor)
+        except KeyError:
+            raise HTTPException(status_code=409, detail="camera processing is not running in this session") from None
+        return {"ok": True}
+
+    @app.get("/api/v1/system/backups")
+    def list_backups(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return backup.list_backups(service.storage_dir)
+
+    @app.post("/api/v1/system/backups")
+    def create_backup(body: BackupBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return service.create_backup(label=body.label or "manual", actor=actor)
+        except OSError as error:
+            raise HTTPException(status_code=507, detail=f"backup could not be written: {error.strerror or error}") from None
+
+    @app.post("/api/v1/system/backups/{name}/verify")
+    def verify_backup(name: str, _: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            result = backup.verify_backup(backup.resolve_backup(service.storage_dir, name))
+        except backup.BackupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        return {"ok": result["ok"], "problems": result["problems"]}
+
+    @app.post("/api/v1/system/backups/{name}/restore")
+    def restore_backup(name: str, body: RestoreBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return service.restore_backup(name, list(body.parts), actor)
+        except backup.BackupError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except SiteConfigError as error:
+            raise HTTPException(status_code=422, detail=f"the backup's configuration was rejected: {error}") from None
 
     @app.get("/api/v1/media/{media_path:path}")
     def media(media_path: str, _: str = Depends(require_auth)) -> FileResponse:

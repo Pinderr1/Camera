@@ -10,6 +10,7 @@ Sentinel describes observed activity ("Person entered Shed", "Person moved Drive
 - API for the dashboard and mobile apps: [docs/api.md](./docs/api.md)
 - Drone integration and safety gates: [docs/drone-integration.md](./docs/drone-integration.md)
 - Real-footage benchmarking: [docs/benchmarking.md](./docs/benchmarking.md)
+- Running 24/7: health, recovery, background start, backups: [docs/reliability.md](./docs/reliability.md)
 - License audit: [sources.md](./sources.md)
 
 ## Quick start (no cameras needed)
@@ -57,6 +58,8 @@ Or edit a config file by hand:
    python -m sentinel serve --config config/sentinel.local.json
    ```
 6. Push notifications: enable the `ntfy` channel and set `SENTINEL_NTFY_TOPIC` to a long, unguessable topic (or self-host ntfy). Start in `home` mode (only high-severity pushes) and review incidents for a week before switching to `away`.
+
+7. Run it unattended: `python -m sentinel service install --config config/sentinel.local.json --env-file <path>` starts Sentinel at boot under a supervisor that restarts it after crashes. Check the **System** tab (or `python -m sentinel service status`) for coverage, outages, and backups. Optionally set `health.heartbeat.url` to an external dead-man's switch so you hear about power cuts. See [docs/reliability.md](./docs/reliability.md).
 
 **Security:** never port-forward Sentinel or your cameras. For remote access, use a VPN (Tailscale/WireGuard) or an authenticated HTTPS reverse proxy. Without `SENTINEL_API_TOKEN`, the server refuses to listen on anything except localhost.
 

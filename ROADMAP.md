@@ -1,6 +1,6 @@
 # Sentinel roadmap
 
-Last updated: 2026-10-13. Priority: **a working security brain on real cameras before any drone hardware.** The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
+Last updated: 2026-10-13. Priority: **a working security brain on real cameras before any drone hardware.** Sentinel can now run unattended with honest coverage reporting and self-recovery (Phase 0.9); the next proof is days of continuous operation on real cameras. The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
 
 ## Phase 0: Pivot foundation (done, October 2026)
 - [x] Audit the CameraAI codebase. Archive the senior-safety docs and keep that code frozen.
@@ -92,6 +92,19 @@ Last updated: 2026-10-13. Priority: **a working security brain on real cameras b
 So the cause is not yet confirmed. Next on site:
 - switch the profile to Private and search again;
 - or read the recorder's network menu on its monitor, set DHCP, and retest.
+
+## Phase 0.9: 24/7 reliability (done, October 2026)
+- [x] Honest coverage: one health state per camera (`monitoring`, `starting`, `offline`, `frozen`, `ai_failed`, `stalled`/`restarting`, `failed`). Monitoring only while changing frames reach a working detector. Live-tile overlay, header coverage badge, System tab, `/api/v1/system/health`.
+- [x] Frozen-feed detection (pixel-identical samples), worker heartbeats, capture-to-decision and detection latency p50/p95, skipped-frame counts, CPU/memory/disk and NVIDIA GPU sampling.
+- [x] Worker supervision: crash restarts with exponential backoff, stall detection with thread abandonment, a restart budget with a cooldown circuit breaker, a fatal exit when too many threads are stuck, manual restart.
+- [x] Inference failures: GPU→CPU detector fallback; otherwise `ai_failed` until a reloaded detector succeeds on a real frame.
+- [x] Outage history (SQLite `outages`), health timeline events that never open incidents, grouped and rate-limited coverage notifications plus recovery messages, notifications for Sentinel's own downtime (crash vs planned stop via `runstate.json`), and an optional external dead-man's-switch heartbeat.
+- [x] Storage: free-space guard (oldest unprotected media first, then recording pause with hysteresis), media quota, protected recordings (open, marked, or `real_concern` incidents; 90-day retention), contained clip/snapshot/database write failures, rotating logs.
+- [x] Backups: daily automatic and manual zips (config, settings, consistent SQLite copy, map image; credentials only on request), checksum and integrity verification, offline restore with a safety backup, live restore (config now, database at next start), damaged-database and damaged-config recovery at startup.
+- [x] Background running: `sentinel run` process supervisor (backoff, budget, no retry on config errors), graceful stop requests, single-instance guard, Windows Task Scheduler install as the user (DPAPI), systemd unit.
+- [x] Simulated faults (`disconnect`, `freeze`, `crash`, `stall`, `detector_error`), `scripts/reliability_smoke.py` (17 checks, about 35 s), and 61 new tests (292 in total, including legacy): unit, failure-scenario, real-process, and Edge UI.
+
+**Not yet verified on real hardware:** multi-day runs on real cameras, frozen detection on real recorders (an on-screen clock keeps a frozen picture "changing"), a real full disk, and `service install` on a clean Windows machine.
 
 ## Detector upgrade findings (2026-10-13)
 
@@ -236,7 +249,7 @@ Exit: 2+ real IP cameras running for 7 days with useful incidents and fewer than
 - [ ] Legal review of RF-DETR (Objects365 pre-training) and of COCO image provenance for commercial distribution.
 - [ ] Record and label 1-2 hours from the target residential cameras (day, night/IR, rain, deliveries, ordinary family activity). Box labels via CVAT (MOT export), plus hand-written expected events and `expect_no_notifications` for ordinary footage. This replaces public footage as the acceptance set.
 - [ ] Resolve the ERI-K108-P8 install with the troubleshooter (see Phase 0.8) and record what the real SADP reply and channel search returned.
-- [ ] Connect 2-3 real RTSP cameras on sub-streams (640p, 5-10 fps; measured 21% CPU for 3 cameras on this host). Run `sentinel.bench live` for 24 h and record latency, dropped frames, and reconnects.
+- [ ] Connect 2-3 real RTSP cameras on sub-streams (640p, 5-10 fps; measured 21% CPU for 3 cameras on this host). Run `sentinel.bench live` for 24 h and record latency, dropped frames, and reconnects. Run under `sentinel run` for 7 days and review the outage history and every health notification.
 - [ ] Tracker upgrade (ByteTrack or OC-SORT style, using low-score detections) once recall improves. Measure identity switches and "mostly tracked" before and after.
 - [ ] Group-box handling: the detector often emits one box for two people walking together. Evaluate whether the stronger detector removes this before adding logic.
 - [ ] Multi-view dataset for cross-camera correlation validation (own cameras with overlapping or adjacent views).
@@ -250,12 +263,12 @@ Exit: 2+ real IP cameras running for 7 days with useful incidents and fewer than
 
 ## Phase 2: Pilot hardening
 Exit: a non-technical household runs it for 30 days without help.
-- [ ] Service install (Windows service / systemd), auto-start, watchdog, log rotation, disk-space guard.
+- [x] Service install (Windows Task Scheduler / systemd), auto-start, watchdog, log rotation, disk-space guard (Phase 0.9). Still to do: install and run it for 30 days on the pilot machine.
 - [ ] HTTPS via a reverse proxy recipe (Caddy) and a VPN recipe (Tailscale/WireGuard).
 - [ ] User accounts with roles (owner, member, viewer), per-user tokens, session expiry. Replace the single shared token.
 - [ ] Secrets: OS keyring or `.env` loaded by the service manager. Document rotation.
-- [ ] Backup and restore of config, settings, and the SQLite store.
-- [ ] Health page: per-camera uptime, detector latency, queue depth, storage use. A heartbeat to an external watchdog (healthchecks.io pattern from BedWatch).
+- [x] Backup and restore of config, settings, and the SQLite store (Phase 0.9). Still to do: off-machine backup copies (encrypted, user-chosen location).
+- [x] Health page: per-camera state, detector latency, skipped frames, storage use, outage history, and an external watchdog heartbeat (Phase 0.9). Still to do: uptime percentages per camera over 7/30 days.
 - [ ] Schedules: automatic arm and disarm by time, and geofenced presence from phones (Phase 3 app).
 - [ ] Self-hosted ntfy or push relay. Notification action buttons (acknowledge, expected activity).
 

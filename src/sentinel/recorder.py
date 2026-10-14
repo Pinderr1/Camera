@@ -27,8 +27,19 @@ class ClipRecorder:
         self._last_buffered_ms = 0
         self._writer = None
         self._clip: dict[str, Any] | None = None
+        self.paused = False  # set by the storage guard when the disk is nearly full
+
+    def set_paused(self, paused: bool) -> None:
+        """Called from another thread: only flips the flag; the camera thread,
+        which owns the writer, closes any open clip on its next frame."""
+        self.paused = paused
 
     def add_frame(self, image: Any, timestamp_ms: int) -> None:
+        if self.paused:
+            if self._clip or self._buffer:
+                self.finish()
+                self._buffer.clear()
+            return
         if not self.enabled or timestamp_ms - self._last_buffered_ms < 1000 / self.fps:
             return
         import cv2
@@ -47,7 +58,7 @@ class ClipRecorder:
 
     def trigger(self, incident_id: str, timestamp_ms: int) -> str:
         """Start or extend the clip for an incident; returns its media-relative path."""
-        if not self.enabled:
+        if not self.enabled or self.paused:
             return ""
         if self._clip:
             self._clip["until_ms"] = timestamp_ms + self.post_roll_ms
@@ -85,13 +96,16 @@ class ClipRecorder:
         return self._clip["relative_path"]
 
     def snapshot(self, image: Any, timestamp_ms: int, name: str) -> str:
+        if self.paused:
+            return ""
         import cv2
 
         stamp = datetime.fromtimestamp(timestamp_ms / 1000)
         relative = Path("snapshots") / self.camera_id / f"{stamp:%Y%m%d}" / f"{stamp:%H%M%S}_{name}.jpg"
         target = self.media_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(target), self._resize(image), [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not cv2.imwrite(str(target), self._resize(image), [cv2.IMWRITE_JPEG_QUALITY, 85]):
+            raise OSError(f"could not write snapshot {relative.as_posix()}")
         return relative.as_posix()
 
     def finish(self) -> None:

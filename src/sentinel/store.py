@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from .models import SEVERITY_RANK, Incident, SecurityEvent
+
+log = logging.getLogger("sentinel.store")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -43,76 +46,144 @@ CREATE TABLE IF NOT EXISTS audit (
     action TEXT NOT NULL,
     body TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS outages (
+    outage_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    camera_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    started_ms INTEGER NOT NULL,
+    ended_ms INTEGER,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS outages_time ON outages (started_ms);
 """
+# Incidents whose media and rows outlive normal retention (until `protected_media` days).
+PROTECTED = "(status = 'open' OR json_extract(body, '$.protected') = 1 OR json_extract(body, '$.resolution') = 'real_concern')"
 
 
 class EventStore:
-    """Local SQLite history of events, incidents, and operator actions. Media
-    files live on disk next to it; rows only hold relative paths."""
+    """Local SQLite history of events, incidents, outages, and operator actions.
+    Media files live on disk next to it; rows only hold relative paths.
+
+    Writes never raise: a full disk or a damaged file must not take down camera
+    processing. Failures are counted (`write_failures`, `last_error`) so the
+    health monitor can report the database as degraded."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self.write_failures = 0
+        self.last_error = ""
+        self.last_write_ok = True
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        with self._lock:
-            self._db.executescript(SCHEMA)
-            self._db.execute("PRAGMA journal_mode=WAL")
-            # WAL + NORMAL stays consistent after a crash and only risks the last
-            # commit on power loss; FULL fsyncs every event (tens of ms on Windows).
-            self._db.execute("PRAGMA synchronous=NORMAL")
+        try:
+            with self._lock:
+                self._db.executescript(SCHEMA)
+                self._db.execute("PRAGMA journal_mode=WAL")
+                # WAL + NORMAL stays consistent after a crash and only risks the last
+                # commit on power loss; FULL fsyncs every event (tens of ms on Windows).
+                self._db.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.Error:
+            self._db.close()  # release the file so a damaged database can be moved aside
+            raise
 
     def close(self) -> None:
         with self._lock:
             self._db.close()
 
+    def quick_check(self) -> str:
+        with self._lock:
+            return str(self._db.execute("PRAGMA quick_check").fetchone()[0])
+
+    def backup_to(self, target: Path) -> None:
+        """Consistent online copy (SQLite backup API), safe while cameras write."""
+        destination = sqlite3.connect(target)
+        try:
+            with self._lock:
+                self._db.backup(destination)
+        finally:
+            destination.close()
+
+    def _write(self, sql: str, params: tuple) -> bool:
+        try:
+            with self._lock, self._db:
+                self._db.execute(sql, params)
+        except sqlite3.Error as error:
+            self.write_failures += 1
+            self.last_write_ok = False
+            if self.last_error != str(error):
+                log.error("database write failed: %s", error)
+            self.last_error = str(error)
+            return False
+        self.last_write_ok = True
+        return True
+
     def add_event(self, event: SecurityEvent) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    event.event_id,
-                    event.timestamp_ms,
-                    event.started_ms,
-                    event.event_type,
-                    event.severity,
-                    SEVERITY_RANK[event.severity],
-                    event.camera_id,
-                    event.zone_id,
-                    event.site_track_id,
-                    event.incident_id,
-                    event.confidence,
-                    event.summary,
-                    json.dumps(event.as_dict()),
-                ),
-            )
+        self._write(
+            "INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                event.event_id,
+                event.timestamp_ms,
+                event.started_ms,
+                event.event_type,
+                event.severity,
+                SEVERITY_RANK[event.severity],
+                event.camera_id,
+                event.zone_id,
+                event.site_track_id,
+                event.incident_id,
+                event.confidence,
+                event.summary,
+                json.dumps(event.as_dict()),
+            ),
+        )
 
     def update_event_media(self, event_id: str, *, snapshot_path: str = "", clip_path: str = "") -> None:
-        with self._lock, self._db:
+        with self._lock:
             row = self._db.execute("SELECT body FROM events WHERE event_id = ?", (event_id,)).fetchone()
-            if row is None:
-                return
-            body = json.loads(row["body"])
-            if snapshot_path:
-                body["snapshot_path"] = snapshot_path
-            if clip_path:
-                body["clip_path"] = clip_path
-            self._db.execute("UPDATE events SET body = ? WHERE event_id = ?", (json.dumps(body), event_id))
+        if row is None:
+            return
+        body = json.loads(row["body"])
+        if snapshot_path:
+            body["snapshot_path"] = snapshot_path
+        if clip_path:
+            body["clip_path"] = clip_path
+        self._write("UPDATE events SET body = ? WHERE event_id = ?", (json.dumps(body), event_id))
 
     def upsert_incident(self, incident: Incident) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT OR REPLACE INTO incidents VALUES (?,?,?,?,?,?)",
-                (
-                    incident.incident_id,
-                    incident.opened_ms,
-                    incident.updated_ms,
-                    incident.status,
-                    incident.severity,
-                    json.dumps(incident.as_dict()),
-                ),
-            )
+        self._write(
+            "INSERT OR REPLACE INTO incidents VALUES (?,?,?,?,?,?)",
+            (
+                incident.incident_id,
+                incident.opened_ms,
+                incident.updated_ms,
+                incident.status,
+                incident.severity,
+                json.dumps(incident.as_dict()),
+            ),
+        )
+
+    def upsert_outage(self, outage: dict[str, Any]) -> None:
+        self._write(
+            "INSERT OR REPLACE INTO outages VALUES (?,?,?,?,?,?,?)",
+            (outage["outage_id"], outage["scope"], outage["camera_id"], outage["kind"], outage["started_ms"], outage["ended_ms"], json.dumps(outage)),
+        )
+
+    def list_outages(self, *, since_ms: int | None = None, camera_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        if since_ms is not None:
+            clauses.append("(ended_ms IS NULL OR ended_ms >= ?)")
+            params.append(since_ms)
+        if camera_id:
+            clauses.append("camera_id = ?")
+            params.append(camera_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 1000)))
+        with self._lock:
+            rows = self._db.execute(f"SELECT body FROM outages {where} ORDER BY started_ms DESC LIMIT ?", params).fetchall()
+        return [json.loads(row["body"]) for row in rows]
 
     def list_events(
         self,
@@ -170,11 +241,10 @@ class EventStore:
         return json.loads(row["body"]) if row else None
 
     def audit(self, actor: str, action: str, body: dict[str, Any]) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO audit (timestamp_ms, actor, action, body) VALUES (?,?,?,?)",
-                (int(time.time() * 1000), actor, action, json.dumps(body)),
-            )
+        self._write(
+            "INSERT INTO audit (timestamp_ms, actor, action, body) VALUES (?,?,?,?)",
+            (int(time.time() * 1000), actor, action, json.dumps(body)),
+        )
 
     def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
@@ -186,20 +256,64 @@ class EventStore:
             for row in rows
         ]
 
-    def purge(self, *, events_before_ms: int, media_before_ms: int, media_root: Path) -> dict[str, int]:
+    def protected_media(self) -> set[str]:
+        """Media of incidents that are still open, marked protected, or resolved
+        as a real concern. Retention and disk-space purges skip these files."""
+        keep: set[str] = set()
+        with self._lock:
+            for row in self._db.execute(f"SELECT body FROM incidents WHERE {PROTECTED}"):
+                incident = json.loads(row["body"])
+                keep.update(incident.get("clip_paths", []))
+                if incident.get("snapshot_path"):
+                    keep.add(incident["snapshot_path"])
+            for row in self._db.execute(
+                f"SELECT body FROM events WHERE incident_id IN (SELECT incident_id FROM incidents WHERE {PROTECTED})"
+            ):
+                event = json.loads(row["body"])
+                keep.update(path for path in (event.get("snapshot_path"), event.get("clip_path")) if path)
+        return keep
+
+    def purge(
+        self,
+        *,
+        events_before_ms: int,
+        media_before_ms: int,
+        media_root: Path,
+        protected_before_ms: int | None = None,
+    ) -> dict[str, int]:
         """Apply retention: drop old rows, then delete media older than the media
-        cutoff even when the rows referencing it are still retained."""
-        with self._lock, self._db:
-            events = self._db.execute("DELETE FROM events WHERE timestamp_ms < ?", (events_before_ms,)).rowcount
-            incidents = self._db.execute(
-                "DELETE FROM incidents WHERE status = 'closed' AND updated_ms < ?", (events_before_ms,)
-            ).rowcount
-            self._db.execute("DELETE FROM audit WHERE timestamp_ms < ?", (events_before_ms,))
+        cutoff even when the rows referencing it are still retained. Protected
+        incidents (see `protected_media`) keep their rows and media until
+        `protected_before_ms`."""
+        protected_before_ms = events_before_ms if protected_before_ms is None else protected_before_ms
+        protected = self.protected_media()
+        try:
+            with self._lock, self._db:
+                events = self._db.execute(
+                    "DELETE FROM events WHERE timestamp_ms < ? AND (timestamp_ms < ? OR incident_id IS NULL OR incident_id NOT IN "
+                    f"(SELECT incident_id FROM incidents WHERE {PROTECTED}))",
+                    (events_before_ms, protected_before_ms),
+                ).rowcount
+                incidents = self._db.execute(
+                    f"DELETE FROM incidents WHERE status = 'closed' AND updated_ms < ? AND (updated_ms < ? OR NOT {PROTECTED})",
+                    (events_before_ms, protected_before_ms),
+                ).rowcount
+                self._db.execute("DELETE FROM audit WHERE timestamp_ms < ?", (events_before_ms,))
+                self._db.execute("DELETE FROM outages WHERE ended_ms IS NOT NULL AND ended_ms < ?", (events_before_ms,))
+        except sqlite3.Error as error:
+            log.error("retention purge of rows failed: %s", error)
+            events = incidents = 0
         media = 0
         if media_root.exists():
-            cutoff_s = media_before_ms / 1000
+            cutoff_s, protected_cutoff_s = media_before_ms / 1000, protected_before_ms / 1000
             for path in media_root.rglob("*"):
-                if path.is_file() and path.stat().st_mtime < cutoff_s:
-                    path.unlink()
-                    media += 1
+                if not path.is_file():
+                    continue
+                modified = path.stat().st_mtime
+                if modified >= cutoff_s:
+                    continue
+                if modified >= protected_cutoff_s and path.relative_to(media_root).as_posix() in protected:
+                    continue
+                path.unlink(missing_ok=True)
+                media += 1
         return {"events": events, "incidents": incidents, "media_files": media}

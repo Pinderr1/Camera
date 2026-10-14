@@ -32,6 +32,7 @@ from ..engine import ZoneMap
 from ..models import Notification, Track, effective_categories
 from ..notify import CallbackNotifier
 from ..pipeline import filter_detections, with_category_classes
+from ..health import HEALTH_EVENT_TYPES
 from ..runtime import SentinelRuntime
 from ..tracker import IoUTracker, TrackerConfig
 from ..vision import Frame, MotionGate, appearance_vector, apply_privacy_masks
@@ -39,7 +40,7 @@ from . import degrade as degrade_module
 from .labels import GroundTruth, load_labels
 from .metrics import DetectionStats, ExpectedEvent, TrackingStats, count_group_boxes, match_boxes, match_events, percentiles
 
-HEALTH_EVENTS = {"camera_offline", "camera_online"}
+HEALTH_EVENTS = HEALTH_EVENT_TYPES  # coverage events are not security events
 EVENT_WINDOWS = {
     "activity": (-3.0, 8.0),
     "zone_entry": (-3.0, 8.0),

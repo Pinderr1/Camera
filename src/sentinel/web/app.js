@@ -72,6 +72,7 @@ document.querySelectorAll(".tabs button").forEach((button) =>
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b === button));
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${button.dataset.tab}`));
     if (button.dataset.tab === "settings") loadAudit();
+    if (button.dataset.tab === "system") loadSystem();
   }),
 );
 
@@ -113,6 +114,7 @@ function renderCameras(cameras) {
       (camera) => `
       <article class="card camera" data-camera="${esc(camera.id)}">
         <img src="${API}/cameras/${encodeURIComponent(camera.id)}/stream.mjpg" alt="${esc(camera.name || camera.id)} live view" loading="lazy">
+        <div class="camera-overlay" hidden><div class="overlay-title">NOT MONITORING</div><div class="small overlay-reason"></div></div>
         <div class="meta"><strong>${esc(camera.name || camera.id)}</strong><span class="status"></span></div>
       </article>`,
     )
@@ -120,13 +122,42 @@ function renderCameras(cameras) {
   updateCameraStatus(cameras.map((camera) => camera.status || {}));
 }
 
+// A tile only looks live while the camera is really being monitored: otherwise the
+// last frame stays visible under an overlay that says why, so a frozen picture is
+// never mistaken for a working camera.
 function updateCameraStatus(statuses) {
   for (const status of statuses) {
-    const node = document.querySelector(`[data-camera="${CSS.escape(status.camera_id || "")}"] .status`);
-    if (!node) continue;
-    node.className = `status ${status.connected ? "status-ok" : "status-bad"}`;
-    node.textContent = status.connected ? `${status.fps || 0} fps` : status.error || "offline";
+    const tile = document.querySelector(`[data-camera="${CSS.escape(status.camera_id || "")}"]`);
+    if (!tile) continue;
+    const node = tile.querySelector(".status");
+    const health = status.health || {};
+    const monitoring = health.monitoring === true;
+    const starting = health.state === "starting" || health.state === "not_running" || !health.state;
+    node.className = `status ${monitoring ? "status-ok" : starting ? "muted" : "status-bad"}`;
+    const warnings = (health.warnings || []).map((w) => w.replace(/_/g, " "));
+    node.textContent = monitoring ? `${status.fps || 0} fps${warnings.length ? ` · ${warnings.join(", ")}` : ""}` : health.label || "starting";
+    const overlay = tile.querySelector(".camera-overlay");
+    overlay.hidden = monitoring || (health.state || "starting") === "starting";
+    overlay.querySelector(".overlay-title").textContent = `NOT MONITORING: ${(health.label || "").toUpperCase()}`;
+    overlay.querySelector(".overlay-reason").textContent = [health.reason, health.since_ms ? `since ${time(health.since_ms)}` : ""].filter(Boolean).join(" · ");
   }
+}
+
+function renderCoverage(coverage) {
+  if (!coverage) return;
+  const node = $("#coverage");
+  const text = {
+    full: `Monitoring ${coverage.monitoring}/${coverage.total}`,
+    degraded: `Coverage degraded ${coverage.monitoring}/${coverage.total}`,
+    none: "NOT MONITORING",
+    not_running: "Cameras not running",
+  }[coverage.state] || coverage.state;
+  node.className = `coverage ${coverage.state}`;
+  node.textContent = text;
+  const problems = coverage.not_monitoring.filter((camera) => camera.state !== "starting").map((camera) => `${camera.name}: ${camera.label}`);
+  const components = Object.values(coverage.components || {}).filter((c) => c.state !== "ok").map((c) => `${c.label}: ${c.detail}`);
+  node.title = [...problems, ...components].join("\n") || "All cameras are being monitored";
+  $("#system-badge").hidden = coverage.state === "full" || coverage.state === "not_running";
 }
 
 // ---- map -------------------------------------------------------------------
@@ -263,8 +294,10 @@ async function openIncident(incidentId) {
       <button data-outcome="real_concern" class="danger">Real concern</button>
       ${state.site.drone_enabled && incident.zones.length ? `<button id="inspect-incident">Request drone inspection</button>` : ""}
     </div>
+    <label class="field checkbox small"><input type="checkbox" id="protect" ${incident.protected ? "checked" : ""}> Keep these recordings (excluded from automatic deletion and disk-space clean-up)</label>
     ${incident.resolution ? `<div class="small muted">Resolved as ${esc(incident.resolution)} by ${esc(incident.resolved_by)}</div>` : ""}`;
   $("#ack").addEventListener("click", () => incidentAction(incidentId, "acknowledge"));
+  $("#protect").addEventListener("change", (event) => incidentAction(incidentId, "protect", { protected: event.target.checked }));
   document.querySelectorAll("[data-outcome]").forEach((button) =>
     button.addEventListener("click", () => incidentAction(incidentId, "resolve", { outcome: button.dataset.outcome })),
   );
@@ -391,6 +424,128 @@ async function loadAudit() {
   }
 }
 
+// ---- system health ---------------------------------------------------------
+
+const ago = (ms) => {
+  if (!ms) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return seconds < 90 ? `${seconds} s` : seconds < 5400 ? `${Math.round(seconds / 60)} min` : `${(seconds / 3600).toFixed(1)} h`;
+};
+const duration = (seconds) => (seconds < 90 ? `${Math.round(seconds)} s` : seconds < 5400 ? `${Math.round(seconds / 60)} min` : `${(seconds / 3600).toFixed(1)} h`);
+const num = (value, unit = "") => (value == null ? "–" : `${value}${unit}`);
+let systemLoading = false;
+
+async function loadSystem() {
+  if (systemLoading) return;
+  systemLoading = true;
+  try {
+    const [report, outages, backups] = await Promise.all([api("/system/health"), api("/system/outages?limit=100"), api("/system/backups")]);
+    renderSystem(report, outages, backups);
+  } catch (error) {
+    $("#coverage-banner").textContent = `Could not load system health: ${error.message}`;
+  } finally {
+    systemLoading = false;
+  }
+}
+
+function renderSystem(report, outages, backups) {
+  const coverage = report.coverage;
+  renderCoverage(coverage);
+  const banner = $("#coverage-banner");
+  banner.className = `banner ${coverage.state === "full" ? "good" : coverage.state === "not_running" ? "" : "bad"}`;
+  const issues = [
+    ...coverage.not_monitoring.map((camera) => `${camera.name}: ${camera.label}`),
+    ...Object.values(coverage.components).filter((c) => c.state !== "ok").map((c) => `${c.label}: ${c.detail}`),
+  ];
+  banner.innerHTML = `<strong>${esc({ full: "All cameras are being monitored.", degraded: "Security coverage is degraded.", none: "No camera is being monitored.", not_running: "Camera processing is not running in this session." }[coverage.state] || coverage.state)}</strong>
+    ${issues.length ? `<ul class="small">${issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>` : ""}`;
+  $("#health-updated").textContent = `Updated ${time(report.time_ms)}`;
+  $("#health-cameras").innerHTML = `<tr><th>Camera</th><th>State</th><th>Processed fps</th><th>Detect p95</th><th>Delay p95</th><th>Skipped frames</th><th>Reconnects</th><th>Restarts</th><th>AI</th><th>Issue</th><th></th></tr>` +
+    report.cameras.map((camera) => {
+      const health = camera.health || {};
+      const metrics = camera.metrics || {};
+      const issue = [health.reason, ...(health.warnings || []).map((w) => w.replace(/_/g, " ")), camera.worker_state === "restarting" && camera.next_restart_ms ? `retry ${time(camera.next_restart_ms)}` : ""].filter(Boolean).join(" · ");
+      return `<tr data-health-camera="${esc(camera.camera_id)}">
+        <td><strong>${esc(camera.name)}</strong></td>
+        <td><span class="state ${esc(health.state || "starting")}">${esc(health.label || "Starting")}</span> <span class="small muted">${health.since_ms ? `for ${ago(health.since_ms)}` : ""}</span></td>
+        <td>${num(camera.fps)} / ${num(camera.target_fps)}</td>
+        <td>${num(metrics.detect_ms_p95, " ms")}</td>
+        <td>${num(metrics.latency_ms_p95, " ms")}</td>
+        <td>${metrics.frames_skipped == null ? "–" : `${metrics.frames_skipped} of ${metrics.frames_skipped + metrics.frames_processed}`}</td>
+        <td>${num(camera.reconnects)}</td>
+        <td>${num(camera.restarts_total)}</td>
+        <td>${esc(camera.detector_provider || "–")}${camera.detector_state && camera.detector_state !== "ok" ? ` (${esc(camera.detector_state)})` : ""}</td>
+        <td class="wrap small">${esc(issue)}</td>
+        <td>${camera.worker_state ? `<button data-restart="${esc(camera.camera_id)}">Restart</button>` : ""}</td></tr>`;
+    }).join("");
+  document.querySelectorAll("[data-restart]").forEach((button) => button.addEventListener("click", async () => {
+    try {
+      await api(`/cameras/${encodeURIComponent(button.dataset.restart)}/restart`, { method: "POST", body: "{}" });
+      toast("Camera restarting", "", "info");
+      loadSystem();
+    } catch (error) {
+      toast("Restart failed", error.message);
+    }
+  }));
+  const r = report.resources || {};
+  const memory = r.system_memory || {};
+  const disk = r.disk || {};
+  $("#health-resources").innerHTML = `
+    <dt>CPU (whole computer)</dt><dd>${num(r.system_cpu_pct, "%")}</dd>
+    <dt>CPU (Sentinel)</dt><dd>${num(r.process_cpu_pct, "%")} of ${num(r.cpu_count)} threads</dd>
+    <dt>Memory</dt><dd>${memory.total_mb ? `${num(memory.used_pct, "%")} used · ${Math.round(memory.available_mb / 1024 * 10) / 10} GB free` : "–"}</dd>
+    <dt>Sentinel memory</dt><dd>${num(r.process_rss_mb, " MB")}</dd>
+    <dt>GPU</dt><dd>${r.gpu ? `${esc(r.gpu.name)} · ${r.gpu.utilization_pct}% · ${Math.round(r.gpu.memory_used_mb)} / ${Math.round(r.gpu.memory_total_mb)} MB · ${r.gpu.temperature_c} °C` : "no counters (detector latency shows inference health)"}</dd>
+    <dt>Running since</dt><dd>${dateTime(report.service.started_ms)} (${ago(report.service.started_ms)})</dd>
+    ${report.service.stuck_threads ? `<dt>Stuck threads</dt><dd class="status-bad">${report.service.stuck_threads}</dd>` : ""}`;
+  const storage = report.storage || {};
+  const database = report.database || {};
+  $("#health-storage").innerHTML = `
+    <dt>Free disk</dt><dd class="${storage.low ? "status-bad" : ""}">${storage.free_mb != null ? `${Math.round(storage.free_mb / 102.4) / 10} GB (${storage.free_pct}%)` : disk.free_mb != null ? `${Math.round(disk.free_mb / 102.4) / 10} GB` : "–"}</dd>
+    <dt>Keep free</dt><dd>${storage.threshold_mb != null ? `${Math.round(storage.threshold_mb / 102.4) / 10} GB` : "–"}</dd>
+    <dt>Recordings</dt><dd>${storage.media_mb != null ? `${Math.round(storage.media_mb)} MB` : "–"} · ${storage.recording_paused ? '<span class="status-bad">recording paused (disk full)</span>' : "recording"}</dd>
+    <dt>Freed for space</dt><dd>${num(storage.purged_total)} file(s)</dd>
+    <dt>Event database</dt><dd class="${database.ok ? "" : "status-bad"}">${database.ok ? "saving normally" : `writes failing: ${esc(database.last_error)}`}</dd>
+    ${database.recovery ? `<dt>Last repair</dt><dd>${esc(database.recovery.action.replace(/_/g, " "))}</dd>` : ""}`;
+  $("#backup-list").innerHTML = backups.slice(0, 10).map((item) => `<li class="row-between"><span>${item.valid ? `${dateTime(item.created_ms)} · ${esc(item.label)} · ${Math.round(item.size_bytes / 1024)} KB` : `${esc(item.name)} (unreadable)`}</span>
+      ${item.valid ? `<span class="button-row tight"><button data-verify="${esc(item.name)}">Verify</button><button data-restore="${esc(item.name)}">Restore</button></span>` : ""}</li>`).join("") ||
+    '<li class="muted">No backups yet. One is made automatically every day.</li>';
+  document.querySelectorAll("[data-verify]").forEach((button) => button.addEventListener("click", async () => {
+    try {
+      const result = await api(`/system/backups/${encodeURIComponent(button.dataset.verify)}/verify`, { method: "POST", body: "{}" });
+      toast(result.ok ? "Backup verified" : "Backup is damaged", result.problems.join("; "), result.ok ? "info" : "high");
+    } catch (error) {
+      toast("Verify failed", error.message);
+    }
+  }));
+  document.querySelectorAll("[data-restore]").forEach((button) => button.addEventListener("click", async () => {
+    if (!confirm("Restore this backup? The configuration and settings change now; event history is replaced at the next start. The current state is backed up first.")) return;
+    try {
+      const result = await api(`/system/backups/${encodeURIComponent(button.dataset.restore)}/restore`, { method: "POST", body: JSON.stringify({ parts: ["config", "settings", "database"] }) });
+      toast("Backup restored", `Applied: ${result.applied.join(", ") || "nothing"}. ${result.staged.length ? "Event history is restored at the next start." : ""}`, "info");
+      loadSystem();
+    } catch (error) {
+      toast("Restore failed", error.message);
+    }
+  }));
+  $("#outage-table").innerHTML = `<tr><th>Started</th><th>What</th><th>State</th><th>Duration</th><th>Reason</th></tr>` +
+    (outages.map((outage) => `<tr><td>${dateTime(outage.started_ms)}</td>
+      <td>${esc(outage.camera_id ? (state.site.cameras.find((c) => c.id === outage.camera_id) || {}).name || outage.camera_id : outage.scope)}</td>
+      <td>${esc(outage.states.join(" → ").replace(/_/g, " "))}</td>
+      <td>${outage.ended_ms ? duration(outage.duration_s) : `<span class="status-bad">ongoing · ${duration(outage.duration_s)}</span>`}</td>
+      <td class="wrap small">${esc(outage.reason)}${outage.notified ? " · notified" : ""}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No outages recorded.</td></tr>');
+}
+
+$("#backup-now").addEventListener("click", async () => {
+  try {
+    const info = await api("/system/backups", { method: "POST", body: JSON.stringify({ label: "manual" }) });
+    toast("Backup written", info.name, "info");
+    loadSystem();
+  } catch (error) {
+    toast("Backup failed", error.message);
+  }
+});
+
 // ---- live stream -----------------------------------------------------------
 
 let source = null;
@@ -429,14 +584,17 @@ function connectStream() {
   source.addEventListener("settings", (message) => renderSettings(JSON.parse(message.data)));
   source.addEventListener("drone", (message) => renderDrone(JSON.parse(message.data)));
   source.addEventListener("config", () => refreshAfterConfigChange());
+  source.addEventListener("health", (message) => renderCoverage(JSON.parse(message.data)));
 }
 
 setInterval(async () => {
   const cutoff = Date.now() - 60_000;
   for (const [zone, seen] of state.activeZones) if (seen < cutoff) state.activeZones.delete(zone);
   try {
-    const cameras = await api("/cameras");
+    const [cameras, live] = await Promise.all([api("/cameras"), api("/state")]);
     updateCameraStatus(cameras.map((camera) => camera.status));
+    renderCoverage(live.coverage);
+    if (document.querySelector("#tab-system.active")) loadSystem();
   } catch {
     /* connection indicator covers this */
   }
@@ -464,6 +622,7 @@ async function boot() {
   renderSettings(await api("/settings"));
   renderCameras(await api("/cameras"));
   renderStatic();
+  renderCoverage((await api("/state")).coverage);
   await Promise.all([loadIncidents(), loadActivity()]);
   if (state.site.drone_enabled) renderDrone(await api("/drone"));
   else document.querySelector('[data-tab="drone"]').hidden = true;

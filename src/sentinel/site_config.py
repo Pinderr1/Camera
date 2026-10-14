@@ -31,7 +31,7 @@ DRAFT_TTL_S = 900
 BACKUPS = 10
 SOURCE_FIELDS = {
     "type", "host", "port", "template", "channel", "username", "path", "sub_path", "url", "sub_url",
-    "prefer_substream", "hw_decode", "transport", "index", "backend", "resolution", "mode", "loop", "scenario",
+    "prefer_substream", "hw_decode", "transport", "index", "backend", "resolution", "mode", "loop", "scenario", "faults",
 }
 WRITE_ONLY_FIELDS = {"path", "sub_path", "url", "sub_url"}  # stream addresses: accepted, never returned
 CAMERA_FIELDS = {"name", "enabled", "fps", "zones", "privacy_masks", "map", "categories", "detector", "conditions"}
@@ -56,13 +56,36 @@ class SiteConfigManager:
 
     @staticmethod
     def load_effective(config: dict[str, Any], storage_dir: str | Path) -> dict[str, Any]:
-        """The managed copy wins over the file the service was started with."""
-        managed = Path(storage_dir) / "site.json"
-        if managed.exists():
+        """The managed copy wins over the file the service was started with. A
+        damaged managed copy is moved to `recovery/` and the newest valid copy
+        from `config_history/` is used instead (or the start config); the
+        private `_config_recovery` key tells the service what happened."""
+        storage_dir = Path(storage_dir)
+        managed = storage_dir / "site.json"
+        private = {key: value for key, value in config.items() if key.startswith("_")}
+        if not managed.exists():
+            return config
+        try:
             loaded = json.loads(managed.read_text(encoding="utf-8"))
             validate_config(loaded)
-            return loaded | {key: value for key, value in config.items() if key.startswith("_")}
-        return config
+            return loaded | private
+        except (OSError, ValueError) as error:  # JSONDecodeError and ConfigValidationError are ValueErrors
+            problem = str(error).splitlines()[0][:200]
+        recovery = storage_dir / "recovery"
+        recovery.mkdir(parents=True, exist_ok=True)
+        quarantined = recovery / f"site.{int(time.time() * 1000)}.damaged.json"
+        managed.replace(quarantined)
+        for candidate in sorted((storage_dir / "config_history").glob("site.*.json"), reverse=True):
+            try:
+                loaded = json.loads(candidate.read_text(encoding="utf-8"))
+                validate_config(loaded)
+            except (OSError, ValueError):
+                continue
+            temporary = managed.with_suffix(".tmp")
+            temporary.write_text(json.dumps(loaded, indent=1), encoding="utf-8")
+            temporary.replace(managed)
+            return loaded | private | {"_config_recovery": {"problem": problem, "restored_from": candidate.name, "quarantined": quarantined.name}}
+        return config | {"_config_recovery": {"problem": problem, "restored_from": "", "quarantined": quarantined.name}}
 
     def subscribe(self, listener: Callable[[dict[str, Any]], None]) -> None:
         self._listeners.append(listener)
@@ -304,6 +327,17 @@ class SiteConfigManager:
                 raise KeyError(camera_id)
             target["categories"] = {name: {key: bool(value) for key, value in settings.items()} for name, settings in categories.items()}
             self._commit(config, actor, "category settings saved")
+
+    def replace(self, config: dict[str, Any], actor: str, summary: str) -> None:
+        """Whole-config replacement (backup restore). Validated like any edit; the
+        running storage location is kept, so a backup from elsewhere cannot move it."""
+        with self._lock:
+            clean = {key: value for key, value in copy.deepcopy(config).items() if not key.startswith("_")}
+            if "storage" in self._config:
+                clean["storage"] = copy.deepcopy(self._config["storage"])
+            else:
+                clean.pop("storage", None)
+            self._commit(clean, actor, summary)
 
     # ---- commit --------------------------------------------------------------
 

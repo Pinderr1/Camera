@@ -27,6 +27,8 @@ class ScriptedDetector:
     """Returns the ground truth carried by simulated frames."""
 
     def detect(self, frame: Frame) -> list[Detection]:
+        if frame.meta.get("fault") == "detector_error":  # simulated cameras' fault injection (reliability tests)
+            raise RuntimeError("simulated inference failure")
         return list(frame.truth or [])
 
     def close(self) -> None:

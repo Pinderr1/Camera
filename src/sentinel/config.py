@@ -208,6 +208,8 @@ def validate_config(config: dict[str, Any]) -> None:
         if mode not in ARM_MODES or (minimum != "none" and minimum not in SEVERITIES):
             errors.append(f"alerts.notify_min_severity.{mode} is invalid")
 
+    _validate_reliability(config, raw_cameras, errors)
+
     defaults = config.get("settings_defaults", {})
     if defaults.get("arm_mode", "home") not in ARM_MODES:
         errors.append("settings_defaults.arm_mode is invalid")
@@ -216,6 +218,97 @@ def validate_config(config: dict[str, Any]) -> None:
 
     if errors:
         raise ConfigValidationError(errors)
+
+
+_HEALTH_NUMBERS = ("frame_timeout_s", "frozen_after_s", "startup_grace_s", "notify_after_s", "slow_after_s", "camera_offline_after_s")
+_SUPERVISOR_NUMBERS = ("stall_after_s", "startup_timeout_s", "backoff_initial_s", "backoff_max_s", "window_s", "cooldown_s")
+_STORAGE_NUMBERS = ("min_free_mb", "min_free_pct", "resume_margin", "check_interval_s")
+
+
+def _validate_reliability(config: dict[str, Any], raw_cameras: list, errors: list[str]) -> None:
+    """`health`, `storage`, `logging`, detector failure handling, retention, and simulated faults."""
+    health = config.get("health", {})
+    if not isinstance(health, dict):
+        errors.append("health must be an object")
+        health = {}
+    for key in _HEALTH_NUMBERS:
+        if key in health and not _positive(health[key]):
+            errors.append(f"health.{key} must be a positive number of seconds")
+    if "slow_ratio" in health and not (_is_number(health["slow_ratio"]) and 0 < health["slow_ratio"] <= 1):
+        errors.append("health.slow_ratio must be in (0, 1]")
+    for key in ("notifications", "notify_recovery"):
+        if key in health and not isinstance(health[key], bool):
+            errors.append(f"health.{key} must be true or false")
+    if "max_notifications_per_hour" in health and not (isinstance(health["max_notifications_per_hour"], int) and health["max_notifications_per_hour"] >= 1):
+        errors.append("health.max_notifications_per_hour must be an integer >= 1")
+    for section, numbers in (("supervisor", _SUPERVISOR_NUMBERS), ("process", ("backoff_initial_s", "backoff_max_s", "window_s", "cooldown_s"))):
+        values = health.get(section, {})
+        for key in numbers:
+            if key in values and not _positive(values[key]):
+                errors.append(f"health.{section}.{key} must be a positive number of seconds")
+        for key in ("max_restarts", "max_stuck_threads"):
+            if key in values and not (isinstance(values[key], int) and values[key] >= 1):
+                errors.append(f"health.{section}.{key} must be an integer >= 1")
+    heartbeat = health.get("heartbeat", {})
+    for key in ("url", "fail_url"):
+        if heartbeat.get(key) and not re.match(r"^(https?://|\$\{)", str(heartbeat[key])):
+            errors.append(f"health.heartbeat.{key} must be an http(s) URL or ${{ENV_VAR}}")
+    if "interval_s" in heartbeat and not (_is_number(heartbeat["interval_s"]) and heartbeat["interval_s"] >= 30):
+        errors.append("health.heartbeat.interval_s must be at least 30")
+
+    storage = config.get("storage", {})
+    for key in _STORAGE_NUMBERS:
+        if key in storage and not _positive(storage[key]):
+            errors.append(f"storage.{key} must be positive")
+    if storage.get("max_media_gb") is not None and not _positive(storage["max_media_gb"]):
+        errors.append("storage.max_media_gb must be positive (or omitted)")
+    backups = storage.get("backups", {})
+    if "interval_h" in backups and not _positive(backups["interval_h"]):
+        errors.append("storage.backups.interval_h must be positive")
+    if "keep" in backups and not (isinstance(backups["keep"], int) and backups["keep"] >= 1):
+        errors.append("storage.backups.keep must be an integer >= 1")
+    for key in ("enabled", "include_credentials"):
+        if key in backups and not isinstance(backups[key], bool):
+            errors.append(f"storage.backups.{key} must be true or false")
+
+    logging_settings = config.get("logging", {})
+    if "max_mb" in logging_settings and not _positive(logging_settings["max_mb"]):
+        errors.append("logging.max_mb must be positive")
+    if "backups" in logging_settings and not (isinstance(logging_settings["backups"], int) and logging_settings["backups"] >= 1):
+        errors.append("logging.backups must be an integer >= 1")
+    if str(logging_settings.get("level", "INFO")).upper() not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        errors.append("logging.level must be DEBUG, INFO, WARNING or ERROR")
+
+    retention = config.get("privacy", {}).get("retention_days", {})
+    for key in ("events", "media", "protected"):
+        if key in retention and not _positive(retention[key]):
+            errors.append(f"privacy.retention_days.{key} must be positive")
+
+    for scope, detector in [("detector", config.get("detector", {}))] + [
+        (f"cameras[{index}].detector", camera.get("detector", {})) for index, camera in enumerate(raw_cameras)
+    ]:
+        if "cpu_fallback" in detector and not isinstance(detector["cpu_fallback"], bool):
+            errors.append(f"{scope}.cpu_fallback must be true or false")
+        if "failures_before_fallback" in detector and not (isinstance(detector["failures_before_fallback"], int) and detector["failures_before_fallback"] >= 1):
+            errors.append(f"{scope}.failures_before_fallback must be an integer >= 1")
+        if "retry_s" in detector and not _positive(detector["retry_s"]):
+            errors.append(f"{scope}.retry_s must be positive")
+
+    from .simulation import FAULT_TYPES
+
+    for index, camera in enumerate(raw_cameras):
+        faults = (camera.get("source") or {}).get("faults")
+        if faults is None:
+            continue
+        if (camera.get("source") or {}).get("type") != "simulated":
+            errors.append(f"cameras[{index}].source.faults is only allowed on simulated cameras")
+            continue
+        for fault_index, fault in enumerate(faults if isinstance(faults, list) else [None]):
+            path = f"cameras[{index}].source.faults[{fault_index}]"
+            if not isinstance(fault, dict) or fault.get("type") not in FAULT_TYPES:
+                errors.append(f"{path}.type must be one of {sorted(FAULT_TYPES)}")
+            elif not (_is_number(fault.get("at_s")) and fault["at_s"] >= 0) or ("duration_s" in fault and not _positive(fault["duration_s"])):
+                errors.append(f"{path} needs at_s >= 0 and a positive duration_s")
 
 
 def _identifier(value: Any, path: str, errors: list[str]) -> None:

@@ -16,24 +16,39 @@ The dashboard and any future mobile app share this one API. Interactive OpenAPI 
 | --- | --- | --- |
 | GET | `/api/v1/health` | No auth. Liveness only |
 | GET | `/api/v1/site` | Site map, cameras (no source URLs), zones, topology, rules, privacy |
-| GET | `/api/v1/state` | Settings, camera health, open incidents, active site tracks |
-| GET | `/api/v1/cameras` | Cameras with health (`connected`, `fps`, `last_frame_ms`, `error`) |
-| GET | `/api/v1/cameras/{id}/snapshot.jpg` | Latest annotated frame (privacy-masked) |
+| GET | `/api/v1/state` | Settings, camera status, open incidents, active site tracks, `coverage` (`state`: `full\|degraded\|none\|not_running`, `monitoring`, `total`, `not_monitoring[]`, `components`) |
+| GET | `/api/v1/cameras` | Cameras with `status`: `health` (`state`, `label`, `monitoring`, `since_ms`, `reason`, `warnings`), `connected`, `fps`, `target_fps`, `last_frame_ms`, `error`, `metrics`, `detector_state`, `worker_state`, `restarts_total` |
+| GET | `/api/v1/cameras/{id}/snapshot.jpg` | Latest annotated frame (privacy-masked). `X-Sentinel-Monitoring: true\|false` and `X-Frame-Age-Ms` say whether it is live |
+| POST | `/api/v1/cameras/{id}/restart` | Restart the camera's processing and reset its restart budget. 409 when cameras are not running in this session |
 | GET | `/api/v1/cameras/{id}/stream.mjpg` | MJPEG preview at the camera's fps |
 | GET | `/api/v1/events` | Filters: `since_ms`, `until_ms`, `camera_id`, `min_severity`, `incident_id`, `limit` (≤1000) |
 | GET | `/api/v1/incidents` | Filters: `status=open\|closed`, `since_ms`, `limit` |
 | GET | `/api/v1/incidents/{id}` | Incident plus its events |
 | POST | `/api/v1/incidents/{id}/acknowledge` | Idempotent |
 | POST | `/api/v1/incidents/{id}/resolve` | `{"outcome": "expected_activity\|false_alarm\|real_concern\|unclear"}` |
+| POST | `/api/v1/incidents/{id}/protect` | `{"protected": true\|false}`. Protected recordings skip disk-space purges and use `retention_days.protected` |
 | GET | `/api/v1/media/{path}` | Clips and snapshots referenced by events and incidents |
 | GET / PATCH | `/api/v1/settings` | `arm_mode` (`disarmed\|home\|away`), `sensitivity` (`low\|normal\|high`), `notifications_enabled` |
 | GET | `/api/v1/audit` | Operator and system actions |
-| GET | `/api/v1/stream` | Server-sent events: `event`, `incident`, `notification`, `settings`, `drone` |
+| GET | `/api/v1/stream` | Server-sent events: `event`, `incident`, `notification`, `settings`, `drone`, `config`, `health` (the coverage object, on every health transition) |
 | GET | `/api/v1/drone` | Telemetry, safety state, preflight blockers, requests, geofence |
 | POST | `/api/v1/drone/inspections` | `{"zone_id": "..."}` or `{"lat":..,"lon":..}`, plus optional `incident_id`. Creates a pending request; this never flies |
 | POST | `/api/v1/drone/inspections/{id}/approve` | Operator approval. Runs preflight checks, then starts the mission |
 | POST | `/api/v1/drone/inspections/{id}/deny` | `{"note": "..."}` |
 | POST | `/api/v1/drone/commands` | `{"action": "takeoff\|goto\|hold\|return_home\|land", "params": {...}}` |
+
+### System health and backups
+
+See [reliability.md](./reliability.md). None of these return stream addresses or passwords; backup contents never leave the server.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/system/health` | `coverage`; `cameras[]` (health, fps, `metrics` with `detect_ms_p50/p95`, `latency_ms_p50/p95`, `frames_processed`, `frames_skipped`; reconnects, restarts, detector provider and state); `resources` (CPU, memory, NVIDIA GPU, disk); `storage` (free space, threshold, recording paused, media size); `database` (write failures, last recovery); `backups`; `service`; recent `notifications` |
+| GET | `/api/v1/system/outages` | Filters: `since_ms`, `camera_id`, `limit`. Each: `outage_id`, `scope` (`camera\|storage\|database\|service\|process\|notifications`), `kind`, `states`, `camera_id`, `started_ms`, `ended_ms` (null while ongoing), `duration_s`, `reason`, `notified` |
+| GET | `/api/v1/system/backups` | Name, `created_ms`, `label`, `files`, `size_bytes`, `includes_credentials` |
+| POST | `/api/v1/system/backups` | `{"label": "manual"}`. Writes a backup now |
+| POST | `/api/v1/system/backups/{name}/verify` | `{"ok", "problems"}` |
+| POST | `/api/v1/system/backups/{name}/restore` | `{"parts": ["config", "settings", "database"]}`. Writes a `pre-restore` backup, applies config and settings now, and stages the database for the next start. Returns `applied`, `staged`, `safety_backup` |
 
 ### Setup (configuration)
 
@@ -71,15 +86,17 @@ All changes are validated as a whole, saved to `<storage>/site.json` with backup
 
 A **finding** is `{"code", "status", "title", "explanation", "evidence": [...], "steps": [...], "data": {...}}`. `status` is `confirmed` (Sentinel observed the fault), `suspected` (a likely cause the evidence cannot prove), `ruled_out` (checked, not the problem), `info`, or `ok`. Codes are stable identifiers (for example `unreachable`, `subnet_mismatch`, `rtsp_closed`, `vpn_route`, `public_profile`, `found_elsewhere` with `data.host`); titles and text may change. Diagnosis, discovery, and channel searches are written to the audit log (address and outcome only).
 
-Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unknown id), 409 (drone rejected, for example preflight blocked), 422 (validation).
+Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unknown id), 409 (drone rejected, for example preflight blocked; camera processing not running), 422 (validation), 507 (backup could not be written).
 
 ## Object shapes
 
-`SecurityEvent`: `event_id`, `event_type` (`activity|zone_entry|dwell|repeated_presence|sequence|multi_camera|camera_offline|camera_online`), `severity`, `camera_id`, `zone_id`, `rule_id`, `timestamp_ms`, `started_ms`, `confidence`, `summary`, `label`, `track_ids`, `site_track_id`, `reason_codes`, `details`, `incident_id`, `snapshot_path`, `clip_path`.
+`SecurityEvent`: `event_id`, `event_type` (`activity|zone_entry|dwell|repeated_presence|sequence|multi_camera`, plus health events `camera_offline|camera_frozen|camera_ai_failed|camera_stalled|camera_restarting|camera_failed|camera_online|system_health`, which never belong to an incident), `severity`, `camera_id`, `zone_id`, `rule_id`, `timestamp_ms`, `started_ms`, `confidence`, `summary`, `label`, `track_ids`, `site_track_id`, `reason_codes`, `details`, `incident_id`, `snapshot_path`, `clip_path`.
 
 `SecurityEvent.event_type` also includes `scene_condition` (environmental info events). Events from categories with alerts off carry `reason_codes: ["category_alerts_off"]` and `details.original_severity`.
 
-`Incident`: `incident_id`, `opened_ms`, `updated_ms`, `closed_ms`, `status`, `severity`, `title`, `cameras`, `zones`, `site_track_ids`, `event_ids`, `event_types`, `notified_severity`, `acknowledged_ms`, `acknowledged_by`, `resolution`, `resolved_by`, `clip_paths`, `snapshot_path`.
+`Incident`: `incident_id`, `opened_ms`, `updated_ms`, `closed_ms`, `status`, `severity`, `title`, `cameras`, `zones`, `site_track_ids`, `event_ids`, `event_types`, `notified_severity`, `acknowledged_ms`, `acknowledged_by`, `resolution`, `resolved_by`, `clip_paths`, `snapshot_path`, `protected`.
+
+`Notification.kind` is `incident`, `escalation`, or `health` (coverage problems and recoveries; `incident_id` then holds the outage id).
 
 ## Mobile app notes
 

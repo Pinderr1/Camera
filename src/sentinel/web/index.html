@@ -20,6 +20,7 @@
       <button data-arm="home">Home</button>
       <button data-arm="away">Away</button>
     </div>
+    <div class="coverage" id="coverage" role="status" title="Security coverage: how many cameras are actually being monitored">Coverage …</div>
     <div class="live-dot" id="live-dot" title="Live connection">offline</div>
   </header>
 
@@ -28,6 +29,7 @@
     <button role="tab" data-tab="map">Map</button>
     <button role="tab" data-tab="timeline">Timeline <span class="badge" id="open-count" hidden></span></button>
     <button role="tab" data-tab="drone">Drone</button>
+    <button role="tab" data-tab="system">System <span class="badge" id="system-badge" hidden>!</span></button>
     <button role="tab" data-tab="settings">Settings</button>
     <button role="tab" data-tab="setup">Setup</button>
   </nav>
@@ -84,6 +86,29 @@
           </div>
           <div class="muted small" id="drone-blockers"></div>
         </div>
+      </div>
+    </section>
+
+    <section id="tab-system" class="tab">
+      <div class="banner" id="coverage-banner">Loading system health…</div>
+      <div class="card">
+        <div class="row-between"><h3>Cameras</h3><span class="small muted" id="health-updated"></span></div>
+        <p class="muted small">A camera counts as monitoring only while new, changing frames reach the detector. Anything else is shown here and on the Live tab.</p>
+        <div class="scroll"><table class="table" id="health-cameras"></table></div>
+      </div>
+      <div class="health-layout">
+        <div class="card"><h3>This computer</h3><dl class="kv" id="health-resources"></dl></div>
+        <div class="card"><h3>Storage and database</h3><dl class="kv" id="health-storage"></dl></div>
+        <div class="card">
+          <div class="row-between"><h3>Backups</h3><button id="backup-now">Back up now</button></div>
+          <p class="muted small">Configuration, settings and event history (not video). Restoring applies the configuration and settings now; event history is restored at the next start.</p>
+          <ul class="list compact" id="backup-list"></ul>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Outage history</h3>
+        <p class="muted small">Every period in which a camera, or Sentinel itself, was not monitoring.</p>
+        <div class="scroll"><table class="table" id="outage-table"></table></div>
       </div>
     </section>
 

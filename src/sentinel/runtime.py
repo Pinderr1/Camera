@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .config import ARM_MODES, SENSITIVITIES, cameras, zone_index
 from .engine import TemporalEventEngine
+from .health import HealthMonitor, HealthSettings
 from .incidents import AlertPolicy, AlertPolicyConfig, IncidentConfig, IncidentManager
 from .models import Incident, Notification, SecurityEvent, Track, effective_categories, severity_at_least
 from .notify import NotificationDispatcher, Notifier, build_notifiers
@@ -55,6 +56,7 @@ class SentinelRuntime:
         storage_dir: str | Path | None = None,
         notifiers: list[Notifier] | None = None,
         mqtt_publish: Callable[[str, dict], None] | None = None,
+        store: EventStore | None = None,
     ) -> None:
         self.config = config
         self.storage_dir = Path(storage_dir or config.get("storage", {}).get("dir", "data/sentinel"))
@@ -63,7 +65,7 @@ class SentinelRuntime:
         self.settings_path = self.storage_dir / "settings.json"
         self.settings = self._load_settings()
         self.bus = EventBus()
-        self.store = EventStore(self.storage_dir / "sentinel.db")
+        self.store = store if store is not None else EventStore(self.storage_dir / "sentinel.db")
         self.engine = TemporalEventEngine(config, arm_mode=self.settings["arm_mode"], sensitivity=self.settings["sensitivity"])
         self.incidents = IncidentManager(IncidentConfig.from_dict(config.get("incidents")))
         self.policy = AlertPolicy(AlertPolicyConfig.from_dict(config.get("alerts")))
@@ -72,10 +74,7 @@ class SentinelRuntime:
         )
         self.zones = zone_index(config)
         self.camera_configs = {camera["id"]: camera for camera in cameras(config)}
-        self.camera_status: dict[str, dict[str, Any]] = {
-            camera_id: {"camera_id": camera_id, "connected": False, "last_frame_ms": 0, "fps": 0.0, "error": "", "offline_reported": False}
-            for camera_id in self.camera_configs
-        }
+        self.camera_status: dict[str, dict[str, Any]] = {camera_id: _initial_status(camera_id) for camera_id in self.camera_configs}
         self.recorders: dict[str, Any] = {}
         self.latest_jpeg: dict[str, bytes] = {}  # annotated live view
         self.latest_frame: dict[str, bytes] = {}  # clean (privacy-masked, unannotated) frame for the setup editor
@@ -85,6 +84,16 @@ class SentinelRuntime:
         self._lock = threading.RLock()
         self._last_purge_ms = 0
         self._scene_logged: dict[tuple[str, str], int] = {}
+        self.health = HealthMonitor(
+            HealthSettings.from_dict(config.get("health")),
+            save_outage=lambda outage: self.store.upsert_outage(outage.as_dict()),
+            record_event=self._health_event,
+            notify=self._notify,
+            camera_name=self._camera_name,
+        )
+        self.storage_status: dict[str, Any] = {}
+        self._recording_error_ms = 0
+        self._health_seq = 0
 
     def reconfigure(self, config: dict[str, Any]) -> None:
         """Apply an edited site config. Zones, rules, topology, and alert policy
@@ -96,6 +105,7 @@ class SentinelRuntime:
             self.incidents.config = IncidentConfig.from_dict(config.get("incidents"))
             self.policy.config = AlertPolicyConfig.from_dict(config.get("alerts"))
             self.zones = zone_index(config)
+            self.health.settings = HealthSettings.from_dict(config.get("health"))
             self.camera_configs = {camera["id"]: camera for camera in cameras(config)}
             for camera_id in list(self.camera_status):
                 if camera_id not in self.camera_configs:
@@ -104,10 +114,7 @@ class SentinelRuntime:
                     self.latest_frame.pop(camera_id, None)
                     self.recorders.pop(camera_id, None)
             for camera_id in self.camera_configs:
-                self.camera_status.setdefault(
-                    camera_id,
-                    {"camera_id": camera_id, "connected": False, "last_frame_ms": int(time.time() * 1000), "fps": 0.0, "error": "", "offline_reported": False},
-                )
+                self.camera_status.setdefault(camera_id, _initial_status(camera_id))
 
     # ---- settings --------------------------------------------------------
 
@@ -222,19 +229,22 @@ class SentinelRuntime:
         privacy = self.config.get("privacy", {})
         if recorder is None:
             return
-        if privacy.get("store_snapshots", True) and (is_new or severity_at_least(event.severity, "medium")):
-            from .vision import annotate
+        try:
+            if privacy.get("store_snapshots", True) and (is_new or severity_at_least(event.severity, "medium")):
+                from .vision import annotate
 
-            camera_zones = self.camera_configs.get(event.camera_id, {}).get("zones", [])
-            event.snapshot_path = recorder.snapshot(annotate(image, active, camera_zones), event.timestamp_ms, event.event_id)
-            if not incident.snapshot_path:
-                incident.snapshot_path = event.snapshot_path
-        if privacy.get("store_clips", True):
-            clip = recorder.trigger(incident.incident_id, event.timestamp_ms)
-            if clip:
-                event.clip_path = clip
-                if clip not in incident.clip_paths:
-                    incident.clip_paths.append(clip)
+                camera_zones = self.camera_configs.get(event.camera_id, {}).get("zones", [])
+                event.snapshot_path = recorder.snapshot(annotate(image, active, camera_zones), event.timestamp_ms, event.event_id)
+                if event.snapshot_path and not incident.snapshot_path:
+                    incident.snapshot_path = event.snapshot_path
+            if privacy.get("store_clips", True):
+                clip = recorder.trigger(incident.incident_id, event.timestamp_ms)
+                if clip:
+                    event.clip_path = clip
+                    if clip not in incident.clip_paths:
+                        incident.clip_paths.append(clip)
+        except Exception as error:  # a failed recording must never lose the event or its alert
+            self.recording_failed(event.camera_id, error)
 
     def _extend_recordings(self, camera_id: str, site_ids: set[str], now_ms: int) -> None:
         recorder = self.recorders.get(camera_id)
@@ -242,7 +252,11 @@ class SentinelRuntime:
             return
         for incident in self.incidents.open.values():
             if camera_id in incident.cameras and site_ids & set(incident.site_track_ids):
-                clip = recorder.trigger(incident.incident_id, now_ms)
+                try:
+                    clip = recorder.trigger(incident.incident_id, now_ms)
+                except Exception as error:
+                    self.recording_failed(camera_id, error)
+                    return
                 if clip and clip not in incident.clip_paths:
                     incident.clip_paths.append(clip)
 
@@ -297,6 +311,14 @@ class SentinelRuntime:
 
         return self._update_incident(incident_id, actor, "incident_resolved", apply, outcome=outcome)
 
+    def protect(self, incident_id: str, actor: str, protected: bool = True) -> dict[str, Any]:
+        """Keep an incident's recordings past normal retention and out of disk-space purges."""
+
+        def apply(incident: Incident) -> None:
+            incident.protected = protected
+
+        return self._update_incident(incident_id, actor, "incident_protected" if protected else "incident_unprotected", apply)
+
     def _update_incident(self, incident_id: str, actor: str, action: str, mutate: Callable[[Incident], Any], **extra: Any) -> dict[str, Any]:
         with self._lock:
             incident = self.incidents.open.get(incident_id)
@@ -318,24 +340,45 @@ class SentinelRuntime:
             status = self.camera_status.get(camera_id)
             if status is None:  # camera removed while its worker was stopping
                 return
-            was_offline_reported = status["offline_reported"]
             status.update(fields)
-            if fields.get("connected") and was_offline_reported:
-                status["offline_reported"] = False
-                now_ms = int(fields.get("last_frame_ms") or time.time() * 1000)
-                self._system_event(camera_id, "camera_online", "info", f"Camera {self._camera_name(camera_id)} is back online", now_ms)
+
+    def recording_failed(self, camera_id: str, error: BaseException) -> None:
+        """Clip or snapshot write failed (disk full, permissions): detection and
+        alerts continue; the storage component is reported degraded."""
+        now_ms = int(time.time() * 1000)
+        if now_ms - self._recording_error_ms > 60_000:
+            log.error("recording failed on %s: %s", camera_id, error)
+        self._recording_error_ms = now_ms
+        with self._lock:
+            self.health.set_component("storage", "degraded", f"recording failed on {self._camera_name(camera_id)}: {str(error)[:160]}", now_ms)
+
+    def apply_storage_status(self, status: dict[str, Any], now_ms: int | None = None) -> None:
+        """From the service's StorageGuard: pause or resume recording and report it."""
+        now_ms = now_ms or int(time.time() * 1000)
+        self.storage_status = status
+        for recorder in list(self.recorders.values()):
+            recorder.set_paused(status.get("recording_paused", False))
+        with self._lock:
+            if status.get("recording_paused"):
+                self.health.set_component(
+                    "storage", "failed", f"disk nearly full ({status['free_mb']} MB free): recording paused, detection and alerts continue", now_ms
+                )
+            elif status.get("low"):
+                self.health.set_component(
+                    "storage", "degraded", f"disk space low ({status['free_mb']} MB free); oldest recordings are being deleted", now_ms, notify=False
+                )
+            elif now_ms - self._recording_error_ms > 300_000:
+                self.health.set_component("storage", "ok", "", now_ms)
 
     def housekeeping(self, now_ms: int | None = None) -> None:
         now_ms = now_ms or int(time.time() * 1000)
         with self._lock:
             self.engine.tick(now_ms)
-            offline_after_ms = int(self.config.get("health", {}).get("camera_offline_after_s", 60) * 1000)
-            for camera_id, status in self.camera_status.items():
-                last = status["last_frame_ms"] or self.started_ms
-                if not status["offline_reported"] and now_ms - last > offline_after_ms:
-                    status["offline_reported"] = True
-                    status["connected"] = False
-                    self._system_event(camera_id, "camera_offline", "medium", f"Camera {self._camera_name(camera_id)} stopped sending video", now_ms)
+            self.health.evaluate(self.camera_status, now_ms)
+            if self.store.last_write_ok:
+                self.health.set_component("database", "ok", "", now_ms)
+            else:
+                self.health.set_component("database", "degraded", f"events cannot be saved ({self.store.last_error[:160]}); alerts still go out", now_ms)
             for incident in self.incidents.close_stale(now_ms):
                 self.store.upsert_incident(incident)
                 self.bus.publish("incident", incident.as_dict())
@@ -348,23 +391,22 @@ class SentinelRuntime:
                 events_before_ms=now_ms - int(retention.get("events", 30) * DAY_MS),
                 media_before_ms=now_ms - int(retention.get("media", 7) * DAY_MS),
                 media_root=self.media_root,
+                protected_before_ms=now_ms - int(retention.get("protected", 90) * DAY_MS),
             )
             if any(purged.values()):
                 log.info("retention purge: %s", purged)
 
-    def _system_event(self, camera_id: str, event_type: str, severity: str, summary: str, now_ms: int) -> None:
+    def _health_event(self, camera_id: str, event_type: str, severity: str, summary: str, now_ms: int) -> None:
+        """Health events go to the timeline and live stream but never open
+        incidents: coverage problems are notified by the health monitor."""
+        self._health_seq += 1
         event = SecurityEvent(
-            event_id=f"evt_{now_ms}_{event_type}_{camera_id}",
-            event_type=event_type,
-            severity=severity,
-            camera_id=camera_id,
-            timestamp_ms=now_ms,
-            started_ms=now_ms,
-            confidence=1.0,
-            summary=summary,
-            reason_codes=[event_type],
+            event_id=f"evt_{now_ms}_{event_type}_{camera_id or 'system'}_{self._health_seq}", event_type=event_type, severity=severity,
+            camera_id=camera_id, timestamp_ms=now_ms, started_ms=now_ms, confidence=1.0, summary=summary, reason_codes=[event_type],
         )
-        self._handle_events([event], now_ms)
+        self.store.add_event(event)
+        self.bus.publish("event", event.as_dict())
+        self.bus.publish("health", self.health.coverage(self.camera_status))
 
     def _camera_name(self, camera_id: str) -> str:
         return self.camera_configs.get(camera_id, {}).get("name", camera_id)
@@ -377,6 +419,7 @@ class SentinelRuntime:
                 "open_incidents": [incident.as_dict() for incident in self.incidents.open.values()],
                 "site_tracks": [site.summary() for site in self.engine.site_tracks() if site.active_members],
                 "ambiguous_links": self.engine.correlator.ambiguous_count,
+                "coverage": self.health.coverage(self.camera_status),
             }
 
     def close(self) -> None:
@@ -384,3 +427,7 @@ class SentinelRuntime:
             recorder.finish()
         self.dispatcher.stop()
         self.store.close()
+
+
+def _initial_status(camera_id: str) -> dict[str, Any]:
+    return {"camera_id": camera_id, "connected": False, "last_frame_ms": 0, "fps": 0.0, "error": "", "offline_reported": False}

@@ -162,6 +162,7 @@ class Incident:
     resolved_by: str = ""
     clip_paths: list[str] = field(default_factory=list)
     snapshot_path: str = ""
+    protected: bool = False  # recordings kept past normal retention and never purged for disk space
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

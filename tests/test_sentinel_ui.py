@@ -168,5 +168,102 @@ class TroubleshooterUiTests(unittest.TestCase):
         self.assertTrue(dialog_width, "troubleshooter scrolls sideways at phone width")
 
 
+@unittest.skipIf(sync_playwright is None, "playwright/uvicorn not installed")
+class SystemHealthUiTests(unittest.TestCase):
+    """Live tiles and the System tab, against two simulated cameras where one
+    has lost its connection: the dashboard must never show it as monitoring."""
+
+    @classmethod
+    def setUpClass(cls):
+        from sentinel.api import create_app
+        from sentinel.service import SentinelService
+        from sentinel.simulation import reset_fault_clocks
+
+        reset_fault_clocks()
+        cls.directory = tempfile.TemporaryDirectory()
+        scenario = Path(cls.directory.name) / "scenario.json"
+        scenario.write_text(json.dumps({"duration_s": 60, "actors": []}))
+        full = [[0, 0], [1, 0], [1, 1], [0, 1]]
+        config = {
+            "site": {"id": "ui_health", "name": "Health UI test"},
+            "cameras": [
+                {"id": "cam_ok", "name": "Driveway", "source": {"type": "simulated", "scenario": str(scenario)},
+                 "zones": [{"id": "drive", "name": "Drive", "type": "driveway", "polygon": full}]},
+                {"id": "cam_down", "name": "Back gate", "source": {"type": "simulated", "scenario": str(scenario),
+                                                                     "faults": [{"type": "disconnect", "at_s": 0}]},
+                 "zones": [{"id": "gate", "name": "Gate", "type": "perimeter", "polygon": full}]},
+            ],
+            "rules": [],
+            "detector": {"type": "scripted"},
+            "environment": {"enabled": False},
+            "health": {"frame_timeout_s": 1, "startup_grace_s": 1, "notify_after_s": 1},
+            "storage": {"dir": str(Path(cls.directory.name) / "store")},
+            "drone": {"enabled": False},
+        }
+        cls.service = SentinelService(config)
+        cls.service.start()
+        cls.port = free_port()
+        cls.server = uvicorn.Server(uvicorn.Config(create_app(cls.service, api_token=None), host="127.0.0.1", port=cls.port, log_level="warning"))
+        threading.Thread(target=cls.server.run, daemon=True).start()
+        deadline = time.time() + 10
+        while not cls.server.started and time.time() < deadline:
+            time.sleep(0.05)
+        cls.playwright = sync_playwright().start()
+        cls.browser = None
+        for options in ({"channel": "msedge"}, {}):
+            try:
+                cls.browser = cls.playwright.chromium.launch(headless=True, **options)
+                break
+            except PlaywrightError:
+                continue
+        if cls.browser is None:
+            cls.tearDownClass()
+            raise unittest.SkipTest("no Edge or Chromium browser available to Playwright")
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, "browser", None):
+            cls.browser.close()
+        cls.playwright.stop()
+        cls.server.should_exit = True
+        cls.service.stop()
+        time.sleep(0.3)
+        cls.directory.cleanup()
+
+    def setUp(self):
+        self.page = self.browser.new_page(viewport={"width": 1280, "height": 900})
+        self.page.goto(f"http://127.0.0.1:{self.port}/")
+
+    def tearDown(self):
+        self.page.close()
+
+    def test_offline_camera_is_marked_not_monitoring_on_the_live_tab(self):
+        page = self.page
+        down = page.locator('[data-camera="cam_down"]')
+        expect(down.locator(".camera-overlay")).to_be_visible(timeout=15000)
+        expect(down.locator(".camera-overlay")).to_contain_text("NOT MONITORING: NO VIDEO")
+        expect(down.locator(".camera-overlay")).to_contain_text("simulated disconnect")
+        expect(page.locator('[data-camera="cam_ok"] .camera-overlay')).to_be_hidden()
+        expect(page.locator('[data-camera="cam_ok"] .status')).to_contain_text("fps")
+        expect(page.locator("#coverage")).to_contain_text("Coverage degraded 1/2", timeout=15000)
+        expect(page.locator("#system-badge")).to_be_visible()
+
+    def test_system_tab_shows_health_outages_and_makes_a_backup(self):
+        page = self.page
+        page.click('nav.tabs [data-tab="system"]')
+        expect(page.locator("#coverage-banner")).to_contain_text("Security coverage is degraded", timeout=15000)
+        expect(page.locator("#coverage-banner")).to_contain_text("Back gate: No video")
+        expect(page.locator('[data-health-camera="cam_down"]')).to_contain_text("No video")
+        expect(page.locator('[data-health-camera="cam_ok"]')).to_contain_text("Monitoring")
+        expect(page.locator("#outage-table")).to_contain_text("Back gate", timeout=15000)
+        expect(page.locator("#health-resources")).to_contain_text("CPU")
+        page.click("#backup-now")
+        expect(page.locator("#toasts")).to_contain_text("Backup written")
+        expect(page.locator("#backup-list")).to_contain_text("manual")
+        page.set_viewport_size({"width": 390, "height": 844})
+        fits = page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth + 1")
+        self.assertTrue(fits, "System tab scrolls sideways at phone width")
+
+
 if __name__ == "__main__":
     unittest.main()

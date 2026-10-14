@@ -30,7 +30,7 @@ Data flows one way: frames → detections → tracks → events → incidents �
 - `OpenCVSource` runs a reader thread that keeps only the newest frame, so a slow detector never builds up latency. It forces RTSP over TCP and reconnects with exponential backoff (1 s up to 30 s).
 - `SimulatedSource` renders a scripted scenario and attaches ground-truth boxes, so the whole stack runs without cameras.
 - Network troubleshooting (`netdiag/`): a platform collector reads adapters, routes and firewall profiles. Probes (TCP, ICMP, SADP, ONVIF, one HTTP GET) run behind a `NetworkBackend`: `SystemNetwork` for the real network, `SimulatedNetwork` for tests and `serve --simulate-network`. Pure rules in `diagnose.py` turn observations into findings (`confirmed` / `suspected` / `ruled_out` / `info` / `ok`) with evidence and fix steps. It is read-only and probes private addresses only. The simulation is a CLI flag, not a config key. See [camera-setup.md](./camera-setup.md#network-troubleshooter).
-- Camera health: if a camera sends no frame for `health.camera_offline_after_s`, the runtime emits a `camera_offline` event (medium severity: a blind spot matters). When frames resume it emits `camera_online` (info).
+- Camera health: see section 11. A camera counts as monitoring only while new, changing frames reach a working detector; otherwise it is `offline`, `frozen`, `ai_failed`, `restarting`, or `failed`, and the outage is recorded and, if it lasts, pushed.
 
 ### 2. Privacy and cost control (`vision.py`, `pipeline.py`)
 - `privacy_masks` (normalized polygons) are blacked out **before** detection, recording, and streaming.
@@ -107,6 +107,15 @@ The engine also emits one `activity` event (severity `info`) the first time a pe
 - The API streams them over SSE, and `MqttPublisher` mirrors them to `<prefix>/<site_id>/<topic>`. Settings and drone topics are retained, and an LWT `status` topic reports online/offline.
 - Notifiers run on a background thread. A failure in one channel never blocks the others or the video loop.
 
+### 11. Reliability (`health.py`, `supervisor.py`, `storage_guard.py`, `resources.py`, `backup.py`, `daemon.py`)
+Full detail: [reliability.md](./reliability.md).
+- `HealthMonitor` (stdlib, runs in housekeeping) derives one state per camera from the worker heartbeat, the last processed frame, `FreezeDetector` (pixel-identical frames), the detector state, and the supervisor state. It writes `camera_status[...]["health"]`, opens and closes `outages` (SQLite), writes `camera_*` / `system_health` timeline events that **never open incidents**, and sends grouped, rate-limited `kind="health"` notifications after `notify_after_s`, regardless of arm mode.
+- `WorkerSupervisor` restarts crashed workers and replaces stalled ones (abandoning the stuck thread), with exponential backoff, a restart budget per window, and a cooldown circuit breaker. Too many stuck threads raise a fatal condition, so the process restarts under `sentinel run`.
+- `CameraWorker` reports a heartbeat, capture-to-decision and detection latency (p50/p95), skipped frames, and detector state. Repeated GPU inference errors switch to the CPU profile; without a fallback the camera is `ai_failed` until a reloaded detector succeeds on a real frame.
+- `StorageGuard` keeps free space above `storage.min_free_mb`/`min_free_pct` by deleting the oldest unprotected media, then pauses recording (detection continues). `EventStore` writes never raise; failures mark the database component degraded.
+- `backup.open_store` quick-checks the database at start, applies staged restores, and replaces a damaged file with the newest verified backup. `SiteConfigManager.load_effective` falls back to `config_history/` when `site.json` is damaged.
+- `RunState` (`runstate.json`) heartbeats every 10 s, so a restart can tell a planned stop from a crash and record the downtime. `daemon.supervise` (`sentinel run`) restarts the server process; Windows background start uses Task Scheduler (`sentinel service install`).
+
 ## Configuration editing (`site_config.py`, `credentials.py`)
 - `SiteConfigManager` owns the editable config. `load_effective` prefers `<storage>/site.json` over the file the service was started with (which is never modified). Every mutation is validated as a whole, written atomically (10 backups in `config_history/`), and then passed to `SentinelService.apply_config`.
 - `apply_config` → `SentinelRuntime.reconfigure`: rebuilds the engine (zones, rules, topology, correlator), alert policy, and incident settings. It keeps open incidents, settings, and history. In-flight tracks restart because zone geometry may have changed. Only camera workers whose config changed are restarted.
@@ -114,15 +123,16 @@ The engine also emits one `activity` event (severity `info`) the first time a pe
 
 ## Config reference
 
-See `config/sentinel.example.json`. Top-level keys: `site` (id, name, `map` with `width_m`, `height_m`, `origin_geo`, `buildings`, `image`), `categories`, `environment`, `cameras[]` (id, name, fps, source, map pose, privacy_masks, zones), `topology.links[]`, `detector`, `tracker`, `engine`, `correlation`, `rules[]`, `incidents`, `alerts` (thresholds, rate limit, `channels[]`), `recording`, `privacy`, `health`, `storage`, `mqtt`, `api`, `settings_defaults`, `drone`. `python -m sentinel validate` checks identifiers, polygons, references between sections, rule parameters, and literal passwords.
+See `config/sentinel.example.json`. Top-level keys: `site` (id, name, `map` with `width_m`, `height_m`, `origin_geo`, `buildings`, `image`), `categories`, `environment`, `cameras[]` (id, name, fps, source, map pose, privacy_masks, zones), `topology.links[]`, `detector`, `tracker`, `engine`, `correlation`, `rules[]`, `incidents`, `alerts` (thresholds, rate limit, `channels[]`), `recording`, `privacy` (including `retention_days.protected`), `health` (timeouts, notifications, `supervisor`, `process`, `heartbeat`), `storage` (dir, free-space thresholds, `max_media_gb`, `backups`), `logging`, `mqtt`, `api`, `settings_defaults`, `drone`. The reliability keys are listed in [reliability.md](./reliability.md#configuration-reference). Simulated cameras accept `source.faults` for failure testing. `python -m sentinel validate` checks identifiers, polygons, references between sections, rule parameters, and literal passwords.
 
 Runtime settings (arm mode, sensitivity, notifications on/off) are changed through the API and persisted to `<storage.dir>/settings.json`.
 
 ## Threading model
 
-- One thread per camera: the capture reader (OpenCV sources only) plus the worker.
+- One thread per camera: the capture reader (OpenCV sources only) plus the worker, owned by `WorkerSupervisor`.
 - `SentinelRuntime` serializes engine, incident, and store access with an `RLock`.
-- Separate threads handle housekeeping (1 s: expiry, incident close, escalations, camera health, retention), the drone safety loop (0.5 s), and the notification dispatcher.
+- Separate threads handle housekeeping (1 s: supervision, expiry, incident close, escalations, camera health; 10 s: run-state heartbeat; 15 s: resource sampling; 60 s: storage guard; hourly: retention; daily: backup, on its own short-lived thread), the drone safety loop (0.5 s), and the notification dispatcher.
+- Under `sentinel run`, a separate supervisor process owns the server process.
 - Uvicorn serves the API on its own event loop. SSE subscribers receive bus messages through `loop.call_soon_threadsafe`.
 
 ## Known limitations
