@@ -1,0 +1,31 @@
+{
+  "name": "Hikvision recorder with settings for another network",
+  "description": "Regression case from the first real install (October 2026). Windows PC on Wi-Fi at 10.0.0.57/24, router 10.0.0.1, network profile Public. A Hikvision ERI-K108-P8 (8 PoE channels) shows 192.168.1.84 / 255.255.255.0, gateway 192.168.1.254 on its own screen; browser and ping from the PC fail. In this file the recorder is cabled to the same router with stale static settings. Tests also run variants: discovery blocked by the firewall, recorder behind a separate modem, recorder powered off, VPN, and the fixed network.",
+  "platform": "windows",
+  "adapters": [
+    {"name": "Wi-Fi", "description": "Intel(R) Wi-Fi 6 AX201 160MHz", "kind": "wifi", "up": true, "ipv4": ["10.0.0.57/24"],
+     "gateway": "10.0.0.1", "dhcp": true, "dns": ["10.0.0.1"], "profile": "Public", "metric": 45, "segment": "home"},
+    {"name": "Ethernet", "description": "Realtek PCIe GbE Family Controller", "kind": "ethernet", "up": false, "ipv4": [], "metric": 25, "segment": "home"},
+    {"name": "vEthernet (WSL)", "description": "Hyper-V Virtual Ethernet Adapter", "kind": "virtual", "up": true, "ipv4": ["172.20.160.1/20"], "metric": 5000, "segment": "wsl"}
+  ],
+  "firewall": {
+    "Domain": {"enabled": true, "default_inbound": "NotConfigured"},
+    "Private": {"enabled": true, "default_inbound": "NotConfigured"},
+    "Public": {"enabled": true, "default_inbound": "NotConfigured", "blocks_discovery": false}
+  },
+  "routers": [
+    {"name": "home router", "icmp": true, "ports": {"80": "open", "443": "open"},
+     "interfaces": [{"ip": "10.0.0.1", "mask": "255.255.255.0", "segment": "home"}]}
+  ],
+  "devices": [
+    {"ip": "192.168.1.84", "mask": "255.255.255.0", "gateway": "192.168.1.254", "segment": "home",
+     "brand": "hikvision", "model": "ERI-K108-P8", "firmware": "V4.30.085", "sadp": true, "onvif": true, "dhcp": false, "activated": true,
+     "channels": 8, "template": "hikvision", "username": "admin", "password": "simulated-only",
+     "codecs": {"main": "H265", "sub": "H264"},
+     "icmp": true, "ports": {"80": "open", "443": "open", "554": "open", "8000": "open"},
+     "http": {"server": "App-webs/", "markers": ["doc/page/login.asp"]}},
+    {"ip": "10.0.0.30", "mask": "255.255.255.0", "gateway": "10.0.0.1", "segment": "home",
+     "brand": "reolink", "model": "RLC-810A", "name": "Driveway", "onvif": true, "channels": 1, "template": "reolink",
+     "username": "admin", "password": "simulated-only", "icmp": false, "ports": {"80": "open", "554": "open", "9000": "open"}}
+  ]
+}

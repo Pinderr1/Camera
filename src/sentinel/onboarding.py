@@ -15,6 +15,7 @@ import socket
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -295,6 +296,32 @@ def _summary(streams: dict[str, Any], preferred: str) -> dict[str, Any]:
         "diagnostics": diagnostics,
         "snapshot_jpeg_b64": base64.b64encode(snapshot).decode("ascii") if snapshot else "",
     }
+
+
+def scan_channels(source: dict[str, Any], secrets: SecretLookup | None, *, probe=probe_rtsp, max_channels: int = 16) -> dict[str, Any]:
+    """Which channels of a DVR/NVR answer, using RTSP DESCRIBE only (no decoding).
+    Channel 1 is tried first and the scan stops on a login failure, so a wrong
+    password costs one attempt, not one per channel (recorders lock accounts).
+    A recorder may also answer for a channel with no camera attached."""
+    if source.get("type") != "rtsp" or "{channel" not in BRAND_TEMPLATES.get(source.get("template", ""), {}).get("main", ""):
+        return _result("not_found", "Channel search needs an RTSP brand template with channel numbers (for example Hikvision or Dahua).") | {"channels": []}
+    first = probe(build_url(dict(source, channel=1), "main", secrets))
+    if first["kind"] in {"auth_required", "auth_failed", "unreachable", "port_closed", "dns_failed", "not_rtsp", "timeout"}:
+        return first | {"channels": []}
+
+    def check(channel: int) -> dict[str, Any]:
+        main = first if channel == 1 else probe(build_url(dict(source, channel=channel), "main", secrets))
+        entry = {"channel": channel, "main": {k: main.get(k) for k in ("kind", "codec")}}
+        if main["ok"] and "sub" in BRAND_TEMPLATES[source["template"]]:
+            sub = probe(build_url(dict(source, channel=channel), "sub", secrets))
+            entry["sub"] = {k: sub.get(k) for k in ("kind", "codec")}
+        return entry
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        channels = list(pool.map(check, range(1, max(1, min(int(max_channels), 64)) + 1)))
+    found = [c for c in channels if c["main"]["kind"] == "ok"]
+    message = f"{len(found)} channel(s) answered." if found else "No channel answered with that stream path. Try another brand template."
+    return {"ok": bool(found), "kind": "ok" if found else "not_found", "message": message, "channels": channels}
 
 
 # ---- discovery helpers --------------------------------------------------------

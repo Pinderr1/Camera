@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import cameras, resolve_env
 from .drone import build_drone_manager
+from .netdiag import SystemNetwork
 from .pipeline import CameraWorker
 from .runtime import SentinelRuntime
 from .site_config import SiteConfigManager
@@ -42,6 +43,7 @@ class SentinelService:
             on_change=lambda status: self.runtime.bus.publish("drone", status),
         )
         self.site = SiteConfigManager(raw, storage_dir, self.runtime.secrets)
+        self.network = SystemNetwork()  # onboarding diagnostics; tests and demos swap in a SimulatedNetwork
         self.site.subscribe(self.apply_config)
         self.workers: dict[str, CameraWorker] = (
             {camera["id"]: CameraWorker(camera, self.runtime) for camera in cameras(config)} if start_cameras else {}

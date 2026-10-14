@@ -18,6 +18,8 @@ fastapi>=0.110
 uvicorn>=0.29
 # Test client for API tests.
 httpx>=0.27
+# Browser UI tests (optional; skipped if missing). Uses the installed Microsoft Edge.
+playwright>=1.40
 # CPU/memory sampling in the benchmark (sentinel.bench); optional elsewhere.
 psutil>=5.9
 # MQTT mirror and legacy senior_safety bridge.

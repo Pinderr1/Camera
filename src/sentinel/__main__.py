@@ -35,6 +35,11 @@ def serve(args: argparse.Namespace) -> None:
         logging.getLogger("sentinel").warning("SENTINEL_API_TOKEN not set: API is open to this machine only (%s).", host)
 
     service = SentinelService(config, start_cameras=not args.no_cameras)
+    if args.simulate_network:
+        from .netdiag import SimulatedNetwork
+
+        service.network = SimulatedNetwork.from_file(args.simulate_network)
+        logging.getLogger("sentinel").warning("Network diagnostics use the simulated network in %s.", args.simulate_network)
     service.start()
     try:
         uvicorn.run(create_app(service, api_token=token or None), host=host, port=port, log_level="info")
@@ -59,6 +64,7 @@ def main() -> None:
     serve_parser.add_argument("--host")
     serve_parser.add_argument("--port", type=int)
     serve_parser.add_argument("--no-cameras", action="store_true", help="API/dashboard only (review stored history)")
+    serve_parser.add_argument("--simulate-network", metavar="SCENARIO", help="Answer Setup network diagnostics from a scenario (config/netsim/*.json)")
     serve_parser.set_defaults(handler=serve)
 
     validate_parser = commands.add_parser("validate", help="Validate a site config")

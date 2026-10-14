@@ -11,6 +11,8 @@ This project is reuse-first, but code is copied only when the upstream license c
 | FastAPI / Starlette / Pydantic | MIT | API | |
 | Uvicorn | BSD-3 | ASGI server | |
 | httpx | BSD-3 | Tests only | |
+| Playwright for Python | Apache-2.0 | Browser UI tests only | Drives the installed Microsoft Edge; not shipped. |
+| Hikvision SADP discovery | Own implementation | Troubleshooter discovery | No Hikvision code or SDK is used; Sentinel sends the multicast inquiry and parses the XML reply. |
 | paho-mqtt | EPL-2.0 / EDL-1.0 | MQTT mirror | Used unmodified as a library. |
 | pymavlink (optional) | LGPL-3.0 | Drone telemetry | Use unmodified as a dynamically imported library. Alternative: MAVSDK-Python (BSD-3). |
 | ArduPilot / PX4 | GPL-3.0 / BSD-3 | Flight stacks (run on the drone, not linked) | Sentinel talks MAVLink over a link; it does not link or distribute firmware. |

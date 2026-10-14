@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import onboarding, onvif
+from . import netdiag, onboarding, onvif
 from .config import public_camera_view
 from .drone import FlightCommandRejected
 from .service import SentinelService
@@ -52,6 +52,29 @@ class InspectionBody(BaseModel):
 
 class DenyBody(BaseModel):
     note: str = Field(default="", max_length=500)
+
+
+class DiagnoseBody(BaseModel):
+    host: str = Field(max_length=253)
+    brand: str | None = Field(default=None, max_length=20)
+    device_mask: str | None = Field(default=None, max_length=15)
+    device_gateway: str | None = Field(default=None, max_length=15)
+    rtsp_port: int = Field(default=554, ge=1, le=65535)
+    http_port: int = Field(default=80, ge=1, le=65535)
+    discover: bool = True
+
+
+class DiscoverBody(BaseModel):
+    sadp: bool = True
+    onvif: bool = True
+    port_check: bool = False
+    confirm: bool = False  # the person confirmed they own or manage this network
+
+
+class ChannelsBody(BaseModel):
+    source: dict[str, Any] | None = None
+    draft_id: str | None = None
+    max_channels: int = Field(default=16, ge=1, le=64)
 
 
 class DroneCommandBody(BaseModel):
@@ -432,6 +455,68 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
             "ok": True, "draft_id": draft_id, "device": info["device"],
             "streams": {which: stream["profile"] for which, stream in info["streams"].items()},
         }
+
+    # ---- setup: network diagnostics -------------------------------------------
+    # Read-only: Sentinel inspects and probes, and explains what to change. It never
+    # changes router, firewall, computer or device settings.
+
+    @app.get("/api/v1/onboarding/network")
+    def network_overview(refresh: bool = False, _: str = Depends(require_auth)) -> dict[str, Any]:
+        snapshot = service.network.snapshot(refresh=refresh)
+        return {
+            "network": snapshot.public_view(),
+            "findings": [finding.as_dict() for finding in netdiag.analyze_network(snapshot)],
+            "brands": netdiag.guidance.public_brands(),
+        }
+
+    @app.post("/api/v1/onboarding/network/diagnose")
+    def network_diagnose(body: DiagnoseBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            report = netdiag.troubleshoot(
+                service.network, body.host, brand=body.brand, device_mask=body.device_mask, device_gateway=body.device_gateway,
+                rtsp_port=body.rtsp_port, http_port=body.http_port, discover=body.discover,
+            )
+        except netdiag.TargetRefused as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        runtime.store.audit(actor, "network_diagnosis", {
+            "host": report["host"], "reachable": report["reachable"],
+            "findings": [f["code"] for f in report["findings"] if f["status"] in ("confirmed", "suspected")],
+        })
+        return report
+
+    @app.post("/api/v1/onboarding/network/discover")
+    def network_discover(body: DiscoverBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        if not body.confirm:
+            raise HTTPException(status_code=422, detail="Confirm that you own or manage this network before searching it.")
+        result = netdiag.discover_devices(service.network, sadp=body.sadp, onvif=body.onvif, port_check=body.port_check)
+        runtime.store.audit(actor, "network_discovery", {"methods": result["methods"], "networks": result["networks_searched"], "found": len(result["devices"])})
+        return result
+
+    @app.post("/api/v1/onboarding/channels")
+    def recorder_channels(body: ChannelsBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        """Find a recorder's channels and stage one draft per channel that answered,
+        so the dashboard can add several cameras without re-sending the password."""
+        if body.draft_id:
+            clean, password = config_call(site.draft, body.draft_id)
+        elif body.source:
+            source = dict(body.source)
+            password = source.pop("password", None)
+            _, clean, password = config_call(site.make_draft, source, password)
+        else:
+            raise HTTPException(status_code=422, detail="source or draft_id is required")
+        try:
+            netdiag.check_target(str(clean.get("host", "")))
+        except netdiag.TargetRefused as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        scan_source = dict(clean, credential="__draft__") if password else clean
+        result = onboarding.scan_channels(scan_source, site.lookup_for({"__draft__": password} if password else {}),
+                                          probe=service.network.rtsp_probe, max_channels=body.max_channels)
+        for channel in result["channels"]:
+            if channel["main"]["kind"] == "ok":
+                channel["draft_id"] = config_call(site.make_draft, dict(clean, channel=channel["channel"]), password or None)[0]
+        runtime.store.audit(actor, "channel_scan", {"host": clean.get("host", ""), "result": result["kind"],
+                                                    "found": sum(1 for c in result["channels"] if c.get("draft_id"))})
+        return result
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

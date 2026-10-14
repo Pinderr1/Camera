@@ -236,7 +236,8 @@ function renderKindChoice() {
   return `<div class="choice-grid">${SOURCE_KINDS.map(
     (kind) => `<button type="button" class="choice ${wizard.kind === kind.id ? "selected" : ""}" data-kind="${kind.id}"><strong>${esc(kind.title)}</strong><span class="small muted">${esc(kind.text)}</span></button>`,
   ).join("")}</div>
-  <p class="small muted">Not every DVR offers RTSP or ONVIF. If yours does not, try an HTTP snapshot URL, or connect its video output to a USB capture device.</p>`;
+  <p class="small muted">Not every DVR offers RTSP or ONVIF. If yours does not, try an HTTP snapshot URL, or connect its video output to a USB capture device.</p>
+  <p class="small">Don't know the address, or can't reach the recorder? <button type="button" id="wizard-open-ts">Open the network troubleshooter</button></p>`;
 }
 
 function field(label, name, type = "text", extra = "") {
@@ -297,17 +298,27 @@ function renderConnectionForm() {
   return "";
 }
 
+// Shared with the troubleshooter (troubleshoot.js).
+const NETWORK_FAILURES = ["unreachable", "timeout", "port_closed", "dns_failed", "not_rtsp"];
+
+function testResultHtml(r) {
+  const streams = Object.entries(r.streams || {});
+  return `<p><strong style="color: ${r.ok ? "var(--low)" : "var(--high)"}">${r.ok ? "Connected" : "Connection failed"}</strong> ${esc(r.ok ? "" : r.message)}</p>
+    ${streams.length ? `<div class="scroll"><table class="table"><tr><th>Stream</th><th>Result</th><th>Resolution</th><th>Measured fps</th><th>Codec</th><th>Decoding</th></tr>${streams
+      .map(([which, s]) => `<tr><td>${which}${r.ai_stream === which ? " (AI)" : ""}</td><td>${esc(s.ok ? "ok" : s.kind)}</td><td>${s.resolution ? s.resolution.join("×") : "–"}</td><td>${s.measured_fps ?? "–"}</td><td>${esc(s.codec || "–")}</td><td>${s.hw_decode_active ? "GPU" : s.ok ? "CPU" : "–"}</td></tr>`)
+      .join("")}</table></div>` : ""}
+    ${(r.diagnostics || []).length ? `<ul class="small">${r.diagnostics.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
+    ${r.snapshot_jpeg_b64 ? `<img class="preview" alt="Preview" src="data:image/jpeg;base64,${r.snapshot_jpeg_b64}">` : ""}`;
+}
+
 function renderTestResult() {
   const r = wizard.result;
   if (!r) return `<p>Testing connection…</p>`;
-  const streams = Object.entries(r.streams || {});
-  return `<p><strong style="color: ${r.ok ? "var(--low)" : "var(--high)"}">${r.ok ? "Connected" : "Connection failed"}</strong> ${esc(r.ok ? "" : r.message)}</p>
-    ${streams.length ? `<table class="table"><tr><th>Stream</th><th>Result</th><th>Resolution</th><th>Measured fps</th><th>Codec</th><th>Decoding</th></tr>${streams
-      .map(([which, s]) => `<tr><td>${which}${r.ai_stream === which ? " (AI)" : ""}</td><td>${esc(s.ok ? "ok" : s.kind)}</td><td>${s.resolution ? s.resolution.join("×") : "–"}</td><td>${s.measured_fps ?? "–"}</td><td>${esc(s.codec || "–")}</td><td>${s.hw_decode_active ? "GPU" : s.ok ? "CPU" : "–"}</td></tr>`)
-      .join("")}</table>` : ""}
-    ${(r.diagnostics || []).length ? `<ul class="small">${r.diagnostics.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
-    ${r.snapshot_jpeg_b64 ? `<img class="preview" alt="Preview" src="data:image/jpeg;base64,${r.snapshot_jpeg_b64}">` : ""}
-    <div class="button-row"><button type="button" id="wizard-retest">Test again</button></div>`;
+  const failedKinds = [r.kind, ...Object.values(r.streams || {}).map((s) => s.kind)];
+  const networkProblem = !r.ok && wizard.values.host && failedKinds.some((kind) => NETWORK_FAILURES.includes(kind));
+  return `${testResultHtml(r)}
+    <div class="button-row"><button type="button" id="wizard-retest">Test again</button>
+      ${networkProblem ? `<button type="button" id="wizard-troubleshoot">Troubleshoot this connection</button>` : ""}</div>`;
 }
 
 function renderSaveForm() {
@@ -330,6 +341,13 @@ function bindWizardStep() {
   if (template) template.addEventListener("change", () => { collectStep(); renderWizard(); });
   const retest = $("#wizard-retest");
   if (retest) retest.addEventListener("click", () => runTest());
+  const troubleshoot = $("#wizard-troubleshoot");
+  if (troubleshoot) troubleshoot.addEventListener("click", () => {
+    $("#wizard").close();
+    openTroubleshooter({ host: wizard.values.host, template: wizard.values.template, port: wizard.values.port, autorun: true });
+  });
+  const openTs = $("#wizard-open-ts");
+  if (openTs) openTs.addEventListener("click", () => { $("#wizard").close(); openTroubleshooter({}); });
   const scan = $("#onvif-scan");
   if (scan) scan.addEventListener("click", async () => {
     $("#onvif-scan-status").textContent = "Scanning for 3 seconds…";

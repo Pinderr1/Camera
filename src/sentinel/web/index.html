@@ -123,7 +123,8 @@
 
       <div class="sub active" id="sub-cameras">
         <div class="card">
-          <div class="row-between"><h3>Cameras</h3><button class="primary" id="add-camera">Add camera</button></div>
+          <div class="row-between"><h3>Cameras</h3>
+            <div class="button-row tight"><button id="open-troubleshooter">Find &amp; troubleshoot cameras</button><button class="primary" id="add-camera">Add camera</button></div></div>
           <p class="muted small">Order here is the order on the Live tab. Stream addresses and passwords are stored on the server only and never shown again.</p>
           <ul class="list" id="setup-camera-list"></ul>
         </div>
@@ -219,6 +220,18 @@
     </form>
   </dialog>
 
+  <dialog id="troubleshooter" class="wizard wide" aria-labelledby="ts-title">
+    <div class="row-between"><h3 id="ts-title">Find and troubleshoot cameras</h3><button type="button" id="ts-close" aria-label="Close">✕</button></div>
+    <ol class="steps" id="ts-steps">
+      <li data-step="network"><button type="button" data-ts-step="network">1 · Your network</button></li>
+      <li data-step="find"><button type="button" data-ts-step="find">2 · Find devices</button></li>
+      <li data-step="check"><button type="button" data-ts-step="check">3 · Check a device</button></li>
+      <li data-step="streams"><button type="button" data-ts-step="streams">4 · Login &amp; streams</button></li>
+    </ol>
+    <div id="ts-body"></div>
+    <p class="small muted">Sentinel only looks and tests. It never changes your router, firewall, computer or camera settings.</p>
+  </dialog>
+
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <dialog id="login">
@@ -232,5 +245,6 @@
 
   <script src="/static/app.js"></script>
   <script src="/static/setup.js"></script>
+  <script src="/static/troubleshoot.js"></script>
 </body>
 </html>

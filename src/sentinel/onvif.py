@@ -66,13 +66,23 @@ def parse_probe_matches(payload: bytes) -> list[dict[str, Any]]:
     return devices
 
 
-def discover(timeout: float = 3.0) -> list[dict[str, Any]]:
-    """WS-Discovery probe on the local network segment (multicast, UDP 3702)."""
+def discover(timeout: float = 3.0, interfaces: list[str] | None = None) -> list[dict[str, Any]]:
+    """WS-Discovery probe on the local network segment (multicast, UDP 3702).
+    `interfaces` lists local IPv4 addresses to probe from; by default the OS picks
+    one, which misses cameras on a second adapter. Replies are unicast, so devices
+    configured for a different subnet usually cannot answer."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
     sock.settimeout(0.5)
     try:
-        sock.sendto(PROBE.format(id=uuid.uuid4()).encode(), MULTICAST)
+        message = PROBE.format(id=uuid.uuid4()).encode()
+        for local in interfaces or [None]:
+            try:
+                if local:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local))
+                sock.sendto(message, MULTICAST)
+            except OSError:
+                continue
         found: dict[str, dict[str, Any]] = {}
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

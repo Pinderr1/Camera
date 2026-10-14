@@ -18,6 +18,7 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | --- | --- |
 | Multi-camera ingestion (RTSP/HTTP stream+snapshot/USB/capture/file/simulated) | Built: sub-stream preference, hardware decode with fallback, reconnect, diagnostics. Verified against MediaMTX and fake RTSP/ONVIF servers. **No physical camera or DVR tested yet** |
 | Camera onboarding wizard + ONVIF discovery | Built and tested end to end in a real browser (Edge) against recorded footage |
+| Network troubleshooter (`netdiag`: network inspection, SADP/ONVIF/port discovery, diagnosis with evidence, channel search) | Built. Windows collector checked on the real install network; diagnosis verified on simulated networks and in Edge (Playwright). **No SADP reply from a real device yet** |
 | Visual setup editor (cameras, zones, privacy masks, property map, connections, categories) | Built. Edits are validated, persisted to `<storage>/site.json`, and applied live |
 | Credentials | DPAPI-encrypted store on Windows (0600 file elsewhere); never in config, API responses, or logs |
 | Environmental intelligence | Category filters (detect/alerts per category and camera). Scene conditions and unknown-motion via motion analysis. Validated on synthetic sequences only |
@@ -52,6 +53,9 @@ src/sentinel/            the Sentinel brain (current product)
   streams.py             brand templates, URL building from credential references, safe public source view
   onboarding.py          connection tests (RTSP-level probe + decoder test), local devices, decode capabilities
   onvif.py               WS-Discovery, ONVIF device/media profiles/stream URIs (stdlib)
+  netdiag/               network troubleshooter (read-only): collect (Windows PowerShell / Linux ip -j), model (snapshot,
+                         routes, target policy, findings), probes (TCP, ICMP, HTTP id), sadp (Hikvision discovery),
+                         diagnose (rules + discovery), guidance (brand/OS fix steps), simulated (scenario networks)
   credentials.py         SecretStore: DPAPI (Windows) / 0600 file credential storage
   site_config.py         SiteConfigManager: validated, persisted, live-applied config edits; drafts; cascades
   environment.py         scene conditions (light, IR, rain, shadows, vegetation, lens) + unknown-motion proposals
@@ -71,9 +75,10 @@ src/sentinel/            the Sentinel brain (current product)
                          metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
 config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, rules, drone
 config/scenarios/              scripted scenarios (delivery, prowler, ambiguous handoff, demo loop)
+config/netsim/                 simulated network conditions for the troubleshooter (regression: Hikvision on another subnet)
 config/bench/                  benchmark site config (zones per public clip), manifest, live RTSP example
 scripts/fetch_bench_footage.py downloads public annotated footage into data/bench/ (git-ignored)
-tests/test_sentinel_*.py       Sentinel tests (tests/sentinel_helpers.py holds the fixtures)
+tests/test_sentinel_*.py       Sentinel tests (tests/sentinel_helpers.py holds the fixtures); test_sentinel_ui.py drives Edge via Playwright
 docs/architecture.md           architecture and event-processing design
 docs/api.md                    API reference for dashboard and mobile clients
 docs/drone-integration.md      drone design, safety gates, ArduPilot/MAVLink path
@@ -96,6 +101,8 @@ python -m unittest discover -s tests -p "test_sentinel_*.py"
 python -m sentinel validate --config config/sentinel.example.json
 python -m sentinel replay --scenario config/scenarios/prowler.json --at 2026-10-12T02:00:00
 python -m sentinel serve                                   # dashboard on http://127.0.0.1:8080
+python -m sentinel serve --simulate-network config/netsim/hikvision_wrong_subnet.json   # troubleshooter demo
+python -m unittest tests.test_sentinel_ui                  # browser tests (pip install playwright; uses installed Edge)
 python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
 python -m sentinel.bench run --all --out bench_runs/NAME   # real-footage benchmark -> report.md/html
 python -m sentinel.bench view --runs bench_runs            # playback/debug viewer on :8090
@@ -119,6 +126,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 6. **Secrets never sit in config, API responses, or logs.** Camera passwords entered in the dashboard go to the credential store, and configs reference them (`credential` / `${secret:NAME}`). Deployment secrets use `${ENV_VAR}`, which is never resolved into the persisted config. Validation rejects literal passwords in URLs. Stream URLs and paths are write-only over the API. MQTT credentials come from `MQTT_USERNAME`/`MQTT_PASSWORD`.
 7. **Drone safety.** No autonomous real-world flight. Sentinel may *request* inspections, but only an operator can approve them. Every command is checked against the geofence and written to the audit log. The flight controller owns stabilisation, failsafes, fences, and landing. Do not write custom flight controllers or landing algorithms. The MAVLink adapter stays telemetry-only until every gate in `docs/drone-integration.md` is met and recorded.
 8. **No automatic calls to police or emergency services.** Escalation goes to people only.
+9. **Network diagnostics are read-only and local.** Sentinel never changes router, firewall, computer, or device network settings; it explains what to change. It probes only private/link-local/CGNAT/loopback addresses, searches a network only after the person confirms they manage it (port checks at most the local /24), never collects MAC addresses, serial numbers, Wi-Fi names, or public IPs, and tries a recorder password once per test (accounts lock).
 
 ## Technical decisions (and why)
 
@@ -142,6 +150,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - Match the surrounding style: dataclasses, type hints, small modules, comments only where the *why* is non-obvious.
 - Config edits go through `SiteConfigManager` (validated, persisted, applied live); never mutate `runtime.config` directly.
 - Environmental motion (scene conditions) must never open incidents; new environmental signals are `info` events.
+- New troubleshooter rules go in `netdiag/diagnose.py` with a `SimulatedNetwork` test. State `confirmed` only for faults Sentinel observed; anything inferred is `suspected` and must sit next to the alternatives.
 - Do not modify `src/senior_safety/` or `webapp/` except to keep shared helpers working. Do not delete them without asking.
 - Run the full test suite before committing.
 

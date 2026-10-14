@@ -63,6 +63,36 @@ Last updated: 2026-10-13. Priority: **a working security brain on real cameras b
 
 **Still requires real hardware:** onboarding against physical cameras/DVRs (only fake RTSP/ONVIF servers and MediaMTX so far), ONVIF discovery on a real LAN, USB/capture-card discovery, HTTP snapshot devices, hardware decoding of live RTSP, and the environmental thresholds on real rain, snow, insects, headlights, and IR switching.
 
+## Phase 0.8: Network and camera diagnostics (done, October 2026)
+- [x] `sentinel.netdiag`: read-only network intelligence on Windows (one PowerShell call), plus an `ip -j` Linux collector (unit-tested only):
+  - adapters (Ethernet, Wi-Fi, VPN, virtual), addresses, routes, gateways, DHCP, network profile, firewall profiles;
+  - findings for no connection, DHCP failure, no router, several networks, VPN carrying all traffic, and a Public profile blocking discovery.
+- [x] Discovery, only after the person confirms they manage the network:
+  - Hikvision SADP, which finds recorders with a wrong address range;
+  - ONVIF sent out of every adapter;
+  - optional port check capped at the local /24.
+
+  Public addresses are refused everywhere.
+- [x] Diagnosis of one address:
+  - ICMP via `IcmpSendEcho`, so "host unreachable" is told apart from "no reply";
+  - six TCP ports, the route taken, this computer's router and the recorder's gateway;
+  - discovery, and brand recognition from ports and one HTTP request.
+
+  Findings are confirmed / suspected / ruled out, each with evidence and brand-specific fix steps (Hikvision, Dahua/Amcrest, Lorex, Reolink, Uniview, generic), and Retest.
+- [x] Recorder channel search over RTSP DESCRIBE. It stops on the first login failure, to avoid lockouts. Selected channels are added as cameras in one step.
+- [x] Troubleshooter in Setup → Cameras, opened directly or from a failed wizard test. Verified in Edge with Playwright (`tests/test_sentinel_ui.py`).
+- [x] Simulated networks (`SimulatedNetwork`, `config/netsim/`, `serve --simulate-network`). The Hikvision ERI-K108-P8 case (PC 10.0.0.57/24; recorder 192.168.1.84, gateway 192.168.1.254) is a regression test in five variants: SADP-confirmed, discovery blocked, recorder behind the provider's modem, VPN, and re-addressed.
+
+**Real-network observation (the computer in the regression case):**
+- 10.0.0.1 answers.
+- 192.168.1.84 gives no ping reply and no answer on port 80.
+- The Wi-Fi profile is Public.
+- SADP and ONVIF found nothing.
+
+So the cause is not yet confirmed. Next on site:
+- switch the profile to Private and search again;
+- or read the recorder's network menu on its monitor, set DHCP, and retest.
+
 ## Detector upgrade findings (2026-10-13)
 
 Host: i7-2600K (4 cores, no AVX2), 16 GB RAM, GTX 1070 via DirectML (ONNX Runtime 1.24). Every number comes from human annotations (MOTChallenge MOT16, CAVIAR). Thresholds are each model's operating point from a score sweep on sampled frames **of the same footage**: a single scalar per model, but not an independent test. Raw tables: `bench_runs/detectors_v2/comparison.md` and `bench_runs/final_default/report.md` (git-ignored; regenerate with `scripts/bench_detectors.sh` and `sentinel.bench run --all`).
@@ -205,6 +235,7 @@ Exit: 2+ real IP cameras running for 7 days with useful incidents and fewer than
 - [ ] Overhead/fisheye views: evaluate dewarping before detection, or avoid ceiling-mounted fisheye cameras in installation guidance.
 - [ ] Legal review of RF-DETR (Objects365 pre-training) and of COCO image provenance for commercial distribution.
 - [ ] Record and label 1-2 hours from the target residential cameras (day, night/IR, rain, deliveries, ordinary family activity). Box labels via CVAT (MOT export), plus hand-written expected events and `expect_no_notifications` for ordinary footage. This replaces public footage as the acceptance set.
+- [ ] Resolve the ERI-K108-P8 install with the troubleshooter (see Phase 0.8) and record what the real SADP reply and channel search returned.
 - [ ] Connect 2-3 real RTSP cameras on sub-streams (640p, 5-10 fps; measured 21% CPU for 3 cameras on this host). Run `sentinel.bench live` for 24 h and record latency, dropped frames, and reconnects.
 - [ ] Tracker upgrade (ByteTrack or OC-SORT style, using low-score detections) once recall improves. Measure identity switches and "mostly tracked" before and after.
 - [ ] Group-box handling: the detector often emits one box for two people walking together. Evaluate whether the stronger detector removes this before adding logic.

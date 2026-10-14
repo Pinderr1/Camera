@@ -29,6 +29,7 @@ Data flows one way: frames → detections → tracks → events → incidents �
 - The sub-stream is used for AI when available. Hardware decoding is tried first (`hw_decode: auto`) with software fallback. Each source reports `stream`, `resolution`, `source_fps`, `hw_decode_active`, `reconnects`, and `error_kind` (classified with an RTSP-level probe).
 - `OpenCVSource` runs a reader thread that keeps only the newest frame, so a slow detector never builds up latency. It forces RTSP over TCP and reconnects with exponential backoff (1 s up to 30 s).
 - `SimulatedSource` renders a scripted scenario and attaches ground-truth boxes, so the whole stack runs without cameras.
+- Network troubleshooting (`netdiag/`): a platform collector reads adapters, routes and firewall profiles. Probes (TCP, ICMP, SADP, ONVIF, one HTTP GET) run behind a `NetworkBackend`: `SystemNetwork` for the real network, `SimulatedNetwork` for tests and `serve --simulate-network`. Pure rules in `diagnose.py` turn observations into findings (`confirmed` / `suspected` / `ruled_out` / `info` / `ok`) with evidence and fix steps. It is read-only and probes private addresses only. The simulation is a CLI flag, not a config key. See [camera-setup.md](./camera-setup.md#network-troubleshooter).
 - Camera health: if a camera sends no frame for `health.camera_offline_after_s`, the runtime emits a `camera_offline` event (medium severity: a blind spot matters). When frames resume it emits `camera_online` (info).
 
 ### 2. Privacy and cost control (`vision.py`, `pipeline.py`)

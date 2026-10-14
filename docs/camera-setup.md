@@ -44,6 +44,65 @@ The RTSP test speaks RTSP itself (DESCRIBE with Basic/Digest auth), so it can te
 
 The same classification appears in live camera status (`error_kind`) when a camera drops. Cameras reconnect automatically with backoff (1 s up to 30 s), count their reconnects, and raise a `camera_offline` event after `health.camera_offline_after_s`.
 
+## Network troubleshooter
+
+**Setup → Cameras → Find & troubleshoot cameras** opens a four-step troubleshooter. It also opens from the wizard: from step 1, and from a failed connection test whose result points at the network (`unreachable`, `timeout`, `port_closed`, `dns_failed`, `not_rtsp`), in which case the address and brand are carried over and the diagnosis starts automatically.
+
+1. **Your network.** Shows this computer's adapters (Ethernet, Wi-Fi, VPN, virtual), addresses, router, DHCP, and the Windows network profile. Flags no connection, DHCP failure (169.254.x.x only), no router, several networks at once, a VPN (and whether it carries all traffic), and a Public network profile.
+2. **Find devices.** Nothing is searched until the person ticks "I own or manage this network". Then, on this computer's own networks only:
+   - **Hikvision SADP** (multicast). Replies are multicast too, so it finds Hikvision recorders **even when their address belongs to another network**.
+   - **ONVIF** WS-Discovery, sent out of every local adapter. Replies are unicast, so devices with a wrong address cannot answer.
+   - **Optional port check** of 80/554/8000/37777/9000 across at most the /24 around each local address.
+
+   Results say whether each device is on this computer's network or on a different one.
+3. **Check a device.** Enter an address, optionally the brand and what the recorder's own screen shows (subnet mask, gateway). Sentinel then:
+   - pings once (Windows `IcmpSendEcho`, which tells "host unreachable" apart from "no reply");
+   - tries TCP 80, 443, 554, 8000, 9000 and 37777;
+   - works out which adapter and router the traffic uses;
+   - when nothing answers, checks this computer's router and the recorder's gateway;
+   - optionally runs SADP/ONVIF discovery;
+   - when the web page answers, makes one unauthenticated HTTP request to recognise the brand.
+
+   Each finding is labelled:
+   - **Confirmed problem:** observed directly.
+   - **Possible cause:** the evidence points to it but cannot prove it.
+   - **Ruled out:** checked, and not the problem. For example, "ping fails but port 80 answers" means the device just ignores ping.
+   - **Note** or **OK.**
+
+   Every finding lists its evidence and step-by-step fixes, with Hikvision, Dahua/Amcrest, Lorex, Reolink, Uniview and generic menu paths. **Retest** runs the same checks again, and reports when the result changed or when the recorder now answers at a new address.
+4. **Login & streams.** Runs the normal connection test (main and sub-stream, codec, resolution, measured fps, decoder, preview) and can save the camera. **Find recorder channels** sends one RTSP DESCRIBE per channel. It stops at the first login failure, so a wrong password costs one attempt, never one per channel. It lists main/sub status and codec per channel. "Add selected cameras" then adds them in one go, each with its own server-side draft, so the password is sent once.
+
+Boundaries:
+- Read-only. Sentinel never changes router, firewall, computer, or device settings; it explains what to change.
+- Only private, link-local, carrier-grade-NAT (VPN) and loopback addresses are probed; public addresses are refused (422).
+- No MAC addresses, serial numbers, Wi-Fi names, or public IPs are collected or returned.
+- Diagnosis, discovery, and channel searches are audited with the address and outcome only.
+
+### Regression case: Hikvision recorder on another address range
+
+The first real install: Windows on Wi-Fi at 10.0.0.57/24 with router 10.0.0.1 and a **Public** network profile. A Hikvision ERI-K108-P8 shows 192.168.1.84 / 255.255.255.0, gateway 192.168.1.254 on its own monitor. Browser and ping fail. The troubleshooter does not assume a single cause:
+
+| What the evidence shows | Diagnosis |
+| --- | --- |
+| SADP finds the recorder at 192.168.1.84 | **Confirmed**: it is on this cable network with settings for another one (often a previous router or provider). Fix: DHCP or a fixed 10.0.0.x address on the recorder, then Retest |
+| Nothing answers, discovery silent, profile Public | **Possible causes**, in order: settings for another network; recorder on a different router/modem; recorder off; Windows blocking discovery replies (switch the profile to Private and search again) |
+| The recorder's gateway 192.168.1.254 answers | Different address range **ruled out** (the router reaches that network); the recorder itself is not answering |
+| The recorder answers at a new 10.0.0.x address after the fix | Found by discovery and offered as "Check 10.0.0.84"; then reachable, RTSP open, eight channels found |
+
+On the real computer, ping and the browser fail exactly as reported, and SADP and ONVIF found nothing. With the Public profile, that cannot distinguish "recorder not on this network" from "Windows dropped the replies". The troubleshooter therefore reports the mismatch as a possible cause, not a confirmed one.
+
+### Platform support and simulation
+
+- **Windows:** fully supported. Settings come from one read-only PowerShell call (`Get-NetAdapter`, `Get-NetIPInterface`, `Get-NetIPAddress`, `Get-NetRoute`, `Get-NetConnectionProfile`, `Get-NetFirewallProfile`, `Get-DnsClientServerAddress`). The first call can take about 10 s while WMI starts.
+- **Linux:** a collector based on `ip -j` exists and is unit-tested, but has not been exercised on a real host.
+- **Other systems:** report that inspection is unsupported.
+- **Collectors** sit behind `sentinel.netdiag.collect`, and probes behind the `NetworkBackend` interface (`SystemNetwork`).
+- **Simulation:** `SimulatedNetwork` answers the same calls from a scenario of adapters, cable segments, NAT routers, and devices with their own IP settings. Automated tests use it. To try the troubleshooter without hardware:
+
+```powershell
+python -m sentinel serve --simulate-network config/netsim/hikvision_wrong_subnet.json
+```
+
 ## Credentials and privacy
 
 - Passwords typed into the wizard go to the credential store (`<storage>/credentials.json`):
@@ -76,3 +135,4 @@ None of the following has been exercised against physical devices yet:
 - USB and capture-card discovery.
 - HTTP snapshot polling.
 - Hardware decoding of live RTSP streams (verified on recorded files only).
+- SADP replies from a real Hikvision device (the parser follows the protocol's XML; no device has answered yet), recorder channel search on a real NVR, and the Linux network collector.

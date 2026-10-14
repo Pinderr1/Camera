@@ -64,6 +64,12 @@ All changes are validated as a whole, saved to `<storage>/site.json` with backup
 | POST | `/api/v1/onboarding/local-devices` | Probes USB/capture device indices (opens devices briefly) |
 | POST | `/api/v1/onboarding/onvif/discover` | WS-Discovery (3 s) on the local segment |
 | POST | `/api/v1/onboarding/onvif/inspect` | `{"xaddr", "username", "password"}`. Returns device info, profile summaries, and a `draft_id` |
+| GET | `/api/v1/onboarding/network?refresh=` | This computer's adapters (name, type, IPv4/prefix, gateway, DHCP, DNS, Windows network profile), firewall profiles, network-level `findings`, and the troubleshooter's `brands`. Cached 30 s; `refresh=true` re-reads. No MAC addresses, Wi-Fi names, or public IPs |
+| POST | `/api/v1/onboarding/network/diagnose` | `{"host", "brand"?, "device_mask"?, "device_gateway"?, "rtsp_port"?, "http_port"?, "discover"?}`. Probes one private address (ping, TCP 80/443/554/8000/9000/37777, the routers involved, optional SADP/ONVIF) and returns `reachable`, `summary`, `route`, `checks`, `identity`, `discovered`, and `findings`. Public addresses and bad masks: 422 |
+| POST | `/api/v1/onboarding/network/discover` | `{"confirm": true, "sadp"?, "onvif"?, "port_check"?}`. User-approved search of this computer's own networks. `port_check` covers at most the /24 around each local address. Without `confirm`: 422. Returns `devices` (with `on_local_network` and `network`), `networks_searched`, `notes` |
+| POST | `/api/v1/onboarding/channels` | `{"source": {..., "password"?}}` or `{"draft_id"}`, `max_channels` (≤ 64). RTSP DESCRIBE per recorder channel (stops on the first login failure). Each channel that answers carries its own `draft_id` for `POST /config/cameras` |
+
+A **finding** is `{"code", "status", "title", "explanation", "evidence": [...], "steps": [...], "data": {...}}`. `status` is `confirmed` (Sentinel observed the fault), `suspected` (a likely cause the evidence cannot prove), `ruled_out` (checked, not the problem), `info`, or `ok`. Codes are stable identifiers (for example `unreachable`, `subnet_mismatch`, `rtsp_closed`, `vpn_route`, `public_profile`, `found_elsewhere` with `data.host`); titles and text may change. Diagnosis, discovery, and channel searches are written to the audit log (address and outcome only).
 
 Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unknown id), 409 (drone rejected, for example preflight blocked), 422 (validation).
 
