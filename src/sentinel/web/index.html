@@ -19,6 +19,8 @@
       <button data-arm="disarmed">Disarmed</button>
       <button data-arm="home">Home</button>
       <button data-arm="away">Away</button>
+      <button data-arm="night">Night</button>
+      <button data-arm="vacation">Vacation</button>
     </div>
     <div class="coverage" id="coverage" role="status" title="Security coverage: how many cameras are actually being monitored">Coverage …</div>
     <div class="live-dot" id="live-dot" title="Live connection">offline</div>
@@ -28,6 +30,7 @@
     <button role="tab" data-tab="live" class="active">Live</button>
     <button role="tab" data-tab="map">Map</button>
     <button role="tab" data-tab="timeline">Timeline <span class="badge" id="open-count" hidden></span></button>
+    <button role="tab" data-tab="insights">Insights</button>
     <button role="tab" data-tab="drone">Drone</button>
     <button role="tab" data-tab="system">System <span class="badge" id="system-badge" hidden>!</span></button>
     <button role="tab" data-tab="settings">Settings</button>
@@ -54,8 +57,21 @@
         <div class="card">
           <div class="row-between">
             <h3>Incidents</h3>
-            <label class="muted small"><input type="checkbox" id="show-closed" checked> include closed</label>
+            <div class="button-row tight"><label class="muted small"><input type="checkbox" id="show-closed" checked> include closed</label>
+              <button id="report-missed" title="Tell Sentinel about something it did not report">Report a missed event</button></div>
           </div>
+          <form class="search-form" id="incident-search" aria-label="Search incidents">
+            <input type="search" name="q" placeholder="Search text" aria-label="Search text">
+            <label>From <input type="date" name="from"></label>
+            <label>To <input type="date" name="to"></label>
+            <select name="camera_id" aria-label="Camera"><option value="">Any camera</option></select>
+            <select name="zone_id" aria-label="Zone"><option value="">Any zone</option></select>
+            <select name="label" aria-label="Object"><option value="">Any object</option><option value="person">Person</option><option value="vehicle">Vehicle</option><option value="bicycle">Bicycle</option><option value="animal">Animal</option></select>
+            <select name="min_severity" aria-label="Severity"><option value="">Any severity</option><option value="low">Low and above</option><option value="medium">Medium and above</option><option value="high">High</option></select>
+            <select name="outcome" aria-label="Review"><option value="">Any review</option><option value="unreviewed">Not reviewed</option><option value="expected_activity">Expected activity</option><option value="false_alarm">False alarm</option><option value="real_concern">Genuine concern</option><option value="unclear">Uncertain</option></select>
+            <select name="rule_id" aria-label="Rule"><option value="">Any rule</option></select>
+            <button type="submit" class="primary">Search</button><button type="reset">Clear</button>
+          </form>
           <ul class="list" id="incident-list"></ul>
         </div>
         <div class="card" id="incident-detail"><p class="muted">Select an incident to review its events and recordings.</p></div>
@@ -63,6 +79,23 @@
       <div class="card">
         <h3>Recent activity</h3>
         <ul class="list compact" id="activity-list"></ul>
+      </div>
+    </section>
+
+    <section id="tab-insights" class="tab">
+      <nav class="subtabs-alt" role="tablist" aria-label="Insights sections">
+        <button data-isub="patterns" class="active">Activity patterns</button>
+        <button data-isub="performance">Alert performance</button>
+      </nav>
+      <div class="isub active" id="isub-patterns">
+        <div class="row-between"><div class="banner" id="insights-status">Loading…</div>
+          <label class="inline small">Period <select id="insights-days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label></div>
+        <div id="insights-body"></div>
+      </div>
+      <div class="isub" id="isub-performance">
+        <div class="row-between"><p class="muted small" id="performance-note"></p>
+          <label class="inline small">Period <select id="performance-days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label></div>
+        <div id="performance-body"></div>
       </div>
     </section>
 
@@ -144,6 +177,7 @@
         <button data-sub="propmap">Property map</button>
         <button data-sub="links">Connections</button>
         <button data-sub="categories">Categories</button>
+        <button data-sub="rules">Rules</button>
       </nav>
 
       <div class="sub active" id="sub-cameras">
@@ -222,6 +256,17 @@
         </div>
       </div>
 
+      <div class="sub" id="sub-rules">
+        <div class="editor-layout rules-layout">
+          <div class="card">
+            <div class="row-between"><h3>Security rules</h3><button class="primary" id="rule-new">New rule</button></div>
+            <p class="muted small">Rules describe behaviour worth your attention. Sentinel only links sightings across cameras when timing and camera connections support it.</p>
+            <ul class="list" id="rule-list-setup"></ul>
+          </div>
+          <div class="card" id="rule-editor"><p class="muted">Select a rule to edit, or start a new one from a template.</p></div>
+        </div>
+      </div>
+
       <div class="sub" id="sub-categories">
         <div class="card">
           <h3>What Sentinel looks for</h3>
@@ -257,6 +302,21 @@
     <p class="small muted">Sentinel only looks and tests. It never changes your router, firewall, computer or camera settings.</p>
   </dialog>
 
+  <dialog id="missed-dialog" class="wizard" aria-labelledby="missed-title">
+    <form method="dialog" id="missed-form">
+      <div class="row-between"><h3 id="missed-title">Report a missed event</h3><button type="button" id="missed-close" aria-label="Close">✕</button></div>
+      <p class="muted small">Tell Sentinel about activity it did not report. This is stored for evaluation only; nothing is retrained or changed automatically.</p>
+      <div class="grid2">
+        <label class="field">When <input type="datetime-local" name="when" required></label>
+        <label class="field">Camera <select name="camera_id" required></select></label>
+        <label class="field">Zone (optional) <select name="zone_id"><option value="">Not sure</option></select></label>
+        <label class="field">What <select name="category"><option value="person">Person</option><option value="vehicle">Vehicle</option><option value="bicycle">Bicycle</option><option value="animal">Animal</option><option value="other">Something else</option></select></label>
+      </div>
+      <label class="field">Description <input type="text" name="description" maxlength="1000" placeholder="e.g. delivery van stopped at the gate"></label>
+      <div class="button-row"><button type="submit" class="primary">Save report</button></div>
+    </form>
+  </dialog>
+
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <dialog id="login">
@@ -271,5 +331,6 @@
   <script src="/static/app.js"></script>
   <script src="/static/setup.js"></script>
   <script src="/static/troubleshoot.js"></script>
+  <script src="/static/intel.js"></script>
 </body>
 </html>

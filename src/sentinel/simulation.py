@@ -83,7 +83,7 @@ def _clip(bbox: tuple[float, float, float, float]) -> tuple[float, float, float,
     return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
 
 
-FAULT_TYPES = {"disconnect", "freeze", "detector_error", "crash", "stall"}
+FAULT_TYPES = {"disconnect", "freeze", "freeze_overlay", "detector_error", "crash", "stall"}
 _FAULT_CLOCKS: dict[str, float] = {}  # camera id -> monotonic time of its first simulated source
 
 
@@ -98,9 +98,14 @@ class SimulatedSource:
     `source.faults` injects failures for reliability tests and demos, each
     `{"type", "at_s", "duration_s"}` on a clock that starts with the camera's
     first source in this process (so a restarted worker sees the same timeline):
-    `disconnect` (no frames), `freeze` (the same picture repeats), `detector_error`
-    (inference raises), `crash` (the capture call raises), `stall` (the capture
-    call blocks, like a hung decoder)."""
+    `disconnect` (no frames), `freeze` (the same frame repeats, stream timestamps
+    stop), `freeze_overlay` (the picture is frozen but an on-screen clock keeps
+    ticking and timestamps advance, like a recorder whose camera input hung),
+    `detector_error` (inference raises), `crash` (the capture call raises),
+    `stall` (the capture call blocks, like a hung decoder).
+
+    Frames carry mild sensor noise (`source.noise`, default 3 grey levels; 0 gives
+    a perfectly clean picture) and a stream timestamp in `meta["pts_ms"]`."""
 
     def __init__(self, camera: dict[str, Any], scenario: Scenario) -> None:
         self.camera = camera
@@ -115,6 +120,9 @@ class SimulatedSource:
         self.frames_read = 0
         self._frozen = None
         self._closed = False
+        self._pts = 0.0
+        self.noise = int(camera["source"].get("noise", 3))
+        self._rng = None
 
     def _fault(self) -> str:
         elapsed = time.monotonic() - self.fault_clock
@@ -139,9 +147,13 @@ class SimulatedSource:
         if fault == "stall":
             while self._fault() == "stall" and not self._closed:
                 time.sleep(0.05)  # deliberately ignores stop requests, like a hung decoder call
-        if fault == "freeze" and self._frozen is not None:
+        if fault in ("freeze", "freeze_overlay") and self._frozen is not None:
             self.frames_read += 1
-            return Frame(image=self._frozen.copy(), timestamp_ms=int(time.time() * 1000))
+            image = self._frozen.copy()
+            if fault == "freeze_overlay":
+                self._pts = (time.monotonic() - self.started) * 1000
+                self._draw_clock(image, time.monotonic() - self.started)
+            return Frame(image=image, timestamp_ms=int(time.time() * 1000), meta={"pts_ms": round(self._pts, 1)})
         elapsed = time.monotonic() - self.started
         if self.scenario.loop:
             elapsed %= self.scenario.duration_s
@@ -151,14 +163,26 @@ class SimulatedSource:
         image = np.full((SIM_HEIGHT, SIM_WIDTH, 3), (48, 52, 46), dtype=np.uint8)
         cv2.rectangle(image, (0, int(SIM_HEIGHT * 0.45)), (SIM_WIDTH, SIM_HEIGHT), (70, 82, 64), -1)
         cv2.putText(image, f"SIM {self.camera.get('name', self.camera['id'])}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
-        cv2.putText(image, f"t={elapsed:5.1f}s", (SIM_WIDTH - 100, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
         for det in truth:
             x, y, w, h = det.bbox
             color = (90, 90, 230) if det.label == "person" else (230, 170, 60)
             cv2.rectangle(image, (int(x * SIM_WIDTH), int(y * SIM_HEIGHT)), (int((x + w) * SIM_WIDTH), int((y + h) * SIM_HEIGHT)), color, -1)
+        if self.noise > 0:
+            self._rng = self._rng or np.random.default_rng()
+            image = cv2.add(image, self._rng.integers(0, self.noise + 1, image.shape, dtype=np.uint8))
+        self._draw_clock(image, elapsed)
         self._frozen = image
+        self._pts = (time.monotonic() - self.started) * 1000
         self.frames_read += 1
-        return Frame(image=image, timestamp_ms=int(time.time() * 1000), truth=truth, meta={"fault": fault} if fault else {})
+        meta = {"pts_ms": round(self._pts, 1)} | ({"fault": fault} if fault else {})
+        return Frame(image=image, timestamp_ms=int(time.time() * 1000), truth=truth, meta=meta)
+
+    @staticmethod
+    def _draw_clock(image, elapsed: float) -> None:
+        import cv2
+
+        cv2.rectangle(image, (SIM_WIDTH - 104, 6), (SIM_WIDTH - 4, 26), (30, 30, 30), -1)  # recorder-style clock box
+        cv2.putText(image, f"t={elapsed:5.1f}s", (SIM_WIDTH - 100, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
 
     def close(self) -> None:
         self._closed = True

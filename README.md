@@ -11,6 +11,7 @@ Sentinel describes observed activity ("Person entered Shed", "Person moved Drive
 - Drone integration and safety gates: [docs/drone-integration.md](./docs/drone-integration.md)
 - Real-footage benchmarking: [docs/benchmarking.md](./docs/benchmarking.md)
 - Running 24/7: health, recovery, background start, backups: [docs/reliability.md](./docs/reliability.md)
+- Rules, explanations, activity insights, investigation: [docs/intelligence.md](./docs/intelligence.md)
 - License audit: [sources.md](./sources.md)
 
 ## Quick start (no cameras needed)

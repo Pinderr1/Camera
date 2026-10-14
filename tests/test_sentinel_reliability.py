@@ -128,6 +128,41 @@ class CameraFailureTests(ServiceCase):
         wait_for(lambda: self.state(service) == "monitoring", timeout=15)
         self.assertEqual(service.runtime.store.list_outages()[0]["kind"], "frozen")
 
+    def test_still_clean_scene_is_unverified_never_frozen(self):
+        config = site_config(self.directory.name)
+        config["cameras"][0]["source"]["noise"] = 0  # a perfectly clean, unchanging picture apart from the clock
+        service = self.service(config)
+        wait_for(lambda: self.state(service) == "unverified", message="still scene not reported as unverified")
+        time.sleep(2)
+        health = service.runtime.camera_status["cam_a"]["health"]
+        self.assertEqual(health["state"], "unverified", "a still scene must never become frozen without evidence")
+        self.assertTrue(health["monitoring"] and not health["verified"])
+        self.assertIn("cannot be told apart", health["reason"])
+        coverage = service.runtime.health.coverage(service.runtime.camera_status)
+        self.assertEqual((coverage["state"], coverage["unverified"]), ("unverified", 1))
+        self.assertFalse([t for t in self.titles() if "not monitoring" in t], "an uncertain still picture is not a coverage alarm")
+        outage = service.runtime.store.list_outages()[0]
+        self.assertEqual((outage["kind"], outage["details"].get("uncertain")), ("unverified", True))
+        signals = health["signals"]
+        self.assertTrue(signals["frames"]["ok"] and signals["inference"]["ok"] and signals["stream_clock"]["ok"])
+        self.assertFalse(signals["content"]["ok"])
+
+    def test_noisy_static_scene_stays_monitoring(self):
+        service = self.service(site_config(self.directory.name))  # simulated sensor noise, nothing moving
+        wait_for(lambda: self.state(service) == "monitoring")
+        time.sleep(3)  # three times frozen_after_s
+        self.assertEqual(self.state(service), "monitoring")
+        self.assertEqual(service.runtime.camera_status["cam_a"]["content"]["static_since_ms"], 0)
+
+    def test_frozen_picture_under_a_ticking_recorder_clock_is_detected(self):
+        service = self.service(site_config(self.directory.name, faults={"cam_a": [{"type": "freeze_overlay", "at_s": 3, "duration_s": 5}]}))
+        wait_for(lambda: self.state(service) == "monitoring")
+        wait_for(lambda: self.state(service) == "frozen", message="frozen picture behind a live clock not detected")
+        status = service.runtime.camera_status["cam_a"]
+        self.assertIn("clock", status["health"]["reason"])
+        self.assertTrue(status["health"]["signals"]["stream_clock"]["ok"], "the stream clock keeps advancing; the picture is the evidence")
+        wait_for(lambda: self.state(service) == "monitoring", timeout=15)
+
     def test_gpu_inference_failure_falls_back_to_cpu(self):
         class FakeDetector:
             def __init__(self, provider):
@@ -190,12 +225,11 @@ class CameraFailureTests(ServiceCase):
         self.assertGreater(service.runtime.camera_status["cam_a"]["next_restart_ms"], time.time() * 1000 + 500_000)
 
     def test_stalled_worker_is_abandoned_and_replaced(self):
-        config = site_config(self.directory.name, faults={"cam_a": [{"type": "stall", "at_s": 2, "duration_s": 3}]},
+        config = site_config(self.directory.name, faults={"cam_a": [{"type": "stall", "at_s": 2, "duration_s": 5}]},
                              health={"supervisor": {"stall_after_s": 1, "backoff_initial_s": 0.2, "max_stuck_threads": 10}})
         service = self.service(config)
         wait_for(lambda: self.state(service) == "monitoring")
-        wait_for(lambda: service.supervisor.abandoned, message="stall not detected")
-        self.assertIn("stalled", service.runtime.camera_status["cam_a"]["worker_error"])
+        wait_for(lambda: "stalled" in service.runtime.camera_status["cam_a"].get("worker_error", ""), message="stall not detected")
         wait_for(lambda: self.state(service) == "monitoring" and not service.supervisor.abandoned, timeout=20,
                  message="replacement did not take over, or the stuck thread never ended")
 
@@ -362,6 +396,76 @@ class RestartAndRecoveryTests(ServiceCase):
         self.assertEqual(service.db_recovery["action"], "started_empty")
         service.runtime.store.add_event(SecurityEvent("evt_new", "activity", "info", "cam_a", 1, 1, 1.0, "x"))
         self.assertEqual(len(service.runtime.store.list_events()), 2, "the recovery notice itself plus the new event")
+
+    def test_recovery_preserves_the_damaged_original_and_reports_backup_age_and_loss_window(self):
+        import hashlib
+
+        config = site_config(self.directory.name)
+        first = self.service(config, start_cameras=False)
+        first.create_backup(label="auto")
+        first.stop()
+        self.services.remove(first)
+        storage = Path(config["storage"]["dir"])
+        damaged = b"SQLite format 3\x00" + b"\xde\xad" * 4000
+        (storage / "sentinel.db").write_bytes(damaged)
+        for suffix in ("-wal", "-shm"):
+            Path(str(storage / "sentinel.db") + suffix).unlink(missing_ok=True)
+        second = self.service(config, start_cameras=False)
+        report = second.db_recovery
+        preserved = storage / "recovery" / report["quarantined"][0]["file"]
+        self.assertEqual(preserved.read_bytes(), damaged, "the damaged original is kept byte for byte")
+        self.assertEqual(report["quarantined"][0]["sha256"], hashlib.sha256(damaged).hexdigest())
+        self.assertGreaterEqual(report["backup_age_s"], 0)
+        self.assertLessEqual(report["possible_loss"]["from_ms"], report["possible_loss"]["to_ms"])
+        self.assertGreaterEqual(report["restored_ms"], report["detected_ms"])
+        saved = json.loads((storage / "recovery" / report["report_file"]).read_text())
+        self.assertEqual(saved["backup"], report["backup"])
+        message = next(n["message"] for n in self.notifications if n["title"] == "Sentinel repaired its event database")
+        self.assertIn("may be missing", message)
+        self.assertIn("old)", message)
+        self.assertIn("preserved unchanged", message)
+
+    def test_readable_rows_are_salvaged_from_a_copy_of_the_damaged_database(self):
+        from sentinel.store import EventStore
+
+        config = site_config(self.directory.name)
+        first = self.service(config, start_cameras=False)
+        first.runtime.store.add_event(SecurityEvent("evt_backed_up", "activity", "info", "cam_a", 1000, 1000, 1.0, "Person in Yard"))
+        first.create_backup(label="auto")
+        first.runtime.store.add_event(SecurityEvent("evt_after_backup", "zone_entry", "high", "cam_a", 5000, 5000, 0.9, "Person entered Yard"))
+        first.stop()
+        self.services.remove(first)
+        checks = iter(["*** in database main ***\nPage 7: btree page corrupted"])
+        real = EventStore.quick_check
+        with mock.patch.object(EventStore, "quick_check", lambda store: next(checks, None) or real(store)):
+            second = self.service(config, start_cameras=False)
+        report = second.db_recovery
+        self.assertEqual(report["action"], "restored_from_backup")
+        self.assertGreaterEqual(report["merged"].get("events", 0), 1)
+        ids = [event["event_id"] for event in second.runtime.store.list_events(limit=1000)]
+        self.assertIn("evt_backed_up", ids)
+        self.assertIn("evt_after_backup", ids, "rows written after the backup were recovered from the damaged copy")
+        message = next(n["message"] for n in self.notifications if n["title"] == "Sentinel repaired its event database")
+        self.assertIn("Recovered from the damaged file", message)
+
+    def test_offline_and_staged_restores_never_overwrite_the_current_database(self):
+        from sentinel.backup import restore_backup, stage_database_restore
+
+        config = site_config(self.directory.name)
+        first = self.service(config, start_cameras=False)
+        name = first.create_backup(label="manual")["name"]
+        first.runtime.store.add_event(SecurityEvent("evt_current", "activity", "info", "cam_a", 1, 1, 1.0, "x"))
+        first.stop()
+        self.services.remove(first)
+        storage = Path(config["storage"]["dir"])
+        current = (storage / "sentinel.db").read_bytes()
+        result = restore_backup(storage / "backups" / name, storage, parts=("database",))
+        self.assertEqual((storage / "recovery" / result["preserved"][0]["file"]).read_bytes(), current)
+        stage_database_restore(storage / "backups" / name, storage)
+        second = self.service(config, start_cameras=False)
+        self.assertEqual(second.db_recovery["action"], "staged_restore")
+        self.assertTrue(second.db_recovery["quarantined"], "the database replaced by a staged restore is kept")
+        self.assertIn("Event history restored from a backup", self.titles())
 
     def test_damaged_site_config_falls_back_to_the_last_good_version(self):
         config = site_config(self.directory.name)

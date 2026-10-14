@@ -135,7 +135,8 @@ function updateCameraStatus(statuses) {
     const starting = health.state === "starting" || health.state === "not_running" || !health.state;
     node.className = `status ${monitoring ? "status-ok" : starting ? "muted" : "status-bad"}`;
     const warnings = (health.warnings || []).map((w) => w.replace(/_/g, " "));
-    node.textContent = monitoring ? `${status.fps || 0} fps${warnings.length ? ` · ${warnings.join(", ")}` : ""}` : health.label || "starting";
+    node.textContent = health.state === "unverified" ? "Unverified: still picture" : monitoring ? `${status.fps || 0} fps${warnings.length ? ` · ${warnings.join(", ")}` : ""}` : health.label || "starting";
+    if (health.state === "unverified") node.className = "status status-warn";
     const overlay = tile.querySelector(".camera-overlay");
     overlay.hidden = monitoring || (health.state || "starting") === "starting";
     overlay.querySelector(".overlay-title").textContent = `NOT MONITORING: ${(health.label || "").toUpperCase()}`;
@@ -148,13 +149,14 @@ function renderCoverage(coverage) {
   const node = $("#coverage");
   const text = {
     full: `Monitoring ${coverage.monitoring}/${coverage.total}`,
+    unverified: `Monitoring ${coverage.monitoring}/${coverage.total} · ${coverage.unverified} unverified`,
     degraded: `Coverage degraded ${coverage.monitoring}/${coverage.total}`,
     none: "NOT MONITORING",
     not_running: "Cameras not running",
   }[coverage.state] || coverage.state;
   node.className = `coverage ${coverage.state}`;
   node.textContent = text;
-  const problems = coverage.not_monitoring.filter((camera) => camera.state !== "starting").map((camera) => `${camera.name}: ${camera.label}`);
+  const problems = [...coverage.not_monitoring, ...(coverage.unverified_cameras || [])].filter((camera) => camera.state !== "starting").map((camera) => `${camera.name}: ${camera.label}`);
   const components = Object.values(coverage.components || {}).filter((c) => c.state !== "ok").map((c) => `${c.label}: ${c.detail}`);
   node.title = [...problems, ...components].join("\n") || "All cameras are being monitored";
   $("#system-badge").hidden = coverage.state === "full" || coverage.state === "not_running";
@@ -235,15 +237,31 @@ function selectZone(zoneId) {
 
 // ---- timeline --------------------------------------------------------------
 
+const OUTCOME_LABELS = { expected_activity: "Expected activity", false_alarm: "False alarm", real_concern: "Genuine concern", unclear: "Uncertain" };
+
+function incidentQuery() {
+  const form = new FormData($("#incident-search"));
+  const params = new URLSearchParams({ limit: "200" });
+  for (const [key, value] of form.entries()) {
+    if (!value) continue;
+    if (key === "from") params.set("since_ms", String(new Date(`${value}T00:00:00`).getTime()));
+    else if (key === "to") params.set("until_ms", String(new Date(`${value}T23:59:59`).getTime()));
+    else params.set(key, value);
+  }
+  return params.toString();
+}
+
 async function loadIncidents() {
-  state.incidents = await api("/incidents?limit=100");
+  const [found, open] = await Promise.all([api(`/search/incidents?${incidentQuery()}`), api("/incidents?status=open&limit=200")]);
+  state.incidents = found;
+  state.openIncidents = open;
   renderIncidents();
 }
 
 function renderIncidents() {
   const includeClosed = $("#show-closed").checked;
   const rows = state.incidents.filter((incident) => includeClosed || incident.status === "open");
-  const open = state.incidents.filter((incident) => incident.status === "open" && !incident.acknowledged_ms).length;
+  const open = (state.openIncidents || state.incidents).filter((incident) => incident.status === "open" && !incident.acknowledged_ms).length;
   const badge = $("#open-count");
   badge.hidden = open === 0;
   badge.textContent = open;
@@ -255,59 +273,14 @@ function renderIncidents() {
         <span class="sev ${esc(incident.severity)}">${esc(incident.severity)}</span>
         <div class="what"><div>${esc(incident.title)}</div>
           <div class="small muted">${dateTime(incident.opened_ms)} · ${esc(incident.cameras.join(", "))} · ${esc(incident.event_types.join(", "))}</div></div>
-        <span class="small muted">${incident.resolution ? esc(incident.resolution.replace("_", " ")) : incident.acknowledged_ms ? "acknowledged" : esc(incident.status)}</span>
+        <span class="small muted">${incident.resolution ? esc(OUTCOME_LABELS[incident.resolution] || incident.resolution) : incident.acknowledged_ms ? "acknowledged" : esc(incident.status)}</span>
       </li>`,
       )
-      .join("") || '<li class="muted">No incidents yet. Ordinary activity is logged below without alerting.</li>';
+      .join("") || '<li class="muted">No incidents match. Ordinary activity is logged below without alerting.</li>';
   document.querySelectorAll("[data-incident]").forEach((node) => node.addEventListener("click", () => openIncident(node.dataset.incident)));
 }
 
-async function openIncident(incidentId) {
-  state.selectedIncident = incidentId;
-  renderIncidents();
-  const incident = await api(`/incidents/${encodeURIComponent(incidentId)}`);
-  const events = [...incident.events].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
-  const snapshots = events.filter((event) => event.snapshot_path).slice(0, 4);
-  const clips = incident.clip_paths || [];
-  $("#incident-detail").innerHTML = `
-    <div class="row-between"><h3>${esc(incident.title)}</h3><span class="sev ${esc(incident.severity)}">${esc(incident.severity)}</span></div>
-    <div class="small muted">Opened ${dateTime(incident.opened_ms)} · ${esc(incident.cameras.join(", "))}</div>
-    <div class="media">
-      ${clips.map((clip) => `<video controls preload="metadata" src="${API}/media/${clip.split("/").map(encodeURIComponent).join("/")}"></video>`).join("")}
-      ${snapshots.map((event) => `<img alt="${esc(event.summary)}" src="${API}/media/${event.snapshot_path.split("/").map(encodeURIComponent).join("/")}">`).join("")}
-    </div>
-    ${clips.length ? `<div class="small muted">Clip will not play? <a href="${API}/media/${clips[0].split("/").map(encodeURIComponent).join("/")}" download>Download it</a> (this OpenCV build may lack H.264).</div>` : ""}
-    <ul class="list compact">${events
-      .map(
-        (event) => `<li class="event-row"><span class="muted">${time(event.timestamp_ms)}</span>
-        <span><span class="sev ${esc(event.severity)}">${esc(event.severity)}</span> ${esc(event.summary)}
-        <span class="muted">· ${Math.round(event.confidence * 100)}% · ${esc(event.reason_codes.join(", "))}</span>
-        ${event.details && event.details.identity_note ? `<div class="small muted">${esc(event.details.identity_note)}</div>` : ""}
-        ${event.details && event.details.correlation_note ? `<div class="small muted">${esc(event.details.correlation_note)}</div>` : ""}</span></li>`,
-      )
-      .join("")}</ul>
-    <p class="small muted">Sentinel describes observed activity. It does not determine identity or intent.</p>
-    <div class="button-row">
-      <button id="ack" ${incident.acknowledged_ms ? "disabled" : ""}>Acknowledge</button>
-      <button data-outcome="expected_activity">Expected activity</button>
-      <button data-outcome="false_alarm">False alarm</button>
-      <button data-outcome="real_concern" class="danger">Real concern</button>
-      ${state.site.drone_enabled && incident.zones.length ? `<button id="inspect-incident">Request drone inspection</button>` : ""}
-    </div>
-    <label class="field checkbox small"><input type="checkbox" id="protect" ${incident.protected ? "checked" : ""}> Keep these recordings (excluded from automatic deletion and disk-space clean-up)</label>
-    ${incident.resolution ? `<div class="small muted">Resolved as ${esc(incident.resolution)} by ${esc(incident.resolved_by)}</div>` : ""}`;
-  $("#ack").addEventListener("click", () => incidentAction(incidentId, "acknowledge"));
-  $("#protect").addEventListener("change", (event) => incidentAction(incidentId, "protect", { protected: event.target.checked }));
-  document.querySelectorAll("[data-outcome]").forEach((button) =>
-    button.addEventListener("click", () => incidentAction(incidentId, "resolve", { outcome: button.dataset.outcome })),
-  );
-  const inspect = $("#inspect-incident");
-  if (inspect) {
-    const zoneId = [...incident.zones].reverse().find((id) => findZone(id)?.zone.map_polygon);
-    inspect.disabled = !zoneId;
-    inspect.addEventListener("click", () => requestInspection({ zone_id: zoneId, incident_id: incidentId }));
-  }
-}
+// openIncident (explanation, timeline, replay, notes, export) lives in intel.js.
 
 async function incidentAction(incidentId, action, body = {}) {
   try {
@@ -448,6 +421,20 @@ async function loadSystem() {
   }
 }
 
+// Each liveness signal is shown on its own, so a frozen picture behind a working
+// decoder, or a stopped detector behind a live picture, is visible at a glance.
+function signalBadges(signals) {
+  if (!signals) return "";
+  const names = { frames: "frames", decoder: "decoder", stream_clock: "stream clock", content: "picture", inference: "AI" };
+  return Object.entries(names)
+    .filter(([key]) => signals[key])
+    .map(([key, label]) => {
+      const ok = signals[key].ok;
+      return `<span class="signal ${ok === true ? "ok" : ok === false ? "bad" : ""}" title="${esc(label)}: ${ok === null ? "not available" : ok ? "ok" : "check"}">${esc(label)}</span>`;
+    })
+    .join("");
+}
+
 function renderSystem(report, outages, backups) {
   const coverage = report.coverage;
   renderCoverage(coverage);
@@ -455,12 +442,13 @@ function renderSystem(report, outages, backups) {
   banner.className = `banner ${coverage.state === "full" ? "good" : coverage.state === "not_running" ? "" : "bad"}`;
   const issues = [
     ...coverage.not_monitoring.map((camera) => `${camera.name}: ${camera.label}`),
+    ...(coverage.unverified_cameras || []).map((camera) => `${camera.name}: ${camera.label} (check the picture)`),
     ...Object.values(coverage.components).filter((c) => c.state !== "ok").map((c) => `${c.label}: ${c.detail}`),
   ];
-  banner.innerHTML = `<strong>${esc({ full: "All cameras are being monitored.", degraded: "Security coverage is degraded.", none: "No camera is being monitored.", not_running: "Camera processing is not running in this session." }[coverage.state] || coverage.state)}</strong>
+  banner.innerHTML = `<strong>${esc({ full: "All cameras are being monitored.", unverified: "Monitoring, but a still picture cannot be confirmed as live on some cameras.", degraded: "Security coverage is degraded.", none: "No camera is being monitored.", not_running: "Camera processing is not running in this session." }[coverage.state] || coverage.state)}</strong>
     ${issues.length ? `<ul class="small">${issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>` : ""}`;
   $("#health-updated").textContent = `Updated ${time(report.time_ms)}`;
-  $("#health-cameras").innerHTML = `<tr><th>Camera</th><th>State</th><th>Processed fps</th><th>Detect p95</th><th>Delay p95</th><th>Skipped frames</th><th>Reconnects</th><th>Restarts</th><th>AI</th><th>Issue</th><th></th></tr>` +
+  $("#health-cameras").innerHTML = `<tr><th>Camera</th><th>State</th><th>Processed fps</th><th>Detect p95</th><th>Delay p95</th><th>Skipped frames</th><th>Reconnects</th><th>Restarts</th><th>AI</th><th>Signals</th><th>Issue</th><th></th></tr>` +
     report.cameras.map((camera) => {
       const health = camera.health || {};
       const metrics = camera.metrics || {};
@@ -475,6 +463,7 @@ function renderSystem(report, outages, backups) {
         <td>${num(camera.reconnects)}</td>
         <td>${num(camera.restarts_total)}</td>
         <td>${esc(camera.detector_provider || "–")}${camera.detector_state && camera.detector_state !== "ok" ? ` (${esc(camera.detector_state)})` : ""}</td>
+        <td>${signalBadges(health.signals)}</td>
         <td class="wrap small">${esc(issue)}</td>
         <td>${camera.worker_state ? `<button data-restart="${esc(camera.camera_id)}">Restart</button>` : ""}</td></tr>`;
     }).join("");
@@ -575,6 +564,9 @@ function connectStream() {
     const index = state.incidents.findIndex((item) => item.incident_id === incident.incident_id);
     if (index >= 0) state.incidents[index] = incident;
     else state.incidents.unshift(incident);
+    const openIndex = (state.openIncidents || []).findIndex((item) => item.incident_id === incident.incident_id);
+    if (openIndex >= 0) state.openIncidents[openIndex] = incident;
+    else if (state.openIncidents) state.openIncidents.unshift(incident);
     renderIncidents();
   });
   source.addEventListener("notification", (message) => {
@@ -607,6 +599,7 @@ async function refreshAfterConfigChange() {
     renderStatic();
     renderMap();
     if (typeof onSetupConfigChanged === "function") onSetupConfigChanged();
+    if (typeof fillSearchOptions === "function") fillSearchOptions();
   } catch {
     /* next event or reload will retry */
   }
@@ -623,6 +616,7 @@ async function boot() {
   renderCameras(await api("/cameras"));
   renderStatic();
   renderCoverage((await api("/state")).coverage);
+  if (typeof fillSearchOptions === "function") fillSearchOptions();
   await Promise.all([loadIncidents(), loadActivity()]);
   if (state.site.drone_enabled) renderDrone(await api("/drone"));
   else document.querySelector('[data-tab="drone"]').hidden = true;

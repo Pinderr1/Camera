@@ -44,6 +44,12 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Dashboard (live, map, timeline, drone, settings) | Built and smoke-tested |
 | Drone: simulated adapter, geofence, approval workflow, safety monitor | Built and tested |
 | Drone: MAVLink adapter | **Telemetry only. All flight commands are refused by design** |
+| Camera liveness: independent frame, decoder, stream-clock, picture and inference signals; still scenes are `unverified`, never falsely `frozen`; recorder-clock freezes detected | Built and tested on simulated cameras with sensor noise and overlay freezes. **Thresholds not yet checked on real recorders** |
+| Evidence-preserving database recovery (originals moved aside with hashes, salvage from a copy, backup age and loss window reported and notified) | Built and tested |
+| Rule builder (types incl. combinations; modes Home/Away/Night/Vacation; days; cooldowns; notification preference; minimum observations; templates) with mandatory test before enabling (simulated walk, scenarios, recorded activity) | Built; backend and Edge tests. Recorded-activity tests are approximations |
+| Explainable incidents (observed vs inferred, rules, confidence, severity reasons, evidence) with visual timeline and replay sync | Built and tested on replays |
+| Activity insights (patterns, changes, unusual observations as information only, approval-only suggestions) | Built; tested on synthetic history only |
+| Investigation: search, notes, feedback labels, nuisance reports per rule/camera, missed-event reports, fingerprinted exports | Built and tested |
 | Accounts/multi-user, mobile app, cloud relay, HTTPS deployment | Not started (see `ROADMAP.md`) |
 
 ## Repository map
@@ -82,6 +88,11 @@ src/sentinel/            the Sentinel brain (current product)
   daemon.py              run state, log rotation, stop requests, `sentinel run` process supervisor, Task Scheduler/systemd
   runtime.py             SentinelRuntime hub + EventBus (events -> incidents -> store/bus/alerts) + health wiring
   replay.py              deterministic offline scenario replay (tests, rule tuning)
+  rules.py               rule-builder fields, plain-language descriptions, templates (stdlib)
+  rule_lab.py            test a rule before enabling it: simulated walk, scenario, or recorded visits through the real engine
+  explain.py             structured incident explanations: observed vs inferred, rules, confidence, severity, evidence (stdlib)
+  insights.py            descriptive activity statistics, unusual observations (information only), suggestions (stdlib)
+  reports.py             nuisance/performance reports from feedback; incident export with evidence fingerprints
   service.py             process assembly: runtime + supervised workers + housekeeping (health, storage, backups) + drone loop + MQTT
   api.py                 FastAPI app (/api/v1) + dashboard host
   mqtt.py                MQTT mirror of bus traffic
@@ -104,6 +115,7 @@ docs/benchmarking.md           how to measure Sentinel on real footage, and what
 docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
 docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
 docs/reliability.md            24/7 operation: health states, outages, recovery, background start, storage, backups
+docs/intelligence.md           rules and rule builder, rule testing, explanations, activity insights, investigation and feedback
 ROADMAP.md                     phased implementation roadmap
 sources.md                     license and reuse audit
 src/senior_safety/, webapp/, scripts/, integrations/, data/   legacy CameraAI (frozen)
@@ -150,7 +162,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 7. **Drone safety.** No autonomous real-world flight. Sentinel may *request* inspections, but only an operator can approve them. Every command is checked against the geofence and written to the audit log. The flight controller owns stabilisation, failsafes, fences, and landing. Do not write custom flight controllers or landing algorithms. The MAVLink adapter stays telemetry-only until every gate in `docs/drone-integration.md` is met and recorded.
 8. **No automatic calls to police or emergency services.** Escalation goes to people only.
 9. **Network diagnostics are read-only and local.** Sentinel never changes router, firewall, computer, or device network settings; it explains what to change. It probes only private/link-local/CGNAT/loopback addresses, searches a network only after the person confirms they manage it (port checks at most the local /24), never collects MAC addresses, serial numbers, Wi-Fi names, or public IPs, and tries a recorder password once per test (accounts lock).
-10. **Never claim coverage that does not exist.** A camera is reported as monitoring only while new, changing frames reach a working detector. Offline, frozen, AI-failed, stalled, and restarting cameras are shown as not monitoring (Live overlay, coverage badge, System tab, API), recorded as outages, and pushed to people when they last. Health events never open security incidents, and health notifications do not depend on the arm mode.
+10. **Never claim coverage that does not exist.** A camera is reported as monitoring only while new frames reach a working detector and nothing shows the picture is frozen; a still picture that cannot be proven live is shown as `unverified`, not as fine and not as frozen. Offline, frozen, AI-failed, stalled, and restarting cameras are shown as not monitoring (Live overlay, coverage badge, System tab, API), recorded as outages, and pushed to people when they last. Health events never open security incidents, and health notifications do not depend on the arm mode.
 
 ## Technical decisions (and why)
 
@@ -174,6 +186,9 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - Match the surrounding style: dataclasses, type hints, small modules, comments only where the *why* is non-obvious.
 - Config edits go through `SiteConfigManager` (validated, persisted, applied live); never mutate `runtime.config` directly.
 - Environmental motion (scene conditions) must never open incidents; new environmental signals are `info` events.
+- **Unusual is not a threat.** Activity statistics and anomaly indicators are information only: they never raise alerts, change severities, or change rules. Suggestions and feedback are applied only when the owner saves a rule. Feedback is for evaluation, never for silent retraining. Activity records hold categories, zones and times only (no images, positions, appearance, or identities).
+- Rules can only be turned on from the builder after a test of the current version (the list switch asks for confirmation otherwise). New rule fields are validated in `config._validate_rule_extras` and described in `rules.describe_rule`.
+- Never overwrite evidence: damaged or replaced databases are moved to `recovery/` with hashes before anything else happens, and every recovery is reported to the owner.
 - New failure modes go through `HealthMonitor` (a camera state or a component), get a simulated fault or injected error, and a test in `tests/test_sentinel_reliability.py`. Run `scripts/reliability_smoke.py` after changing the pipeline, supervisor, or health code.
 - Writes on the detection path must not raise into camera threads: contain the error, report it as a health component, and keep alerts flowing.
 - New troubleshooter rules go in `netdiag/diagnose.py` with a `SimulatedNetwork` test. State `confirmed` only for faults Sentinel observed; anything inferred is `suspected` and must sit next to the alternatives.

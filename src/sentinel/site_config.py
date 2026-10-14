@@ -31,7 +31,7 @@ DRAFT_TTL_S = 900
 BACKUPS = 10
 SOURCE_FIELDS = {
     "type", "host", "port", "template", "channel", "username", "path", "sub_path", "url", "sub_url",
-    "prefer_substream", "hw_decode", "transport", "index", "backend", "resolution", "mode", "loop", "scenario", "faults",
+    "prefer_substream", "hw_decode", "transport", "index", "backend", "resolution", "mode", "loop", "scenario", "faults", "noise",
 }
 WRITE_ONLY_FIELDS = {"path", "sub_path", "url", "sub_url"}  # stream addresses: accepted, never returned
 CAMERA_FIELDS = {"name", "enabled", "fps", "zones", "privacy_masks", "map", "categories", "detector", "conditions"}
@@ -327,6 +327,53 @@ class SiteConfigManager:
                 raise KeyError(camera_id)
             target["categories"] = {name: {key: bool(value) for key, value in settings.items()} for name, settings in categories.items()}
             self._commit(config, actor, "category settings saved")
+
+    # ---- security rules ------------------------------------------------------
+
+    def save_rule(self, rule_id: str | None, payload: dict[str, Any], actor: str) -> dict[str, Any]:
+        """Create (rule_id None) or replace a rule. The whole config is validated,
+        so a rule that references a missing zone or rule is rejected, not saved."""
+        from .rules import clean_rule
+
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            rules = config.setdefault("rules", [])
+            rule = clean_rule(payload)
+            if rule_id is None:
+                rule["id"] = _new_id(rule.get("name") or rule.get("type", "rule"), {existing["id"] for existing in rules})
+                rules.append(rule)
+                summary = f"rule {rule['id']} added"
+            else:
+                index = next((i for i, existing in enumerate(rules) if existing["id"] == rule_id), None)
+                if index is None:
+                    raise KeyError(rule_id)
+                rule["id"] = rule_id
+                rules[index] = rule
+                summary = f"rule {rule_id} saved"
+            rule.setdefault("enabled", True)
+            self._commit(config, actor, summary)
+            return copy.deepcopy(rule)
+
+    def delete_rule(self, rule_id: str, actor: str) -> None:
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            rules = config.get("rules", [])
+            if not any(rule["id"] == rule_id for rule in rules):
+                raise KeyError(rule_id)
+            users = [rule["id"] for rule in rules if rule_id in rule.get("rules", [])]
+            if users:
+                raise SiteConfigError(f"rule {rule_id} is part of {', '.join(users)}; remove it there first")
+            config["rules"] = [rule for rule in rules if rule["id"] != rule_id]
+            self._commit(config, actor, f"rule {rule_id} deleted")
+
+    def set_rule_enabled(self, rule_id: str, enabled: bool, actor: str) -> None:
+        with self._lock:
+            config = copy.deepcopy(self._config)
+            rule = next((rule for rule in config.get("rules", []) if rule["id"] == rule_id), None)
+            if rule is None:
+                raise KeyError(rule_id)
+            rule["enabled"] = bool(enabled)
+            self._commit(config, actor, f"rule {rule_id} {'enabled' if enabled else 'disabled'}")
 
     def replace(self, config: dict[str, Any], actor: str, summary: str) -> None:
         """Whole-config replacement (backup restore). Validated like any edit; the

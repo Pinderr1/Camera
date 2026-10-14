@@ -2,7 +2,7 @@
 
 Sentinel is meant to run for months without anyone watching it. This document covers how it notices that it has stopped protecting the property, how it recovers by itself where that is safe, and how it tells a person when it cannot.
 
-The rule behind every design choice: **Sentinel never reports a camera as monitoring unless new, changing frames are reaching the detector and the detector is working.** Everything else is shown as a specific "not monitoring" state, recorded as an outage, and pushed to people when it lasts.
+The rule behind every design choice: **Sentinel never reports a camera as monitoring unless new frames are reaching a working detector and there is no evidence the picture is frozen.** Everything else is shown as a specific "not monitoring" state, recorded as an outage, and pushed to people when it lasts. Where Sentinel cannot tell (a perfectly still, noise-free picture), it says so: the camera is **unverified**, never silently "fine" and never falsely "frozen".
 
 ## Camera health states
 
@@ -13,11 +13,32 @@ Every second, `HealthMonitor` (`health.py`) turns each camera's raw signals into
 | `monitoring` | yes | Frames arrive, change, and are analysed | All checks below pass |
 | `starting` | no | Worker (re)started, waiting for the first frame | No frame since `worker_started_ms`, within `startup_grace_s` |
 | `offline` | no | No video | No processed frame for `frame_timeout_s` (the source's error is the reason, for example `auth_failed`, `unreachable`) |
-| `frozen` | no | Frames arrive but the picture is identical | Pixel samples (not averages, so sensor noise survives) unchanged for `frozen_after_s` |
+| `unverified` | yes, but unconfirmed | Frames arrive and are analysed, but the picture has not changed and nothing shows whether it is a still scene or a frozen feed | Static for `frozen_after_s` without evidence of freezing (see below) |
+| `frozen` | no | Frames arrive but the picture is frozen | Stream timestamps stopped advancing, or the picture lost its sensor noise abruptly (even if an on-screen clock keeps ticking) |
 | `ai_failed` | no | Video arrives but the detector cannot run | Repeated inference errors with no working fallback |
 | `stalled` / `restarting` | no | Processing thread crashed or hung; restart scheduled | Supervisor (below) |
 | `failed` | no | Restart budget used up; automatic restarts paused | Supervisor circuit breaker |
 | `not_running` | no | Cameras are disabled in this session (`serve --no-cameras`) | No supervisor |
+
+### Independent liveness signals
+
+Each camera reports five signals separately (System tab "Signals" column, `health.signals` in the API):
+
+| Signal | Source | Catches |
+| --- | --- | --- |
+| frames | last processed frame (`last_frame_ms`) | disconnects, dead streams → `offline` |
+| decoder | decoded frames per second (`frames_read` progress) | a reader that stopped decoding |
+| stream clock | the stream's own timestamps (PTS, `CAP_PROP_POS_MSEC`) | a decoder or recorder repeating one frame → `frozen` |
+| picture | `vision.ContentMonitor` on sampled pixels | frozen pictures, including behind a live clock → `frozen`; still scenes → `unverified` |
+| inference | last completed detection (`last_inference_ms`) | a detector that silently stopped running → `ai_failed` after `inference_timeout_s` |
+
+`ContentMonitor` classifies each frame-to-frame change as:
+- **noise:** small changes spread over most of the frame. A live sensor does this even when nothing moves, so a noisy static scene stays `monitoring`.
+- **changed:** movement or light over a large area.
+- **overlay:** changes confined to one small box (≤ 3% of the frame), such as a recorder's clock.
+- **identical:** nothing changed.
+
+A run of overlay/identical frames is a still period. It is called **frozen** only if the picture was noisy just before it went still: a live sensor does not lose its noise abruptly, and movement that stops is not mistaken for noise. A picture that was already noise-free is **unverified**: the camera keeps being analysed, coverage shows "Monitoring · N unverified", and a low-priority "Cannot confirm X is live" message is sent only after `unverified_notify_after_s` (6 h by default; 0 disables). If an unverified period turns into a real loss, the loss is still notified.
 
 A monitoring camera can carry **warnings** that do not stop protection: `cpu_fallback` (GPU inference failed, running on CPU), `slow_processing` (below `slow_ratio` of the target fps for `slow_after_s`), and `recent_restarts`.
 
@@ -109,7 +130,13 @@ Media is not backed up: it is large and short-lived by design.
 - Backups never leave the computer through the API: the config inside contains stream addresses, which the API treats as write-only.
 
 **Startup recovery:**
-- **Damaged database:** on every start Sentinel runs `PRAGMA quick_check`. A file that fails is moved to `<storage>/recovery/` (kept for inspection), and the newest backup that verifies is restored. Without one, a new, empty database is started. Either way an event, an audit entry, and a notification say what happened and what was lost.
+- **Damaged database:** on every start Sentinel runs `PRAGMA quick_check`. Evidence comes first:
+  1. The damaged file and its WAL/SHM are **moved, byte for byte**, to `<storage>/recovery/sentinel.db.<time>.corrupt*`, with their SHA-256, size and last-write time.
+  2. Readable rows are salvaged table by table from a temporary **copy**; the preserved original is never opened for writing.
+  3. The newest backup that verifies is restored, and the salvaged rows are merged in with INSERT OR IGNORE, so nothing from the backup is overwritten. Without a backup, the salvaged rows start a new database (or an empty one).
+  4. `recovery/recovery-<time>-<action>.json` records the detection and restoration times, the backup used, its creation time and age, the **possible-loss window** (from the backup to the damaged file's last write), the salvaged row counts, and the preserved files and hashes.
+  5. The owner is notified with the backup time and age, the period that may be missing, what was recovered, and where the original is kept. The report is also in the audit log and on the System tab (`database.recoveries`).
+- **Replacing a database is never silent either.** Offline restores and staged restores move the current database aside the same way and write a recovery report; a staged restore also notifies the owner when it is applied.
 - **Damaged `site.json`** (for example a torn write): it is moved to `recovery/`, and the newest valid copy from `config_history/` is used, or the start config if none is valid. A notification asks the person to check the Setup tab.
 
 ## Configuration reference
@@ -142,7 +169,8 @@ Simulated cameras accept scheduled faults, `source.faults: [{"type", "at_s", "du
 | Fault | Simulates |
 | --- | --- |
 | `disconnect` | The camera or network drops: no frames, `unreachable` |
-| `freeze` | Frames keep arriving with an identical picture |
+| `freeze` | Frames keep arriving with an identical picture; stream timestamps stop |
+| `freeze_overlay` | The picture is frozen but an on-screen clock keeps ticking and timestamps advance (a recorder whose camera input hung) |
 | `crash` | The capture call raises (worker crash) |
 | `stall` | The capture call hangs and ignores stop requests (stuck decoder or driver) |
 | `detector_error` | Inference raises on every frame |
@@ -158,7 +186,7 @@ Validation only accepts `faults` on simulated cameras.
 
 ## Limitations
 
-- **Frozen detection** needs pixel-identical frames. A recorder that freezes the picture but keeps updating an on-screen clock, or that shows its own "No video" screen, still looks live. Such a camera keeps "monitoring" with nothing to detect. Not yet observed on real hardware.
+- **Frozen detection** relies on the stream's timestamps or on sensor noise disappearing. A feed that was already noise-free when it froze is only `unverified`. A recorder that shows its own animated "No video" screen still looks live. Simulated cameras add mild sensor noise (`source.noise`); thresholds have not yet been checked against real recorders, low-bitrate streams, or cameras with strong temporal noise reduction.
 - **GPU telemetry** is NVIDIA-only (`nvidia-smi`). DirectML exposes no utilisation counters; on other GPUs, inference health comes from detector latency and errors.
 - **A stuck thread cannot be killed** inside the process. Recovery is a replacement worker, then a process restart once too many threads are stuck. A hang inside the shared GPU session lock would stall every camera until that restart.
 - The Windows background start is a Task Scheduler task, not a Service Control Manager service. It starts at boot and is supervised, but it does not appear in `services.msc`. `service install` has not been run on this development machine; only the generated task XML and commands are tested.

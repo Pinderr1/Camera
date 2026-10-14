@@ -15,6 +15,8 @@ DEFAULT_RULE_CLASSES = ["person"]
 # Categories whose first sighting is logged as ordinary `activity` (info, never an incident).
 ACTIVITY_CLASSES = {"person", "vehicle", "bicycle", "animal", "bag", "unknown_motion"}
 QUIET_ZONE_TYPES = {"street", "sidewalk", "ignore"}  # public or excluded areas: never "on the property"
+DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+ENTRY_CONFIRM_MS = 15_000  # a zone entry may wait this long for `min_observations` before it is dropped
 
 
 @dataclass
@@ -76,6 +78,21 @@ def in_active_hours(timestamp_ms: int, hours: dict[str, str] | None) -> bool:
     return now >= start or now < end
 
 
+def on_active_day(timestamp_ms: int, days: list[str] | None, hours: dict[str, str] | None = None) -> bool:
+    """Day-of-week condition. For an overnight window (22:00-06:00) the early
+    morning belongs to the day the window started, so "Fri" covers Friday night."""
+    if not days:
+        return True
+    moment = datetime.fromtimestamp(timestamp_ms / 1000)
+    if hours and hours["start"] > hours["end"] and moment.strftime("%H:%M") < hours["end"]:
+        moment = datetime.fromtimestamp(timestamp_ms / 1000 - 86400)
+    return DAY_NAMES[moment.weekday()] in days
+
+
+def rule_name(rule: dict[str, Any]) -> str:
+    return rule.get("name") or rule["id"].replace("_", " ")
+
+
 class TemporalEventEngine:
     """Turns per-camera track updates into security events by reasoning over
     time: zone visits with hysteresis, dwell, repeated activity, ordered zone
@@ -101,6 +118,11 @@ class TemporalEventEngine:
         self._zone_entries: dict[str, deque] = {}
         self._repeat_last_fired: dict[str, int] = {}
         self._event_seq = 0
+        self._rule_last_fired: dict[str, int] = {}  # cooldown bookkeeping: "rule_id:zone" -> ms
+        self._fired_log: deque[tuple[int, str, str]] = deque(maxlen=2000)  # (ms, rule_id, site_track_id) for combinations
+        self.rules_by_id = {rule["id"]: rule for rule in self.rules}
+        self.finished_visits: list[dict[str, Any]] = []
+        self.finished_trips: list[dict[str, Any]] = []
 
     def set_sensitivity(self, sensitivity: str) -> None:
         self.dwell_multiplier, _ = sensitivity_adjustments(sensitivity)
@@ -129,8 +151,10 @@ class TemporalEventEngine:
             touched[site.site_track_id] = (site, track)
 
         for site, track in touched.values():
+            events.extend(self._evaluate_entries(site, track, timestamp_ms))
             events.extend(self._evaluate_dwell(site, track, timestamp_ms))
             events.extend(self._evaluate_site_rules(site, track, timestamp_ms))
+        events.extend(self._evaluate_combinations(events, touched, timestamp_ms))
 
         for track in ended:
             state = self._camera_tracks.pop(track.track_id, None)
@@ -144,7 +168,40 @@ class TemporalEventEngine:
         return events
 
     def tick(self, now_ms: int) -> None:
-        self.correlator.expire(now_ms)
+        expired = self.correlator.expire(now_ms)
+        grace = self.engine_config.presence_grace_ms
+        for site in list(self.correlator.site_tracks.values()) + expired:
+            for zone_id, presence in site.zones.items():
+                over = presence.left_ms is not None and (now_ms - presence.left_ms > grace or site in expired)
+                if presence.reported or not (over or (site in expired and presence.left_ms is None)):
+                    continue
+                presence.reported = True
+                end_ms = presence.left_ms if presence.left_ms is not None else site.last_seen_ms
+                zone = self.zones.zones.get(zone_id, {})
+                self.finished_visits.append({
+                    "visit_id": f"{presence.since_ms}_{site.site_track_id}_{zone_id}", "site_track_id": site.site_track_id,
+                    "label": site.label, "kind": site.kind, "camera_id": zone.get("camera_id", ""), "zone_id": zone_id,
+                    "zone_type": zone.get("type", "general"), "start_ms": presence.since_ms, "end_ms": end_ms,
+                    "dwell_s": round(max(0, end_ms - presence.since_ms) / 1000, 1), "arrived": site.arrived,
+                })
+        for site in expired:
+            path = []
+            for _, _, zone_id in site.path:
+                if not path or path[-1] != zone_id:
+                    path.append(zone_id)
+            self.finished_trips.append({
+                "trip_id": f"{site.first_seen_ms}_{site.site_track_id}", "site_track_id": site.site_track_id, "label": site.label,
+                "kind": site.kind, "first_seen_ms": site.first_seen_ms, "last_seen_ms": site.last_seen_ms,
+                "cameras": sorted(site.camera_last_seen), "path": path, "arrived": site.arrived,
+                "link_confidence": round(site.link_confidence, 3), "ambiguous": bool(site.ambiguous_with),
+            })
+
+    def drain_activity(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Completed zone visits and trips (subjects no longer on the property)
+        for the activity statistics. Positions, images and appearance are not included."""
+        visits, trips = self.finished_visits, self.finished_trips
+        self.finished_visits, self.finished_trips = [], []
+        return visits, trips
 
     def site_tracks(self) -> list[SiteTrack]:
         return list(self.correlator.site_tracks.values())
@@ -197,7 +254,11 @@ class TemporalEventEngine:
         modes = rule.get("arm_modes")
         if modes and self.arm_mode not in modes:
             return False
-        return in_active_hours(now, rule.get("active_hours"))
+        return in_active_hours(now, rule.get("active_hours")) and on_active_day(now, rule.get("active_days"), rule.get("active_hours"))
+
+    def _observed_enough(self, rule: dict[str, Any], track: Track) -> bool:
+        """`min_observations`: detector observations of this subject required before the rule may fire."""
+        return track.hits >= int(rule.get("min_observations", 1))
 
     def _rule_matches_zone(self, rule: dict[str, Any], zone_id: str) -> bool:
         zone_type = self.zones.zone_type(zone_id)
@@ -223,22 +284,6 @@ class TemporalEventEngine:
             )
 
         for rule in self.rules:
-            if rule["type"] == "zone_entry" and self._rule_matches_zone(rule, zone_id) and self._rule_active(rule, site.label, now):
-                if track.confidence < rule.get("min_confidence", 0.0):
-                    continue
-                key = f"{rule['id']}:{zone_id}:{site.zones[zone_id].since_ms}"
-                if key in site.fired:
-                    continue
-                site.fired.add(key)
-                events.append(
-                    self._event(
-                        "zone_entry", rule["severity"], track, site, now,
-                        summary=f"{_display(track)} entered {zone_name}",
-                        zone_id=zone_id, rule=rule,
-                        reason_codes=[f"entered_{zone_type}_zone"],
-                    )
-                )
-
             if rule["type"] == "repeated_presence" and self._rule_matches_zone(rule, zone_id) and self._rule_active(rule, site.label, now):
                 window_ms = int(rule["window_s"] * 1000)
                 entries = [
@@ -266,6 +311,36 @@ class TemporalEventEngine:
                     )
         return events
 
+    def _evaluate_entries(self, site: SiteTrack, track: Track, now: int) -> list[SecurityEvent]:
+        """`zone_entry` rules, once per visit. Time conditions are judged at the
+        moment of entry; the rule may wait up to ENTRY_CONFIRM_MS for enough
+        observations, so arming later never fires for someone already inside."""
+        events: list[SecurityEvent] = []
+        for zone_id, presence in site.zones.items():
+            if presence.left_ms is not None or now - presence.since_ms > ENTRY_CONFIRM_MS:
+                continue
+            if self.zones.zones.get(zone_id, {}).get("camera_id") != track.camera_id:
+                continue
+            for rule in self.rules:
+                if rule["type"] != "zone_entry" or not self._rule_matches_zone(rule, zone_id):
+                    continue
+                key = f"{rule['id']}:{zone_id}:{presence.since_ms}"
+                if key in site.fired or not self._rule_active(rule, site.label, presence.since_ms):
+                    continue
+                if track.confidence < rule.get("min_confidence", 0.0) or not self._observed_enough(rule, track):
+                    continue
+                site.fired.add(key)
+                zone_type = self.zones.zone_type(zone_id)
+                events.append(
+                    self._event(
+                        "zone_entry", rule["severity"], track, site, now,
+                        summary=f"{_display(track)} entered {self.zones.zone_name(zone_id)}",
+                        zone_id=zone_id, rule=rule, started_ms=presence.since_ms,
+                        reason_codes=[f"entered_{zone_type}_zone"],
+                    )
+                )
+        return events
+
     def _evaluate_dwell(self, site: SiteTrack, track: Track, now: int) -> list[SecurityEvent]:
         events: list[SecurityEvent] = []
         for zone_id, presence in site.zones.items():
@@ -282,6 +357,8 @@ class TemporalEventEngine:
                 if not self._rule_active(rule, site.label, now):
                     continue
                 if rule.get("require_arrival") and not site.arrived:
+                    continue
+                if not self._observed_enough(rule, track):
                     continue
                 threshold_s = rule["min_dwell_s"] * self.dwell_multiplier
                 key = f"{rule['id']}:{zone_id}:{presence.since_ms}"
@@ -312,7 +389,7 @@ class TemporalEventEngine:
         for rule in self.rules:
             if rule["type"] not in {"sequence", "multi_camera"} or rule["id"] in site.fired:
                 continue
-            if not self._rule_active(rule, site.label, now):
+            if not self._rule_active(rule, site.label, now) or not self._observed_enough(rule, track):
                 continue
             if rule["type"] == "sequence":
                 match = _match_sequence(site.path, rule["zones"], int(rule["within_s"] * 1000))
@@ -350,6 +427,84 @@ class TemporalEventEngine:
                 )
         return events
 
+    def _evaluate_combinations(self, new_events: list[SecurityEvent], touched: dict[str, tuple[SiteTrack, Track]], now: int) -> list[SecurityEvent]:
+        """`combination` rules: several separate observations (other rules) must
+        match within `within_s` before anything is raised. Scope `subject` needs
+        them on one linked subject, so it relies on the correlator's evidence for
+        cross-camera links; scope `site` counts them anywhere on the property and
+        says the observations may involve different people."""
+        for event in new_events:
+            if event.rule_id and event.event_type != "combination":
+                self._fired_log.append((now, event.rule_id, event.site_track_id))
+        combos = [rule for rule in self.rules if rule["type"] == "combination" and rule.get("enabled", True)]
+        if not combos or not new_events:
+            return []
+        events: list[SecurityEvent] = []
+        for rule in combos:
+            modes = rule.get("arm_modes")
+            if (modes and self.arm_mode not in modes) or not in_active_hours(now, rule.get("active_hours")) \
+                    or not on_active_day(now, rule.get("active_days"), rule.get("active_hours")):
+                continue
+            components = set(rule["rules"])
+            window_ms = int(rule["within_s"] * 1000)
+            recent = [entry for entry in self._fired_log if now - entry[0] <= window_ms and entry[1] in components]
+            triggers = [event for event in new_events if event.rule_id in components]
+            if not triggers:
+                continue
+            if rule.get("scope", "subject") == "subject":
+                for site_id in {event.site_track_id for event in triggers}:
+                    matched = sorted({entry[1] for entry in recent if entry[2] == site_id})
+                    if len(matched) < rule["min_matches"] or site_id not in touched:
+                        continue
+                    site, track = touched[site_id]
+                    if rule["id"] in site.fired:
+                        continue
+                    site.fired.add(rule["id"])
+                    first = min(entry[0] for entry in recent if entry[2] == site_id)
+                    names = "; ".join(rule_name(self.rules_by_id[rule_id]) for rule_id in matched if rule_id in self.rules_by_id)
+                    events.append(self._event(
+                        "combination", rule["severity"], track, site, now,
+                        summary=f"{_display(track)} matched {len(matched)} linked observations: {names}",
+                        rule=rule, reason_codes=["multiple_observations"], started_ms=first,
+                        confidence=min(track.confidence, site.link_confidence),
+                        details={"matched_rules": matched, "scope": "subject"},
+                    ))
+            else:
+                matched = sorted({entry[1] for entry in recent})
+                last = self._repeat_last_fired.get(f"combo:{rule['id']}", -window_ms)
+                if len(matched) < rule["min_matches"] or now - last < window_ms:
+                    continue
+                self._repeat_last_fired[f"combo:{rule['id']}"] = now
+                site, track = touched.get(triggers[-1].site_track_id) or next(iter(touched.values()))
+                involved = sorted({entry[2] for entry in recent})
+                names = "; ".join(rule_name(self.rules_by_id[rule_id]) for rule_id in matched if rule_id in self.rules_by_id)
+                events.append(self._event(
+                    "combination", rule["severity"], track, site, now,
+                    summary=f"{len(matched)} related observations on the property within {_duration(rule['within_s'])}: {names}",
+                    rule=rule, reason_codes=["multiple_observations"], started_ms=min(entry[0] for entry in recent),
+                    details={"matched_rules": matched, "scope": "site", "site_track_ids": involved,
+                             "identity_note": "these observations may involve the same or different people"},
+                ))
+        return events
+
+    def _apply_rule_settings(self, event: SecurityEvent, rule: dict[str, Any], now: int) -> SecurityEvent:
+        """Per-rule notification preference and cooldown. During a cooldown the
+        event is still recorded, as `info`, so it never alerts but stays visible."""
+        if rule.get("notify", "auto") != "auto":
+            event.details["notify"] = rule["notify"]
+        cooldown_ms = int(float(rule.get("cooldown_s", 0)) * 1000)
+        if cooldown_ms and event.severity != "info":
+            key = f"{rule['id']}:{event.zone_id}"
+            last = self._rule_last_fired.get(key)
+            if last is not None and now - last < cooldown_ms:
+                event.details["original_severity"] = event.severity
+                event.details["cooldown_remaining_s"] = round((cooldown_ms - (now - last)) / 1000)
+                event.severity = "info"
+                event.reason_codes.append("rule_cooldown")
+            else:
+                self._rule_last_fired[key] = now
+        return event
+
     def _event(
         self,
         event_type: str,
@@ -370,7 +525,15 @@ class TemporalEventEngine:
         payload = dict(details or {})
         if site.ambiguous_with:
             payload["correlation_note"] = "possible match with other sightings was too uncertain to link"
-        return SecurityEvent(
+        # What the explanation needs later: how this subject was observed, and how
+        # (and how confidently) sightings on different cameras were linked to it.
+        payload["subject"] = {
+            "cameras": sorted(site.camera_last_seen), "link_confidence": round(site.link_confidence, 3),
+            "links": [{key: link[key] for key in ("from_camera", "to_camera", "kind", "confidence", "timestamp_ms")} for link in site.links[-5:]],
+            "ambiguous_with": list(site.ambiguous_with), "first_seen_ms": site.first_seen_ms,
+        }
+        payload["observation"] = {"track_hits": track.hits, "bbox": [round(value, 3) for value in track.bbox], "kind": track.kind}
+        event = SecurityEvent(
             event_id=f"evt_{now}_{self._event_seq}",
             event_type=event_type,
             severity=severity,
@@ -387,6 +550,7 @@ class TemporalEventEngine:
             reason_codes=list(reason_codes or []),
             details=payload,
         )
+        return self._apply_rule_settings(event, rule, now) if rule else event
 
 
 def _roam(samples: list[tuple[int, float, float, float]], window_start_ms: int) -> float | None:

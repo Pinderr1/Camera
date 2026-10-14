@@ -24,6 +24,38 @@ from .supervisor import SupervisorSettings, WorkerSupervisor
 log = logging.getLogger("sentinel.service")
 
 
+def _when(ms: int | None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000)) if ms else "unknown"
+
+
+def _age(seconds: float) -> str:
+    return f"{seconds / 3600:.1f} h" if seconds >= 5400 else f"{round(seconds / 60)} min"
+
+
+def database_recovery_lines(report: dict[str, Any]) -> list[str]:
+    """Plain statements for the owner: what happened, which backup, how old it
+    was, which period may be missing, and where the original is kept."""
+    action = report["action"]
+    lines = []
+    if action == "restored_from_backup":
+        lines.append(f"The event database was damaged. It was restored from the backup made {_when(report['backup_created_ms'])} "
+                     f"({_age(report['backup_age_s'])} old)")
+        loss = report.get("possible_loss") or {}
+        lines.append(f"Events, incidents and outages recorded between {_when(loss.get('from_ms'))} and {_when(loss.get('to_ms'))} may be missing")
+    elif action == "salvaged_only":
+        lines.append("The event database was damaged and no usable backup existed; readable records were copied into a new database")
+    elif action == "started_empty":
+        lines.append("The event database was damaged, no usable backup existed and nothing could be salvaged; a new, empty history was started")
+    else:
+        lines.append(f"Event history was replaced by the backup {report.get('backup', '')} made {_when(report.get('backup_created_ms'))}, as requested")
+    merged = {table: count for table, count in (report.get("merged") or {}).items() if count}
+    if merged:
+        lines.append("Recovered from the damaged file: " + ", ".join(f"{count} {table}" for table, count in sorted(merged.items())))
+    if report.get("quarantined"):
+        lines.append(f"The original file is preserved unchanged in recovery/{report['quarantined'][0]['file']}")
+    return lines
+
+
 class SentinelService:
     """Process-level assembly: runtime + supervised camera workers +
     housekeeping (health, storage guard, resources, backups, run state) +
@@ -192,6 +224,113 @@ class SentinelService:
         self.runtime.store.audit(actor, "backup_restored", result)
         return result
 
+    # ---- rules, explanations, insights, reports -------------------------------------
+
+    def _zone_catalog(self) -> list[dict[str, Any]]:
+        return [{"id": zone["id"], "name": zone.get("name", zone["id"]), "type": zone["type"], "camera_id": camera["id"],
+                 "camera_name": camera.get("name", camera["id"])}
+                for camera in self.config.get("cameras", []) for zone in camera.get("zones", []) if zone["type"] != "ignore"]
+
+    def rules_view(self) -> dict[str, Any]:
+        from .config import ARM_MODES, CATEGORIES, DAYS, RULE_TYPES
+        from .models import SEVERITIES
+        from .rule_lab import scenario_names
+        from .rules import TYPE_LABELS, describe_rule, templates
+
+        zone_names = {zone["id"]: zone["name"] for zone in self._zone_catalog()}
+        rules = self.site.config.get("rules", [])
+        rule_names = {rule["id"]: rule.get("name") or rule["id"].replace("_", " ") for rule in rules}
+        return {
+            "rules": [rule | {"display_name": rule_names[rule["id"]], "plain": describe_rule(rule, zone_names, rule_names)} for rule in rules],
+            "templates": templates(),
+            "catalog": {
+                "types": {kind: TYPE_LABELS[kind] for kind in sorted(RULE_TYPES)}, "classes": list(CATEGORIES), "modes": [m for m in ARM_MODES if m != "disarmed"],
+                "days": list(DAYS), "severities": list(SEVERITIES), "zones": self._zone_catalog(),
+                "zone_types": sorted({zone["type"] for zone in self._zone_catalog()}), "scenarios": scenario_names(),
+                "notify_thresholds": self.runtime.policy.config.notify_min_severity,
+            },
+        }
+
+    def check_rule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from .rule_lab import config_with_rule
+        from .rules import clean_rule, describe_rule
+
+        rule = clean_rule(payload) | {"id": payload.get("id") or "draft_rule"}
+        rule.setdefault("enabled", True)
+        zone_names = {zone["id"]: zone["name"] for zone in self._zone_catalog()}
+        rule_names = {item["id"]: item.get("name") or item["id"] for item in self.site.config.get("rules", [])}
+        try:
+            config_with_rule(self.site.config, rule)
+            errors: list[str] = []
+        except ValueError as error:
+            errors = [line.strip("- ").strip() for line in str(error).splitlines()[1:]] or [str(error)]
+        try:
+            plain = describe_rule(rule, zone_names, rule_names)
+        except (KeyError, TypeError, ValueError):
+            plain = None
+        return {"valid": not errors, "errors": errors, "plain": plain, "rule": rule}
+
+    def test_rule(self, body: dict[str, Any]) -> dict[str, Any]:
+        from datetime import datetime
+
+        from .rule_lab import test_rule
+        from .rules import clean_rule
+
+        rule = clean_rule(body["rule"]) | {"id": body["rule"].get("id") or "draft_rule"}
+        start = datetime.fromisoformat(body["start"]) if body.get("start") else None
+        visits = None
+        if body["source"] == "history":
+            now = int(time.time() * 1000)
+            visits = self.runtime.store.list_visits(since_ms=now - int(body.get("days", 7) * 86_400_000), until_ms=now)
+        config = self.site.config | {"_config_dir": self.config.get("_config_dir", ".")}
+        return test_rule(config, rule, source=body["source"], arm_mode=body.get("arm_mode", "away"), start=start,
+                         steps=body.get("steps"), label=body.get("label", "person"), scenario=body.get("scenario"), visits=visits)
+
+    def explain(self, incident_id: str) -> dict[str, Any]:
+        from .explain import explain_incident
+
+        incident = self.runtime.store.get_incident(incident_id)
+        if incident is None:
+            raise KeyError(incident_id)
+        events = self.runtime.store.list_events(incident_id=incident_id, limit=1000)
+        known = {event["event_id"] for event in events}
+        subjects = set(incident.get("site_track_ids", []))
+        # The same subject's earlier observations (e.g. first sighting on another camera) belong to the story too.
+        events += [event for event in self.runtime.store.list_events(since_ms=incident["opened_ms"] - 600_000, until_ms=incident["updated_ms"], limit=1000)
+                   if event["site_track_id"] in subjects and event["event_id"] not in known and not event.get("incident_id")]
+        return explain_incident(incident, events, self.config, notify_thresholds=self.runtime.policy.config.notify_min_severity)
+
+    def export_incident(self, incident_id: str, actor: str, *, include_media: bool) -> bytes:
+        from .reports import export_incident
+
+        incident = self.runtime.store.get_incident(incident_id)
+        if incident is None:
+            raise KeyError(incident_id)
+        events = self.runtime.store.list_events(incident_id=incident_id, limit=1000)
+        media = list(incident.get("clip_paths", [])) + [event["snapshot_path"] for event in events if event.get("snapshot_path")]
+        data = export_incident(incident, events, self.explain(incident_id), media_root=self.runtime.media_root,
+                               recorded_hashes=self.runtime.store.evidence_hashes(media), site_name=self.config["site"].get("name", self.config["site"]["id"]),
+                               actor=actor, include_media=include_media)
+        self.runtime.store.audit(actor, "incident_exported", {"incident_id": incident_id, "include_media": include_media, "bytes": len(data)})
+        return data
+
+    def insights(self, days: float | None = None) -> dict[str, Any]:
+        from .insights import ActivitySettings, compute_insights
+        from .reports import incident_rules
+
+        settings = ActivitySettings.from_dict(self.config.get("activity"))
+        if days:
+            settings.window_days = max(1.0, min(float(days), settings.retention_days))
+        now = int(time.time() * 1000)
+        since = now - int(settings.window_days * 86_400_000)
+        store = self.runtime.store
+        links = incident_rules(store, since)
+        reviewed = [incident | {"rule_ids": sorted(links.get(incident["incident_id"], {}).get("rule_ids", []))}
+                    for incident in store.search_incidents(since_ms=since, limit=1000) if incident.get("resolution")]
+        scene = [event for event in store.list_events(since_ms=since, limit=1000) if event["event_type"] == "scene_condition"]
+        return compute_insights(store.list_visits(since_ms=since), store.list_trips(since_ms=since), config=self.config, settings=settings,
+                                now_ms=now, scene_events=scene, reviewed_incidents=reviewed)
+
     def health_report(self) -> dict[str, Any]:
         runtime = self.runtime
         with runtime._lock:
@@ -214,7 +353,7 @@ class SentinelService:
             "resources": self.resources.latest,
             "storage": runtime.storage_status | {"media_mb": self._media_mb},
             "database": {"ok": runtime.store.last_write_ok, "write_failures": runtime.store.write_failures, "last_error": runtime.store.last_error,
-                         "recovery": self.db_recovery},
+                         "recovery": self.db_recovery, "recoveries": backup.list_recoveries(self.storage_dir, limit=5)},
             "backups": {"last": self.last_backup, "last_error": self.last_backup_error, "count": len(backup.list_backups(self.storage_dir))},
             "service": {"started_ms": runtime.started_ms, "pid": self.runstate.state.get("pid"), "stuck_threads": len(self.supervisor.abandoned)},
             "notifications": {"enabled": runtime.settings.get("notifications_enabled", True), "recent": runtime.dispatcher.sent[-5:]},
@@ -239,15 +378,12 @@ class SentinelService:
         if self.db_recovery:
             report = self.db_recovery
             runtime.store.audit("system", "database_recovered", report)
-            if report["action"] == "restored_from_backup":
-                summary = f"Event database was damaged and was restored from the backup of {time.strftime('%Y-%m-%d %H:%M', time.localtime(report['backup_created_ms'] / 1000))}; history recorded after it is lost"
-            elif report["action"] == "started_empty":
-                summary = "Event database was damaged and no backup was usable; a new, empty history was started"
-            else:
-                summary = f"Event database restored from {report.get('backup', 'a backup')} as requested"
-            runtime._health_event("", "system_health", "medium" if report["action"] != "staged_restore" else "info", summary, now_ms)
-            if report["action"] != "staged_restore":
-                runtime.health.announce("Sentinel repaired its event database", [summary + ".", "Monitoring is running."], "medium", now_ms, "database", ())
+            lines = database_recovery_lines(report)
+            staged = report["action"] == "staged_restore"
+            runtime._health_event("", "system_health", "info" if staged else "medium", lines[0], now_ms)
+            # Every recovery is reported to the owner, including one they requested: history was replaced.
+            runtime.health.announce("Event history restored from a backup" if staged else "Sentinel repaired its event database",
+                                    lines + ["Monitoring is running."], "low" if staged else "medium", now_ms, "database", ())
         if self.config_recovery:
             report = self.config_recovery
             summary = ("Site configuration was damaged; the last good version was restored" if report["restored_from"]

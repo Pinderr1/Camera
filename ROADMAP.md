@@ -1,6 +1,6 @@
 # Sentinel roadmap
 
-Last updated: 2026-10-13. Priority: **a working security brain on real cameras before any drone hardware.** Sentinel can now run unattended with honest coverage reporting and self-recovery (Phase 0.9); the next proof is days of continuous operation on real cameras. The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
+Last updated: 2026-10-13. Priority: **a working security brain on real cameras before any drone hardware.** Sentinel runs unattended with honest coverage reporting and self-recovery (Phase 0.9), and its rules are now testable and its incidents explained (Phase 0.10); the next proof is days of continuous operation on real cameras. The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
 
 ## Phase 0: Pivot foundation (done, October 2026)
 - [x] Audit the CameraAI codebase. Archive the senior-safety docs and keep that code frozen.
@@ -105,6 +105,37 @@ So the cause is not yet confirmed. Next on site:
 - [x] Simulated faults (`disconnect`, `freeze`, `crash`, `stall`, `detector_error`), `scripts/reliability_smoke.py` (17 checks, about 35 s), and 61 new tests (292 in total, including legacy): unit, failure-scenario, real-process, and Edge UI.
 
 **Not yet verified on real hardware:** multi-day runs on real cameras, frozen detection on real recorders (an on-screen clock keeps a frozen picture "changing"), a real full disk, and `service install` on a clean Windows machine.
+
+## Phase 0.10: Security intelligence (done, October 2026)
+- [x] Reliability corrections:
+  - independent liveness signals (frames, decoder, stream clock, picture, inference heartbeat);
+  - a noisy static scene stays monitoring; a frozen picture behind a ticking recorder clock is detected;
+  - a still, noise-free picture is `unverified`, never `frozen`.
+- [x] Evidence-preserving database recovery:
+  - originals moved aside byte for byte with SHA-256;
+  - rows salvaged from a copy and merged without overwriting the backup;
+  - backup time, age and possible-loss window reported and notified;
+  - offline and staged restores also preserve the replaced file.
+- [x] Rule language:
+  - Night and Vacation modes, day-of-week conditions, cooldowns (repeats recorded as information), per-rule notification preference;
+  - minimum observations; arming later never fires an entry for someone already inside;
+  - `combination` rules (several observations for one linked subject or anywhere).
+- [x] Rule builder in Setup → Rules:
+  - templates for residential and small-business situations, live validation, plain-language description;
+  - a mandatory test of the current version before "Save and turn on";
+  - tests run as a simulated walk, a scripted scenario, or recorded activity, through the real engine.
+- [x] Explainable incidents: objects, cameras (observed or inferred), zones, sequence (observed vs inferred), rules with conditions, confidence and link uncertainty, severity reasons, evidence. Visual timeline with replay sync; a "Why" line in notifications.
+- [x] Activity insights from logged visits and trips (no images, positions or identities):
+  - patterns, changes over time, and explained unusual observations (information only);
+  - suggestions that need the owner's approval;
+  - no patterns until 7 days and 10 samples.
+- [x] Investigation:
+  - search, append-only notes, feedback labels;
+  - nuisance and genuine rates per rule and camera, missed-event reports with Sentinel's own record of that time;
+  - exports with SHA-256 evidence fingerprints.
+- [x] New scenario `gate_then_shed.json`, 45 new tests (337 in total, including legacy): backend and Edge.
+
+**Not yet validated:** rules, insights and nuisance rates on weeks of real household activity; content-monitor thresholds on real recorders and low-bitrate streams.
 
 ## Detector upgrade findings (2026-10-13)
 
@@ -256,7 +287,7 @@ Exit: 2+ real IP cameras running for 7 days with useful incidents and fewer than
 - [x] Zone editor in the dashboard (Phase 0.7).
 - [ ] Calibrate topology transit times from observed walks. Add a tool that suggests `min/max_transit_s` from stored site tracks.
 - [x] Detector benchmark harness and first comparison (Lite0, Lite2, and tiles on public footage; see findings). Still needed: real IR/night and rain recordings, and vehicle-class labels.
-- [ ] Label review loop: export resolved incidents (`expected_activity`, `false_alarm`, `real_concern`) and report nuisance rate per rule.
+- [x] Label review loop: feedback labels and nuisance rate per rule and camera (Phase 0.10). Still to do: collect a month of real feedback.
 - [ ] Clip playback: H.264 encoding via a bundled ffmpeg or PyAV fallback when OpenCV lacks `avc1`.
 - [ ] Night-specific handling: IR mode switch, headlight glare suppression, spider-web and insect false boxes (minimum track displacement or persistence).
 - [ ] Event deduplication when two overlapping cameras see the same person (`overlap: true` links tested on real views).

@@ -18,10 +18,13 @@ from typing import Any, Callable
 from .incidents import DISCLAIMER
 from .models import Notification
 
-# Display text for each camera state. Every state except `monitoring` means the
-# camera is NOT watching the property, and the dashboard and API say so.
+# Display text for each camera state. Every state except `monitoring` and
+# `unverified` means the camera is NOT watching the property, and the dashboard and
+# API say so. `unverified` keeps analysing frames, but Sentinel cannot prove the
+# picture is live (a still, noise-free scene looks exactly like a frozen feed).
 CAMERA_STATES = {
     "monitoring": "Monitoring",
+    "unverified": "Live picture cannot be confirmed",
     "starting": "Starting",
     "offline": "No video",
     "frozen": "Video frozen",
@@ -33,6 +36,7 @@ CAMERA_STATES = {
 }
 # Event type written to the timeline when a camera enters each state.
 STATE_EVENTS = {
+    "unverified": "camera_unverified",
     "offline": "camera_offline",
     "frozen": "camera_frozen",
     "ai_failed": "camera_ai_failed",
@@ -61,6 +65,8 @@ class HealthSettings:
     max_notifications_per_hour: int = 6
     slow_ratio: float = 0.5  # processing below this share of the target fps ...
     slow_after_s: float = 60.0  # ... for this long is a performance warning
+    inference_timeout_s: float = 15.0  # frames arrive but no inference completed for this long: AI not working
+    unverified_notify_after_s: float = 21600.0  # an unprovable still picture is pushed (low) after this long; 0 = never
     supervisor: dict[str, Any] = field(default_factory=dict)
     heartbeat: dict[str, Any] = field(default_factory=dict)
 
@@ -96,7 +102,14 @@ class Outage:
 
 
 def camera_state(status: dict[str, Any], now_ms: int, settings: HealthSettings) -> tuple[str, str]:
-    """(state, reason) for one camera from its runtime status fields."""
+    """(state, reason) for one camera from its runtime status fields.
+
+    The signals are judged independently: frame delivery (`last_frame_ms`), the
+    stream's own timestamps (`pts_stalled_since_ms`), picture content (`content`
+    from `vision.ContentMonitor`), and the inference heartbeat
+    (`last_inference_ms`). Frozen needs positive evidence: repeated stream
+    timestamps, or a picture that lost its sensor noise abruptly. A still scene
+    without that evidence is `unverified`, never `frozen`."""
     worker_state = status.get("worker_state")
     if worker_state is None:
         return "not_running", ""
@@ -116,10 +129,42 @@ def camera_state(status: dict[str, Any], now_ms: int, settings: HealthSettings) 
         return "offline", status.get("error") or "no video received since start"
     if now_ms - last > settings.frame_timeout_s * 1000:
         return "offline", status.get("error") or "no new video"
-    frozen_since = int(status.get("frozen_since_ms") or 0)
-    if frozen_since and last - frozen_since >= settings.frozen_after_s * 1000:
-        return "frozen", "the picture has not changed at all"
+    last_inference = int(status.get("last_inference_ms") or 0) or started
+    if now_ms - last_inference > settings.inference_timeout_s * 1000:
+        return "ai_failed", f"frames arrive but no detection has completed for {round((now_ms - last_inference) / 1000)} s"
+    frozen_after_ms = settings.frozen_after_s * 1000
+    pts_stalled = int(status.get("pts_stalled_since_ms") or 0)
+    if pts_stalled and last - pts_stalled >= frozen_after_ms:
+        return "frozen", "the stream keeps repeating the same frame (its timestamps stopped advancing)"
+    content = status.get("content") or {}
+    static_since = int(content.get("static_since_ms") or 0)
+    if static_since and last - static_since >= frozen_after_ms:
+        overlay = content.get("static_kind") == "overlay"
+        if content.get("noisy_before_static"):
+            return "frozen", "the picture stopped changing abruptly" + (" (only an on-screen overlay such as a clock still changes)" if overlay else "")
+        return "unverified", ("the picture has not changed" + (" apart from a small overlay such as a clock" if overlay else "")
+                              + "; a still scene cannot be told apart from a frozen feed")
     return "monitoring", ""
+
+
+def camera_signals(status: dict[str, Any], now_ms: int, settings: HealthSettings) -> dict[str, Any]:
+    """Each liveness signal on its own, for the System tab and the API."""
+    last = int(status.get("last_frame_ms") or 0)
+    content = status.get("content") or {}
+    inference = int(status.get("last_inference_ms") or 0)
+    pts_stalled = int(status.get("pts_stalled_since_ms") or 0)
+    static_since = int(content.get("static_since_ms") or 0)
+    return {
+        "frames": {"ok": bool(last) and now_ms - last <= settings.frame_timeout_s * 1000, "last_ms": last or None, "fps": status.get("fps")},
+        "decoder": {"ok": None if status.get("decoded_fps") is None else status["decoded_fps"] > 0,
+                    "decoded_fps": status.get("decoded_fps"), "frames_decoded": status.get("frames_decoded")},
+        "stream_clock": {"ok": None if status.get("pts_ms") is None else not pts_stalled, "pts_ms": status.get("pts_ms"),
+                         "stalled_since_ms": pts_stalled or None},
+        "content": {"ok": not static_since, "static_since_ms": static_since or None, "static_kind": content.get("static_kind") or None,
+                    "noise_level": content.get("noise_level"), "last_change_ms": content.get("last_change_ms") or None},
+        "inference": {"ok": bool(inference) and now_ms - inference <= settings.inference_timeout_s * 1000, "last_ms": inference or None,
+                      "provider": status.get("detector_provider"), "state": status.get("detector_state")},
+    }
 
 
 class HealthMonitor:
@@ -157,8 +202,9 @@ class HealthMonitor:
             since = previous.get("since_ms", now_ms) if previous.get("state") == state else now_ms
             warnings = self._warnings(camera_id, status, state, now_ms)
             status["health"] = {
-                "state": state, "label": CAMERA_STATES[state], "monitoring": state == "monitoring",
-                "since_ms": since, "reason": reason, "warnings": warnings,
+                "state": state, "label": CAMERA_STATES[state], "monitoring": state in ("monitoring", "unverified"),
+                "verified": state == "monitoring", "since_ms": since, "reason": reason, "warnings": warnings,
+                "signals": camera_signals(status, now_ms, self.settings) if state != "not_running" else {},
             }
             status["offline_reported"] = camera_id in self.open  # kept for older readers (bench)
             self._track_camera_outage(camera_id, state, reason, since, now_ms)
@@ -189,12 +235,19 @@ class HealthMonitor:
             return
         if outage is None:
             outage = self._new_outage("camera", state, since, camera_id=camera_id, reason=reason)
+            if state == "unverified":  # still analysing: an uncertain period, pushed only after a long time
+                outage.details["notify_after_s"] = self.settings.unverified_notify_after_s
+                outage.details["uncertain"] = True
+                self.save_outage(outage)
             self.open[camera_id] = outage
-            self.record_event(camera_id, STATE_EVENTS[state], "medium", f"{self.camera_name(camera_id)}: {CAMERA_STATES[state].lower()}"
-                              + (f" ({reason})" if reason else ""), now_ms)
+            self.record_event(camera_id, STATE_EVENTS[state], "info" if state == "unverified" else "medium",
+                              f"{self.camera_name(camera_id)}: {CAMERA_STATES[state].lower()}" + (f" ({reason})" if reason else ""), now_ms)
         elif state not in outage.states:
             outage.states.append(state)
             outage.reason = reason or outage.reason
+            if state != "unverified" and outage.details.pop("uncertain", None):  # the period became a real coverage loss
+                outage.details.pop("notify_after_s", None)
+                outage.notified = False  # a "cannot confirm" message does not cover a confirmed loss
             self.save_outage(outage)
             self.record_event(camera_id, STATE_EVENTS[state], "medium", f"{self.camera_name(camera_id)}: {CAMERA_STATES[state].lower()}"
                               + (f" ({reason})" if reason else ""), now_ms)
@@ -249,22 +302,27 @@ class HealthMonitor:
     def coverage(self, camera_status: dict[str, dict[str, Any]]) -> dict[str, Any]:
         states = {camera_id: status.get("health", {}).get("state", "starting") for camera_id, status in camera_status.items()}
         total = len(states)
-        monitoring = sum(1 for state in states.values() if state == "monitoring")
+        unverified = sum(1 for state in states.values() if state == "unverified")
+        monitoring = sum(1 for state in states.values() if state == "monitoring") + unverified
         if total and all(state == "not_running" for state in states.values()):
             overall = "not_running"
         elif total and monitoring == total:
-            overall = "full"
+            overall = "unverified" if unverified else "full"
         elif monitoring == 0:
             overall = "none"
         else:
             overall = "degraded"
-        if overall == "full" and any(c["state"] != "ok" for c in self.components.values()):
+        if overall in ("full", "unverified") and any(c["state"] != "ok" for c in self.components.values()):
             overall = "degraded"
         return {
-            "state": overall, "monitoring": monitoring, "total": total,
+            "state": overall, "monitoring": monitoring, "unverified": unverified, "total": total,
             "not_monitoring": [
                 {"camera_id": camera_id, "name": self.camera_name(camera_id), "state": state, "label": CAMERA_STATES.get(state, state)}
-                for camera_id, state in states.items() if state != "monitoring"
+                for camera_id, state in states.items() if state not in ("monitoring", "unverified")
+            ],
+            "unverified_cameras": [
+                {"camera_id": camera_id, "name": self.camera_name(camera_id), "state": state, "label": CAMERA_STATES[state]}
+                for camera_id, state in states.items() if state == "unverified"
             ],
             "components": {name: dict(value) for name, value in self.components.items()},
         }
@@ -285,7 +343,8 @@ class HealthMonitor:
         self.save_outage(outage)
         if outage.scope == "camera":
             name = self.camera_name(outage.camera_id)
-            self.record_event(outage.camera_id, "camera_online", "info", f"{name}: monitoring again after {_duration(now_ms - outage.started_ms)}", now_ms)
+            text = "picture is changing again" if outage.details.get("uncertain") else "monitoring again"
+            self.record_event(outage.camera_id, "camera_online", "info", f"{name}: {text} after {_duration(now_ms - outage.started_ms)}", now_ms)
             if outage.notified and self.settings.notify_recovery and not note:
                 self.announce(f"Monitoring restored: {name}", [f"{name} is being monitored again after {_duration(now_ms - outage.started_ms)}."],
                            "info", now_ms, outage.outage_id, (outage.camera_id,))
@@ -307,8 +366,20 @@ class HealthMonitor:
             return
         due = [
             outage for outage in self.open.values()
-            if not outage.notified and outage.details.get("notify", True) and now_ms - outage.started_ms >= self.settings.notify_after_s * 1000
+            if not outage.notified and outage.details.get("notify", True)
+            and outage.details.get("notify_after_s", self.settings.notify_after_s) > 0
+            and now_ms - outage.started_ms >= outage.details.get("notify_after_s", self.settings.notify_after_s) * 1000
         ]
+        uncertain = [outage for outage in due if outage.details.get("uncertain")]
+        for outage in uncertain:  # low priority, one camera per message: "please look at it"
+            name = self.camera_name(outage.camera_id)
+            if self.announce(f"Cannot confirm {name} is live", [
+                f"{name} has shown an unchanging picture since {_clock(outage.started_ms)}. It may be a still scene or a frozen feed.",
+                "Please check the camera view; Sentinel keeps analysing it.",
+            ], "low", now_ms, outage.outage_id, (outage.camera_id,)):
+                outage.notified = True
+                self.save_outage(outage)
+        due = [outage for outage in due if not outage.details.get("uncertain")]
         if not due:
             return
         cameras = [outage for outage in due if outage.scope == "camera"]

@@ -13,6 +13,7 @@ class ZonePresence:
     left_ms: int | None = None
     # ~1 Hz (ms, anchor x, anchor y, box height) samples for movement-aware dwell rules.
     samples: list[tuple[int, float, float, float]] = field(default_factory=list)
+    reported: bool = False  # handed to the activity log once the visit is over
 
 
 @dataclass
@@ -41,6 +42,7 @@ class SiteTrack:
     path: list[tuple[int, str, str]] = field(default_factory=list)  # (ms, camera, zone)
     fired: set[str] = field(default_factory=set)
     activity_logged: bool = False
+    kind: str = ""  # most recent specific label ("dog", "truck")
 
     def cameras_since(self, since_ms: int) -> list[str]:
         return sorted(camera for camera, seen in self.camera_last_seen.items() if seen >= since_ms)
@@ -115,6 +117,8 @@ class CrossCameraCorrelator:
         if zones_now:
             site.last_zones[track.camera_id] = list(zones_now)
         site.active_members.add(track.track_id)
+        if track.kind:
+            site.kind = track.kind
         if track.appearance:
             site.appearance = track.appearance
         return site

@@ -16,7 +16,7 @@ from .runtime import SentinelRuntime
 from .sources import open_source
 from .streams import scrub
 from .tracker import IoUTracker, TrackerConfig
-from .vision import FreezeDetector, MotionGate, annotate, appearance_vector, apply_privacy_masks, encode_jpeg
+from .vision import ContentMonitor, MotionGate, annotate, appearance_vector, apply_privacy_masks, encode_jpeg
 
 log = logging.getLogger("sentinel.pipeline")
 
@@ -144,13 +144,18 @@ class CameraWorker(threading.Thread):
         tracker = IoUTracker(camera_id, TrackerConfig.from_dict((self.config.get("tracker") or {}) | {"high_score": high_score}))
         recorder = ClipRecorder(camera_id, self.runtime.media_root, self.config.get("recording", {}))
         recorder.enabled = recorder.enabled and self.config.get("privacy", {}).get("store_clips", True)
+        recorder.on_finalized = self.runtime.record_evidence
         if not self._stop.is_set():
             self.runtime.recorders[camera_id] = recorder
         zones = ZoneMap(self.config)
         camera_zones = self.camera.get("zones", [])
         masks = self.camera.get("privacy_masks", [])
         motion = MotionGate(float(detector_settings.get("motion_min_fraction", 0.002)))
-        freeze = FreezeDetector()
+        content = ContentMonitor()
+        last_pts, pts_stalled_since = None, 0
+        last_inference_ms = 0
+        decoded_window = (time.monotonic(), getattr(source, 'frames_read', 0) or 0)
+        decoded_fps = 0.0
         idle_detect_ms = int(detector_settings.get("idle_detect_interval_s", 1.0) * 1000)
         min_area = float(detector_settings.get("min_box_area", 0.0004))
         enabled = {name for name, values in categories.items() if values.get("detect")}
@@ -200,6 +205,7 @@ class CameraWorker(threading.Thread):
                         detections = filter_detections(detector.detect(frame), camera_id, zones, min_area, enabled)
                         consecutive_errors = 0
                         detect_ms.append((time.perf_counter() - stage) * 1000)
+                        last_inference_ms = int(time.time() * 1000)
                         if probing:
                             detector_state, probing = ("fallback" if on_fallback else "ok"), False
                             log.info("camera %s: detector working again on %s", camera_id, provider)
@@ -269,8 +275,20 @@ class CameraWorker(threading.Thread):
                 elif elapsed_window > 1 and not fps:
                     fps = frames / elapsed_window
                 frames_read = getattr(source, "frames_read", None)
+                if frames_read is not None and time.monotonic() - decoded_window[0] >= 5:
+                    decoded_fps = (frames_read - decoded_window[1]) / (time.monotonic() - decoded_window[0])
+                    decoded_window = (time.monotonic(), frames_read)
+                # Stream timestamps (PTS) stop advancing when a decoder or recorder repeats one frame.
+                pts = frame.meta.get("pts_ms")
+                if pts is None or last_pts is None or pts != last_pts:
+                    pts_stalled_since = 0
+                elif not pts_stalled_since:
+                    pts_stalled_since = now_ms
+                last_pts = pts
                 self._report(
-                    connected=True, last_frame_ms=now_ms, fps=round(fps, 1), error="", frozen_since_ms=freeze.update(image, now_ms),
+                    connected=True, last_frame_ms=now_ms, fps=round(fps, 1), error="", content=content.update(image, now_ms),
+                    pts_ms=pts, pts_stalled_since_ms=pts_stalled_since, last_inference_ms=last_inference_ms,
+                    decoded_fps=round(decoded_fps, 1) if frames_read is not None else None, frames_decoded=frames_read,
                     metrics={
                         "frames_processed": processed,
                         # The reader keeps only the newest frame, so frames decoded while the

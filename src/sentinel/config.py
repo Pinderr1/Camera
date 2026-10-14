@@ -15,8 +15,10 @@ from .streams import BRAND_TEMPLATES
 ZONE_TYPES = {"driveway", "entrance", "yard", "sidewalk", "perimeter", "restricted", "street", "ignore", "general"}
 SOURCE_TYPES = {"rtsp", "http", "usb", "capture", "file", "simulated"}
 CATEGORIES = ("person", "vehicle", "bicycle", "animal", "bag", "unknown_motion")
-RULE_TYPES = {"zone_entry", "dwell", "repeated_presence", "sequence", "multi_camera"}
-ARM_MODES = ("disarmed", "home", "away")
+RULE_TYPES = {"zone_entry", "dwell", "repeated_presence", "sequence", "multi_camera", "combination"}
+ARM_MODES = ("disarmed", "home", "away", "night", "vacation")
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+NOTIFY_PREFERENCES = ("auto", "always", "never")
 SENSITIVITIES = {"low": (1.4, 0.10), "normal": (1.0, 0.0), "high": (0.7, -0.08)}
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)\}")
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
@@ -193,6 +195,30 @@ def validate_config(config: dict[str, Any]) -> None:
             and all(re.fullmatch(r"\d{2}:\d{2}", str(active_hours.get(key, ""))) for key in ("start", "end"))
         ):
             errors.append(f"{path}.active_hours needs start/end as HH:MM")
+        _validate_rule_extras(rule, path, rule_type, errors)
+
+    rules_by_id = {rule.get("id"): rule for rule in config.get("rules", [])}
+    for index, rule in enumerate(config.get("rules", [])):
+        if rule.get("type") != "combination":
+            continue
+        path = f"rules[{index}]"
+        components = rule.get("rules")
+        if not isinstance(components, list) or not components:
+            errors.append(f"{path}.rules must list the rules that have to match")
+            continue
+        for component in components:
+            if component == rule.get("id"):
+                errors.append(f"{path}.rules cannot include the rule itself")
+            elif component not in rules_by_id:
+                errors.append(f"{path}.rules references unknown rule {component!r}")
+            elif rules_by_id[component].get("type") == "combination":
+                errors.append(f"{path}.rules cannot include another combination rule ({component})")
+        if not isinstance(rule.get("min_matches"), int) or not 1 <= rule["min_matches"] <= len(set(components)):
+            errors.append(f"{path}.min_matches must be between 1 and the number of listed rules")
+        if not _positive(rule.get("within_s")):
+            errors.append(f"{path}.within_s must be positive")
+        if rule.get("scope", "subject") not in ("subject", "site"):
+            errors.append(f"{path}.scope must be subject (same linked subject) or site (anywhere on the property)")
 
     for scope, categories in [("categories", config.get("categories", {}))] + [
         (f"cameras[{index}].categories", camera.get("categories", {})) for index, camera in enumerate(raw_cameras)
@@ -220,7 +246,40 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ConfigValidationError(errors)
 
 
-_HEALTH_NUMBERS = ("frame_timeout_s", "frozen_after_s", "startup_grace_s", "notify_after_s", "slow_after_s", "camera_offline_after_s")
+def _validate_rule_extras(rule: dict[str, Any], path: str, rule_type: str, errors: list[str]) -> None:
+    """Rule-builder fields: name, description, days, cooldown, notification
+    preference, minimum observations, and category classes."""
+    if "name" in rule and (not isinstance(rule["name"], str) or not 0 < len(rule["name"].strip()) <= 80):
+        errors.append(f"{path}.name must be 1-80 characters")
+    if "description" in rule and (not isinstance(rule["description"], str) or len(rule["description"]) > 300):
+        errors.append(f"{path}.description must be at most 300 characters")
+    days = rule.get("active_days")
+    if days is not None and (not isinstance(days, list) or not days or any(day not in DAYS for day in days)):
+        errors.append(f"{path}.active_days must be a non-empty list of {list(DAYS)}")
+    if "cooldown_s" in rule and not (_is_number(rule["cooldown_s"]) and 0 <= rule["cooldown_s"] <= 86400):
+        errors.append(f"{path}.cooldown_s must be between 0 and 86400")
+    if rule.get("notify", "auto") not in NOTIFY_PREFERENCES:
+        errors.append(f"{path}.notify must be one of {list(NOTIFY_PREFERENCES)}")
+    if "min_observations" in rule and not (isinstance(rule["min_observations"], int) and 1 <= rule["min_observations"] <= 100):
+        errors.append(f"{path}.min_observations must be an integer from 1 to 100")
+    if "min_confidence" in rule and not (_is_number(rule["min_confidence"]) and 0 <= rule["min_confidence"] <= 1):
+        errors.append(f"{path}.min_confidence must be between 0 and 1")
+    classes = rule.get("classes")
+    if classes is not None and (not isinstance(classes, list) or not classes or any(name not in CATEGORIES for name in classes)):
+        errors.append(f"{path}.classes must be a non-empty list of {list(CATEGORIES)}")
+    hours = rule.get("active_hours")
+    if isinstance(hours, dict):
+        for key in ("start", "end"):
+            match = re.fullmatch(r"(\d{2}):(\d{2})", str(hours.get(key, "")))
+            if match and (int(match.group(1)) > 23 or int(match.group(2)) > 59):
+                errors.append(f"{path}.active_hours.{key} is not a valid time")
+        if hours.get("start") == hours.get("end") and hours.get("start"):
+            errors.append(f"{path}.active_hours start and end must differ")
+    if rule_type == "combination" and rule.get("zones"):
+        errors.append(f"{path}: a combination rule takes its zones from the rules it combines")
+
+
+_HEALTH_NUMBERS = ("frame_timeout_s", "frozen_after_s", "startup_grace_s", "notify_after_s", "slow_after_s", "camera_offline_after_s", "inference_timeout_s")
 _SUPERVISOR_NUMBERS = ("stall_after_s", "startup_timeout_s", "backoff_initial_s", "backoff_max_s", "window_s", "cooldown_s")
 _STORAGE_NUMBERS = ("min_free_mb", "min_free_pct", "resume_margin", "check_interval_s")
 
@@ -234,6 +293,8 @@ def _validate_reliability(config: dict[str, Any], raw_cameras: list, errors: lis
     for key in _HEALTH_NUMBERS:
         if key in health and not _positive(health[key]):
             errors.append(f"health.{key} must be a positive number of seconds")
+    if "unverified_notify_after_s" in health and not (_is_number(health["unverified_notify_after_s"]) and health["unverified_notify_after_s"] >= 0):
+        errors.append("health.unverified_notify_after_s must be >= 0 (0 = never notify)")
     if "slow_ratio" in health and not (_is_number(health["slow_ratio"]) and 0 < health["slow_ratio"] <= 1):
         errors.append("health.slow_ratio must be in (0, 1]")
     for key in ("notifications", "notify_recovery"):
@@ -271,6 +332,18 @@ def _validate_reliability(config: dict[str, Any], raw_cameras: list, errors: lis
         if key in backups and not isinstance(backups[key], bool):
             errors.append(f"storage.backups.{key} must be true or false")
 
+    activity = config.get("activity", {})
+    for key in ("retention_days", "window_days", "recent_hours"):
+        if key in activity and not _positive(activity[key]):
+            errors.append(f"activity.{key} must be positive")
+    for key in ("min_days", "min_samples"):
+        if key in activity and not (isinstance(activity[key], int) and activity[key] >= 1):
+            errors.append(f"activity.{key} must be an integer >= 1")
+    if "rarity" in activity and not (_is_number(activity["rarity"]) and 0 < activity["rarity"] < 1):
+        errors.append("activity.rarity must be between 0 and 1")
+    if "enabled" in activity and not isinstance(activity["enabled"], bool):
+        errors.append("activity.enabled must be true or false")
+
     logging_settings = config.get("logging", {})
     if "max_mb" in logging_settings and not _positive(logging_settings["max_mb"]):
         errors.append("logging.max_mb must be positive")
@@ -297,6 +370,9 @@ def _validate_reliability(config: dict[str, Any], raw_cameras: list, errors: lis
     from .simulation import FAULT_TYPES
 
     for index, camera in enumerate(raw_cameras):
+        noise = (camera.get("source") or {}).get("noise")
+        if noise is not None and not (isinstance(noise, int) and 0 <= noise <= 50):
+            errors.append(f"cameras[{index}].source.noise must be an integer from 0 to 50")
         faults = (camera.get("source") or {}).get("faults")
         if faults is None:
             continue

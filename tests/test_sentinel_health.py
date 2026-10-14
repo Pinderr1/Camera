@@ -27,7 +27,7 @@ SETTINGS = HealthSettings(frame_timeout_s=10, frozen_after_s=60, startup_grace_s
 
 
 def status(**fields):
-    return {"camera_id": "cam_a", "worker_state": "running", "worker_started_ms": T0, "last_frame_ms": T0 + 1000} | fields
+    return {"camera_id": "cam_a", "worker_state": "running", "worker_started_ms": T0, "last_frame_ms": T0 + 1000, "last_inference_ms": T0 + 1000} | fields
 
 
 class CameraStateTests(unittest.TestCase):
@@ -37,13 +37,33 @@ class CameraStateTests(unittest.TestCase):
         self.assertEqual(camera_state(status(last_frame_ms=0), now, SETTINGS)[0], "starting")
         self.assertEqual(camera_state(status(last_frame_ms=0), T0 + 31_000, SETTINGS)[0], "offline")
         self.assertEqual(camera_state(status(error="camera unreachable"), T0 + 12_000, SETTINGS), ("offline", "camera unreachable"))
-        self.assertEqual(camera_state(status(frozen_since_ms=T0 - 61_000), now, SETTINGS)[0], "frozen")
-        self.assertEqual(camera_state(status(frozen_since_ms=T0 - 10_000), now, SETTINGS)[0], "monitoring")
         self.assertEqual(camera_state(status(detector_state="failed", detector_error="GPU lost"), now, SETTINGS), ("ai_failed", "GPU lost"))
         self.assertEqual(camera_state(status(detector_state="fallback"), now, SETTINGS)[0], "monitoring")
         self.assertEqual(camera_state(status(worker_state="restarting", worker_error="boom"), now, SETTINGS), ("restarting", "boom"))
         self.assertEqual(camera_state(status(worker_state="failed"), now, SETTINGS)[0], "failed")
         self.assertEqual(camera_state({"camera_id": "cam_a"}, now, SETTINGS)[0], "not_running")
+
+    def test_frozen_needs_positive_evidence_and_a_still_clean_scene_is_only_unverified(self):
+        now = T0 + 100_000
+        live = dict(last_frame_ms=now, last_inference_ms=now)
+        # Stream timestamps stopped advancing: the decoder repeats one frame.
+        self.assertEqual(camera_state(status(**live, pts_ms=500.0, pts_stalled_since_ms=now - 61_000), now, SETTINGS)[0], "frozen")
+        # Picture went still right after being noisy: a frozen feed, even with a ticking clock overlay.
+        frozen = camera_state(status(**live, content={"static_since_ms": now - 61_000, "static_kind": "overlay", "noisy_before_static": True}), now, SETTINGS)
+        self.assertEqual(frozen[0], "frozen")
+        self.assertIn("clock", frozen[1])
+        # Still and noise-free all along: cannot be told apart from a frozen feed -> unverified, never frozen.
+        still = camera_state(status(**live, content={"static_since_ms": now - 600_000, "static_kind": "identical", "noisy_before_static": False}), now, SETTINGS)
+        self.assertEqual(still[0], "unverified")
+        self.assertIn("cannot be told apart", still[1])
+        # Short still periods are normal.
+        self.assertEqual(camera_state(status(**live, content={"static_since_ms": now - 10_000, "noisy_before_static": True}), now, SETTINGS)[0], "monitoring")
+
+    def test_inference_heartbeat_is_judged_separately_from_frames(self):
+        now = T0 + 100_000
+        state, reason = camera_state(status(last_frame_ms=now, last_inference_ms=now - 20_000), now, SETTINGS)
+        self.assertEqual(state, "ai_failed")
+        self.assertIn("no detection has completed for 20 s", reason)
 
     def test_frames_from_before_a_restart_do_not_count(self):
         restarted = status(worker_started_ms=T0 + 60_000, last_frame_ms=T0 + 59_000)
@@ -52,6 +72,65 @@ class CameraStateTests(unittest.TestCase):
     def test_legacy_offline_key_maps_to_notify_delay(self):
         self.assertEqual(HealthSettings.from_dict({"camera_offline_after_s": 45}).notify_after_s, 45)
         self.assertEqual(HealthSettings.from_dict({"camera_offline_after_s": 45, "notify_after_s": 90}).notify_after_s, 90)
+
+
+class ContentMonitorTests(unittest.TestCase):
+    """Synthetic 320x180 frames: what a live sensor, a still clean scene, and the
+    two kinds of frozen feed look like to `ContentMonitor`."""
+
+    def setUp(self):
+        import numpy as np
+
+        self.np = np
+        self.rng = np.random.default_rng(3)
+        self.base = np.full((180, 320, 3), 90, dtype=np.uint8)
+        self.base[100:, :] = 60
+
+    def frame(self, *, noise=0, clock=None, base=None):
+        image = (self.base if base is None else base).copy()
+        if noise:
+            image = (image.astype(self.np.int16) + self.rng.integers(-noise, noise + 1, image.shape)).clip(0, 255).astype(self.np.uint8)
+        if clock is not None:  # a recorder's on-screen clock, top-right
+            image[4:16, 270:316] = 20
+            image[6:14, 272 + (clock % 40):276 + (clock % 40)] = 230
+        return image
+
+    def run_frames(self, frames, start=0):
+        from sentinel.vision import ContentMonitor
+
+        monitor = getattr(self, "monitor", None) or ContentMonitor()
+        self.monitor = monitor
+        result = None
+        for index, image in enumerate(frames):
+            result = monitor.update(image, T0 + (start + index) * 200)
+        return result
+
+    def test_a_noisy_static_scene_is_live(self):
+        result = self.run_frames([self.frame(noise=3) for _ in range(30)])
+        self.assertEqual(result["kind"], "noise")
+        self.assertEqual(result["static_since_ms"], 0)
+
+    def test_a_clean_still_scene_is_static_without_noise_evidence(self):
+        result = self.run_frames([self.frame(clock=i) for i in range(30)])
+        self.assertEqual((result["static_kind"], result["noisy_before_static"]), ("overlay", False))
+        self.assertGreater(result["static_since_ms"], 0)
+
+    def test_noisy_feed_that_freezes_is_flagged_even_with_a_ticking_clock(self):
+        self.run_frames([self.frame(noise=3, clock=i) for i in range(30)])
+        frozen = self.frame(noise=3)
+        result = self.run_frames([frozen.copy() for _ in range(5)] + [self.frame(base=frozen, clock=i) for i in range(10)], start=30)
+        self.assertTrue(result["noisy_before_static"])
+        self.assertEqual(result["static_kind"], "overlay")
+
+    def test_movement_in_a_clean_scene_is_not_mistaken_for_noise(self):
+        frames = []
+        for i in range(20):
+            image = self.frame()
+            image[60:120, 10 + i * 10:40 + i * 10] = 200  # a person walking across
+            frames.append(image)
+        frames += [self.frame() for _ in range(10)]
+        result = self.run_frames(frames)
+        self.assertFalse(result["noisy_before_static"], "movement then stillness must not look like a feed losing its noise")
 
 
 class HealthMonitorTests(unittest.TestCase):
@@ -73,7 +152,7 @@ class HealthMonitorTests(unittest.TestCase):
         while now <= until_ms:
             for camera in self.cameras.values():
                 if camera.get("_live"):
-                    camera["last_frame_ms"] = now
+                    camera["last_frame_ms"] = camera["last_inference_ms"] = now
             self.monitor.evaluate(self.cameras, now)
             now += step_ms
         self.now = now

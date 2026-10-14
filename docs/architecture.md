@@ -87,6 +87,9 @@ Every rule has `id`, `type`, `severity` (`info|low|medium|high`), and optional `
 | `repeated_presence` | `count` new visits to a zone within `window_s`, from any subjects | | once per window per zone |
 | `sequence` | a site track visits `zones` in order within `within_s`; other zones may come in between | | once per site track |
 | `multi_camera` | a site track is seen on at least `min_cameras` cameras within `window_s` | | once per site track |
+| `combination` | at least `min_matches` of the listed `rules` matched within `within_s`, for one linked subject (`scope: subject`) or anywhere (`scope: site`) | `rules`, `min_matches`, `scope` | once per subject / once per window |
+
+Every rule may also set `name`, `description`, `active_days` (an overnight window belongs to the day it starts), `min_observations` (detections before it may fire), `cooldown_s` (repeats inside the cooldown are recorded as `info` with `rule_cooldown`), and `notify` (`auto`, `always`, or `never`). A `zone_entry` is judged at the moment of entry and may wait up to 15 s for enough observations, so arming later never fires for someone already inside. Arm modes are `disarmed`, `home`, `away`, `night`, and `vacation`. Each event carries `details.subject` (cameras, link scores, ambiguous candidates) and `details.observation` (track hits, box, kind) for explanations. See [intelligence.md](./intelligence.md).
 
 The engine also emits one `activity` event (severity `info`) the first time a person or vehicle enters a non-quiet zone. This is the ordinary-activity log: it is stored and shown, but it never opens an incident.
 
@@ -94,7 +97,7 @@ The engine also emits one `activity` event (severity `info`) the first time a pe
 - An event joins an open incident if it shares the site track (or a site track listed in `details.site_track_ids`), or if it is severity low or above on the same camera within `merge_window_s`. Otherwise a new incident opens, but only if the event is severity low or above.
 - Severity is the maximum event severity, raised one level when `corroboration_behaviors` distinct behaviour types (default 3) appear in one incident. The title follows the most severe behaviour.
 - An incident stays open while its subjects are visible, and closes after `close_after_s` of quiet.
-- `AlertPolicy`: the arm mode sets the minimum severity for a notification (default disarmed none, home high, away medium). An incident notifies once, again only if its severity rises, under a global limit of `max_notifications` per `rate_window_s`. Held-back notifications are counted in the next message. An unacknowledged high incident sends one escalation after `ack_timeout_s`.
+- `AlertPolicy`: the arm mode sets the minimum severity for a notification (default disarmed none, home high, away medium, night medium, vacation low). A rule's `notify: never` records without pushing; `notify: always` pushes in any armed mode regardless of the level. A notification ends with a "Why: rule … matched." line before the disclaimer. An incident notifies once, again only if its severity rises, under a global limit of `max_notifications` per `rate_window_s`. Held-back notifications are counted in the next message. An unacknowledged high incident sends one escalation after `ack_timeout_s`.
 - Operator outcomes are `expected_activity`, `false_alarm`, `real_concern`, and `unclear`. They are the labels for future tuning.
 
 ### 9. Recording and storage (`recorder.py`, `store.py`)
@@ -103,7 +106,7 @@ The engine also emits one `activity` event (severity `info`) the first time a pe
 - SQLite tables: `events`, `incidents`, `audit` (settings changes, notifications, drone commands). An hourly purge applies `privacy.retention_days.events` and `.media`. Media paths are stored relative to `<storage.dir>/media`.
 
 ### 10. Distribution (`runtime.EventBus`, `api.py`, `mqtt.py`, `notify.py`)
-- Bus topics: `event`, `incident`, `notification`, `settings`, `drone`.
+- Bus topics: `event`, `incident`, `notification`, `settings`, `drone`, `config`, `health`.
 - The API streams them over SSE, and `MqttPublisher` mirrors them to `<prefix>/<site_id>/<topic>`. Settings and drone topics are retained, and an LWT `status` topic reports online/offline.
 - Notifiers run on a background thread. A failure in one channel never blocks the others or the video loop.
 
@@ -115,6 +118,14 @@ Full detail: [reliability.md](./reliability.md).
 - `StorageGuard` keeps free space above `storage.min_free_mb`/`min_free_pct` by deleting the oldest unprotected media, then pauses recording (detection continues). `EventStore` writes never raise; failures mark the database component degraded.
 - `backup.open_store` quick-checks the database at start, applies staged restores, and replaces a damaged file with the newest verified backup. `SiteConfigManager.load_effective` falls back to `config_history/` when `site.json` is damaged.
 - `RunState` (`runstate.json`) heartbeats every 10 s, so a restart can tell a planned stop from a crash and record the downtime. `daemon.supervise` (`sentinel run`) restarts the server process; Windows background start uses Task Scheduler (`sentinel service install`).
+
+### 12. Security intelligence (`rules.py`, `rule_lab.py`, `explain.py`, `insights.py`, `reports.py`)
+Full detail: [intelligence.md](./intelligence.md).
+- `rules.py`: plain-language rule descriptions, templates, and the fields the builder may set. `SiteConfigManager.save_rule` / `delete_rule` / `set_rule_enabled` validate and apply live.
+- `rule_lab.py`: tests a candidate rule with the real tracker, engine, incidents and alert policy (`replay.run_scenario`). Sources are a simulated walk through zones, a scripted scenario, or recorded zone visits; it uses a throwaway database.
+- `explain.py`: a structured explanation for an incident, separating observed from inferred (cross-camera links, repeated visits, site-wide combinations).
+- The engine emits completed zone **visits** and **trips** (`drain_activity`), stored in SQLite `visits` / `trips` with no images, positions or identities. `insights.py` computes descriptive patterns, explained unusual observations, and suggestions that need the owner's approval; none of it raises alerts.
+- `reports.py`: per-rule and per-camera nuisance rates from feedback, missed-event reports, and incident exports with SHA-256 evidence fingerprints (`evidence` table, written when a clip or snapshot is finished).
 
 ## Configuration editing (`site_config.py`, `credentials.py`)
 - `SiteConfigManager` owns the editable config. `load_effective` prefers `<storage>/site.json` over the file the service was started with (which is never modified). Every mutation is validated as a whole, written atomically (10 backups in `config_history/`), and then passed to `SentinelService.apply_config`.

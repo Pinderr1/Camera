@@ -26,6 +26,13 @@ The dashboard and any future mobile app share this one API. Interactive OpenAPI 
 | GET | `/api/v1/incidents/{id}` | Incident plus its events |
 | POST | `/api/v1/incidents/{id}/acknowledge` | Idempotent |
 | POST | `/api/v1/incidents/{id}/resolve` | `{"outcome": "expected_activity\|false_alarm\|real_concern\|unclear"}` |
+| GET | `/api/v1/search/incidents` | Filters: `since_ms`, `until_ms`, `camera_id`, `zone_id`, `label`, `min_severity`, `outcome` (`expected_activity\|false_alarm\|real_concern\|unclear\|unreviewed`), `rule_id`, `q` (text), `limit` |
+| GET | `/api/v1/incidents/{id}/explanation` | Structured explanation: `headline`, `objects`, `cameras` (with `basis`), `zones`, `sequence` (each `observed` or `inferred`), `rules` (plain description, matched details, downgrades), `confidence` (detection range, cross-camera links, uncertainty), `severity.reasons`, `evidence`, `statement` |
+| POST | `/api/v1/incidents/{id}/notes` | `{"text"}`, appended (never edited) and audited |
+| GET | `/api/v1/incidents/{id}/export` | Zip: `report.html`, `report.json`, `manifest.json` (SHA-256 per file), and with `?include_media=true` the recordings. Evidence is reported as intact, changed, missing, or not fingerprinted. Audited |
+| POST / GET | `/api/v1/missed` | Report activity Sentinel did not report: `{"occurred_ms", "camera_id", "zone_id"?, "category"?, "description"?}`. Stores what Sentinel recorded on that camera within ±5 min. `GET ?days=` lists reports |
+| GET | `/api/v1/reports/performance?days=` | Per rule and per camera: matches, recorded-only matches, incidents, notifications, outcomes, `nuisance_rate`, `genuine_rate`, missed reports |
+| GET | `/api/v1/insights?days=` | Activity statistics, changes, unusual observations (information only) and suggestions; see [intelligence.md](./intelligence.md) |
 | POST | `/api/v1/incidents/{id}/protect` | `{"protected": true\|false}`. Protected recordings skip disk-space purges and use `retention_days.protected` |
 | GET | `/api/v1/media/{path}` | Clips and snapshots referenced by events and incidents |
 | GET / PATCH | `/api/v1/settings` | `arm_mode` (`disarmed\|home\|away`), `sensitivity` (`low\|normal\|high`), `notifications_enabled` |
@@ -36,6 +43,19 @@ The dashboard and any future mobile app share this one API. Interactive OpenAPI 
 | POST | `/api/v1/drone/inspections/{id}/approve` | Operator approval. Runs preflight checks, then starts the mission |
 | POST | `/api/v1/drone/inspections/{id}/deny` | `{"note": "..."}` |
 | POST | `/api/v1/drone/commands` | `{"action": "takeoff\|goto\|hold\|return_home\|land", "params": {...}}` |
+
+### Security rules
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/rules` | `rules` (each with `display_name` and `plain` {what, when, then}), `templates`, `catalog` (types, classes, modes, days, severities, zones, zone types, scenarios, mode notification levels) |
+| POST | `/api/v1/rules` | Create from builder fields; the id comes from the name. Validated with the whole config (422 on errors), saved, audited, and applied live |
+| PUT / DELETE | `/api/v1/rules/{id}` | Replace or delete. A rule used by a combination cannot be deleted (422) |
+| PUT | `/api/v1/rules/{id}/enabled` | `{"enabled": bool}` |
+| POST | `/api/v1/rules/check` | Validate and describe a draft without saving: `{"valid", "errors", "plain"}` |
+| POST | `/api/v1/rules/test` | `{"rule", "source": "walk\|scenario\|history", "arm_mode", "start"?, "steps"?: [{"zone_id","stay_s","gap_s"}], "label"?, "scenario"?, "days"?}`. Runs the real engine on a throwaway database; returns `fired`, `incidents`, `notifications`, `other_rules_fired`, `notes`, `verdict`. Audited |
+
+`PATCH /api/v1/settings` accepts `arm_mode` `disarmed|home|away|night|vacation`.
 
 ### System health and backups
 

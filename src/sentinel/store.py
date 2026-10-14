@@ -56,7 +56,43 @@ CREATE TABLE IF NOT EXISTS outages (
     body TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS outages_time ON outages (started_ms);
+CREATE TABLE IF NOT EXISTS visits (
+    visit_id TEXT PRIMARY KEY,
+    site_track_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    kind TEXT,
+    camera_id TEXT NOT NULL,
+    zone_id TEXT NOT NULL,
+    zone_type TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    dwell_s REAL NOT NULL,
+    arrived INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS visits_time ON visits (start_ms);
+CREATE TABLE IF NOT EXISTS trips (
+    trip_id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    first_seen_ms INTEGER NOT NULL,
+    last_seen_ms INTEGER NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS trips_time ON trips (first_seen_ms);
+CREATE TABLE IF NOT EXISTS missed_reports (
+    report_id TEXT PRIMARY KEY,
+    created_ms INTEGER NOT NULL,
+    occurred_ms INTEGER NOT NULL,
+    camera_id TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS evidence (
+    path TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    recorded_ms INTEGER NOT NULL
+);
 """
+VISIT_COLUMNS = ("visit_id", "site_track_id", "label", "kind", "camera_id", "zone_id", "zone_type", "start_ms", "end_ms", "dwell_s", "arrived")
 # Incidents whose media and rows outlive normal retention (until `protected_media` days).
 PROTECTED = "(status = 'open' OR json_extract(body, '$.protected') = 1 OR json_extract(body, '$.resolution') = 'real_concern')"
 
@@ -105,6 +141,27 @@ class EventStore:
                 self._db.backup(destination)
         finally:
             destination.close()
+
+    def merge_rows(self, rows: dict[str, list[dict[str, Any]]]) -> dict[str, int]:
+        """Add rows salvaged from a damaged copy. Existing rows win (INSERT OR
+        IGNORE), so nothing restored from a backup is overwritten. Returns the
+        number of rows that were new, per table."""
+        merged: dict[str, int] = {}
+        with self._lock, self._db:
+            known = {row[0] for row in self._db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            for table, records in rows.items():
+                if table not in known or not records:
+                    continue
+                columns = [row[1] for row in self._db.execute(f'PRAGMA table_info("{table}")')]
+                count = 0
+                for record in records:
+                    keys = [key for key in record if key in columns]
+                    cursor = self._db.execute(
+                        f'INSERT OR IGNORE INTO "{table}" ({",".join(keys)}) VALUES ({",".join("?" * len(keys))})', [record[key] for key in keys]
+                    )
+                    count += cursor.rowcount
+                merged[table] = count
+        return merged
 
     def _write(self, sql: str, params: tuple) -> bool:
         try:
@@ -255,6 +312,130 @@ class EventStore:
             {"timestamp_ms": row["timestamp_ms"], "actor": row["actor"], "action": row["action"], "body": json.loads(row["body"])}
             for row in rows
         ]
+
+    # ---- activity statistics (no images, no positions, no identities) --------
+
+    def add_activity(self, visits: list[dict[str, Any]], trips: list[dict[str, Any]]) -> None:
+        for visit in visits:
+            self._write(f"INSERT OR REPLACE INTO visits VALUES ({','.join('?' * len(VISIT_COLUMNS))})",
+                        tuple(int(visit[key]) if key == "arrived" else visit[key] for key in VISIT_COLUMNS))
+        for trip in trips:
+            self._write("INSERT OR REPLACE INTO trips VALUES (?,?,?,?,?)",
+                        (trip["trip_id"], trip["label"], trip["first_seen_ms"], trip["last_seen_ms"], json.dumps(trip)))
+
+    def list_visits(self, *, since_ms: int | None = None, until_ms: int | None = None, label: str | None = None, limit: int = 100_000) -> list[dict[str, Any]]:
+        clauses, params = ["1=1"], []
+        if since_ms is not None:
+            clauses.append("start_ms >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            clauses.append("start_ms < ?")
+            params.append(until_ms)
+        if label:
+            clauses.append("label = ?")
+            params.append(label)
+        with self._lock:
+            rows = self._db.execute(f"SELECT * FROM visits WHERE {' AND '.join(clauses)} ORDER BY start_ms LIMIT ?", params + [limit]).fetchall()
+        return [dict(row) | {"arrived": bool(row["arrived"])} for row in rows]
+
+    def list_trips(self, *, since_ms: int | None = None, until_ms: int | None = None, limit: int = 50_000) -> list[dict[str, Any]]:
+        clauses, params = ["1=1"], []
+        if since_ms is not None:
+            clauses.append("first_seen_ms >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            clauses.append("first_seen_ms < ?")
+            params.append(until_ms)
+        with self._lock:
+            rows = self._db.execute(f"SELECT body FROM trips WHERE {' AND '.join(clauses)} ORDER BY first_seen_ms LIMIT ?", params + [limit]).fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
+    def purge_activity(self, before_ms: int) -> int:
+        try:
+            with self._lock, self._db:
+                removed = self._db.execute("DELETE FROM visits WHERE start_ms < ?", (before_ms,)).rowcount
+                removed += self._db.execute("DELETE FROM trips WHERE first_seen_ms < ?", (before_ms,)).rowcount
+            return removed
+        except sqlite3.Error as error:
+            log.error("activity purge failed: %s", error)
+            return 0
+
+    # ---- investigation ---------------------------------------------------------
+
+    def search_incidents(
+        self,
+        *,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        camera_id: str | None = None,
+        zone_id: str | None = None,
+        label: str | None = None,
+        min_severity: str | None = None,
+        outcome: str | None = None,
+        rule_id: str | None = None,
+        text: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses, params = ["1=1"], []
+        if since_ms is not None:
+            clauses.append("updated_ms >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            clauses.append("opened_ms <= ?")
+            params.append(until_ms)
+        for key, value in (("cameras", camera_id), ("zones", zone_id), ("labels", label)):
+            if value:
+                clauses.append(f"EXISTS (SELECT 1 FROM json_each(body, '$.{key}') WHERE value = ?)")
+                params.append(value)
+        if min_severity:
+            clauses.append("CASE severity WHEN 'info' THEN 0 WHEN 'low' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END >= ?")
+            params.append(SEVERITY_RANK.get(min_severity, 0))
+        if outcome == "unreviewed":
+            clauses.append("COALESCE(json_extract(body, '$.resolution'), '') = ''")
+        elif outcome:
+            clauses.append("json_extract(body, '$.resolution') = ?")
+            params.append(outcome)
+        if rule_id:
+            clauses.append("incident_id IN (SELECT incident_id FROM events WHERE json_extract(body, '$.rule_id') = ?)")
+            params.append(rule_id)
+        if text:
+            clauses.append("(json_extract(body, '$.title') LIKE ? OR incident_id IN (SELECT incident_id FROM events WHERE summary LIKE ?))")
+            params += [f"%{text}%", f"%{text}%"]
+        params.append(max(1, min(limit, 1000)))
+        with self._lock:
+            rows = self._db.execute(f"SELECT body FROM incidents WHERE {' AND '.join(clauses)} ORDER BY opened_ms DESC LIMIT ?", params).fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
+    def rule_events(self, since_ms: int) -> list[dict[str, Any]]:
+        """Rule matches (rule id, incident, camera, severity) since a time, for reports."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT json_extract(body, '$.rule_id') AS rule_id, incident_id, camera_id, severity FROM events "
+                "WHERE timestamp_ms >= ? AND json_extract(body, '$.rule_id') != ''", (since_ms,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_missed_report(self, report: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO missed_reports VALUES (?,?,?,?,?)",
+                    (report["report_id"], report["created_ms"], report["occurred_ms"], report["camera_id"], json.dumps(report)))
+
+    def list_missed_reports(self, *, since_ms: int | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("SELECT body FROM missed_reports WHERE occurred_ms >= ? ORDER BY occurred_ms DESC LIMIT ?",
+                                    (since_ms or 0, limit)).fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
+    def record_evidence(self, path: str, sha256: str, size: int) -> None:
+        """First hash wins: evidence is fingerprinted when it is finalised, and a
+        later different hash means the file changed afterwards."""
+        self._write("INSERT OR IGNORE INTO evidence VALUES (?,?,?,?)", (path, sha256, size, int(time.time() * 1000)))
+
+    def evidence_hashes(self, paths: list[str]) -> dict[str, dict[str, Any]]:
+        if not paths:
+            return {}
+        with self._lock:
+            rows = self._db.execute(f"SELECT * FROM evidence WHERE path IN ({','.join('?' * len(paths))})", paths).fetchall()
+        return {row["path"]: dict(row) for row in rows}
 
     def protected_media(self) -> set[str]:
         """Media of incidents that are still open, marked protected, or resolved

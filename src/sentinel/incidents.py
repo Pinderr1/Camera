@@ -66,6 +66,7 @@ class IncidentManager:
             (incident.cameras, [event.camera_id, *event.details.get("cameras", [])]),
             (incident.zones, [event.zone_id]),
             (incident.site_track_ids, [event.site_track_id]),
+            (incident.labels, [event.label]),
         ):
             for value in values:
                 if value and value not in collection:
@@ -132,7 +133,7 @@ class AlertPolicyConfig:
     @classmethod
     def from_dict(cls, data: dict | None) -> "AlertPolicyConfig":
         data = data or {}
-        thresholds = {"disarmed": "none", "home": "high", "away": "medium"} | data.get("notify_min_severity", {})
+        thresholds = {"disarmed": "none", "home": "high", "away": "medium", "night": "medium", "vacation": "low"} | data.get("notify_min_severity", {})
         return cls(
             notify_min_severity=thresholds,
             max_notifications=int(data.get("max_notifications", 6)),
@@ -153,8 +154,15 @@ class AlertPolicy:
         self._escalated: set[str] = set()
 
     def evaluate(self, incident: Incident, events: list[SecurityEvent], arm_mode: str, now_ms: int) -> Notification | None:
+        # Per-rule preference: "never" records without pushing; "always" pushes in any
+        # armed mode regardless of the mode's severity threshold (never when disarmed).
+        relevant = [event for event in events if event.event_type != "activity" and event.severity != "info"]
+        preferences = {event.details.get("notify", "auto") for event in relevant}
+        if relevant and preferences == {"never"}:
+            return None
         threshold = self.config.notify_min_severity.get(arm_mode, "none")
-        if threshold == "none" or not severity_at_least(incident.severity, threshold):
+        forced = "always" in preferences and arm_mode != "disarmed"
+        if not forced and (threshold == "none" or not severity_at_least(incident.severity, threshold)):
             return None
         if incident.notified_severity and not (
             SEVERITY_RANK[incident.severity] > SEVERITY_RANK[incident.notified_severity]

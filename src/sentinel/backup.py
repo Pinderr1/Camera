@@ -171,7 +171,15 @@ def restore_backup(path: str | Path, storage_dir: str | Path, *, parts: tuple[st
         raise BackupError("backup failed verification: " + "; ".join(check["problems"]))
     safety = None
     if any((storage_dir / name).exists() for name in ("site.json", "settings.json", "sentinel.db")):
-        safety = create_backup(storage_dir, label="pre-restore", include_credentials="credentials" in parts)["name"]
+        try:
+            safety = create_backup(storage_dir, label="pre-restore", include_credentials="credentials" in parts)["name"]
+        except (sqlite3.Error, OSError) as error:  # e.g. the current database is damaged; its raw files are preserved below
+            log.warning("pre-restore backup incomplete: %s", error)
+    preserved = None
+    if "database" in parts and (storage_dir / "sentinel.db").exists():
+        preserved = _quarantine(storage_dir, storage_dir / "sentinel.db", "replaced")  # the original bytes are never overwritten
+        _write_report(storage_dir, {"action": "offline_restore", "detected_ms": int(time.time() * 1000), "restored_ms": int(time.time() * 1000),
+                                    "backup": Path(path).name, "backup_created_ms": check["manifest"].get("created_ms"), "quarantined": preserved})
     restored = []
     with zipfile.ZipFile(path) as archive:
         names = set(check["manifest"]["files"])
@@ -191,15 +199,12 @@ def restore_backup(path: str | Path, storage_dir: str | Path, *, parts: tuple[st
             if member not in names:
                 continue
             target = storage_dir / member
-            if part == "database":
-                for suffix in ("-wal", "-shm"):
-                    Path(str(target) + suffix).unlink(missing_ok=True)
             temporary = target.with_name(target.name + ".restoring")
             temporary.write_bytes(archive.read(member))
             temporary.replace(target)
             restored.append(part)
     log.warning("restored %s from %s", ", ".join(restored), Path(path).name)
-    return {"restored": restored, "safety_backup": safety, "backup": Path(path).name}
+    return {"restored": restored, "safety_backup": safety, "backup": Path(path).name, "preserved": preserved}
 
 
 def stage_database_restore(path: str | Path, storage_dir: str | Path) -> dict[str, Any]:
@@ -245,17 +250,32 @@ def _apply_pending_restore(storage_dir: Path, database: Path) -> dict[str, Any] 
     if not staged.is_file():
         return None
     source = _read_json(pending / "source.json") or {}
-    if database.exists():
-        _quarantine(storage_dir, database, "replaced")
+    now = int(time.time() * 1000)
+    preserved = _quarantine(storage_dir, database, "replaced") if database.exists() else []
     staged.replace(database)
     shutil.rmtree(pending, ignore_errors=True)
+    backup = next((item for item in list_backups(storage_dir) if item["name"] == source.get("backup")), {})
     log.warning("database restored from %s (staged restore)", source.get("backup", "a backup"))
-    return {"action": "staged_restore", "backup": source.get("backup", "")}
+    return _write_report(storage_dir, {
+        "action": "staged_restore", "detected_ms": now, "restored_ms": now, "backup": source.get("backup", ""),
+        "backup_created_ms": backup.get("created_ms"), "requested_ms": source.get("staged_ms"), "quarantined": preserved,
+    })
 
 
 def _recover(storage_dir: Path, database: Path, problem: str) -> tuple[EventStore, dict[str, Any]]:
+    """Evidence first: move every damaged file aside untouched (with hashes),
+    salvage readable rows from a *copy*, then restore the newest verified backup
+    and merge the salvaged rows into it. The report states the backup's time and
+    age and which period may be missing."""
+    detected = int(time.time() * 1000)
     quarantined = _quarantine(storage_dir, database, "corrupt")
-    log.error("event database is damaged (%s); moved to %s", problem, quarantined)
+    last_write_ms = max((item["modified_ms"] for item in quarantined), default=detected)
+    log.error("event database is damaged (%s); original preserved in %s", problem, storage_dir / "recovery")
+    salvage = _salvage(storage_dir / "recovery" / quarantined[0]["file"]) if quarantined else {"rows": {}, "errors": {"database": "missing"}}
+    report: dict[str, Any] = {
+        "detected_ms": detected, "problem": problem[:300], "quarantined": quarantined, "last_write_ms": last_write_ms,
+        "salvaged": {table: len(rows) for table, rows in salvage["rows"].items()}, "salvage_errors": salvage["errors"],
+    }
     for backup in list_backups(storage_dir):
         if not backup.get("valid", True) or "sentinel.db" not in backup.get("files", []):
             continue
@@ -264,24 +284,84 @@ def _recover(storage_dir: Path, database: Path, problem: str) -> tuple[EventStor
             with zipfile.ZipFile(path) as archive:
                 database.write_bytes(archive.read("sentinel.db"))
             log.warning("event database restored from backup %s", backup["name"])
-            return EventStore(database), {
+            report |= {
                 "action": "restored_from_backup", "backup": backup["name"], "backup_created_ms": backup["created_ms"],
-                "problem": problem[:300], "quarantined": quarantined.name,
+                "backup_age_s": round((detected - backup["created_ms"]) / 1000),
+                "possible_loss": {"from_ms": backup["created_ms"], "to_ms": max(last_write_ms, backup["created_ms"])},
             }
-    log.error("no usable backup: starting with an empty event database")
-    return EventStore(database), {"action": "started_empty", "problem": problem[:300], "quarantined": quarantined.name}
+            break
+    else:
+        log.error("no usable backup: starting a new event database")
+        report |= {"action": "salvaged_only" if any(salvage["rows"].values()) else "started_empty",
+                   "possible_loss": {"from_ms": None, "to_ms": last_write_ms}}
+    store = EventStore(database)
+    report["merged"] = store.merge_rows(salvage["rows"]) if salvage["rows"] else {}
+    report["restored_ms"] = int(time.time() * 1000)
+    return store, _write_report(storage_dir, report)
 
 
-def _quarantine(storage_dir: Path, database: Path, why: str) -> Path:
+def _salvage(damaged: Path) -> dict[str, Any]:
+    """Read whatever rows are still readable, table by table, from a temporary
+    copy of the damaged file. The preserved original is never opened for writing."""
+    rows: dict[str, list[dict[str, Any]]] = {}
+    errors: dict[str, str] = {}
+    with tempfile.TemporaryDirectory() as work:
+        copy = Path(work) / "salvage.db"
+        for suffix in ("", "-wal"):
+            if Path(str(damaged) + suffix).exists():
+                shutil.copyfile(str(damaged) + suffix, str(copy) + suffix)
+        connection = None
+        try:
+            connection = sqlite3.connect(copy)
+            connection.row_factory = sqlite3.Row
+            tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+        except sqlite3.DatabaseError as error:
+            errors["database"] = str(error)[:200]
+            tables = []
+        for table in tables:
+            try:
+                rows[table] = [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"')]
+            except sqlite3.DatabaseError as error:
+                errors[table] = str(error)[:200]
+        if connection is not None:
+            connection.close()
+    return {"rows": rows, "errors": errors}
+
+
+def _quarantine(storage_dir: Path, database: Path, why: str) -> list[dict[str, Any]]:
+    """Move the database and its WAL/SHM files into `recovery/` byte for byte,
+    recording their SHA-256 so the preserved evidence can be checked later."""
     recovery = storage_dir / "recovery"
     recovery.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time() * 1000)
     target = recovery / f"sentinel.db.{stamp}.{why}"
+    moved = []
     for suffix in ("", "-wal", "-shm"):
         source = Path(str(database) + suffix)
         if source.exists():
-            source.replace(Path(str(target) + suffix))
-    return target
+            destination = Path(str(target) + suffix)
+            modified_ms = int(source.stat().st_mtime * 1000)
+            source.replace(destination)
+            moved.append({"file": destination.name, "sha256": _sha256(destination), "bytes": destination.stat().st_size, "modified_ms": modified_ms})
+    return moved
+
+
+def _write_report(storage_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
+    recovery = storage_dir / "recovery"
+    recovery.mkdir(parents=True, exist_ok=True)
+    name = f"recovery-{report.get('detected_ms', int(time.time() * 1000))}-{report.get('action', 'report')}.json"
+    report = dict(report, report_file=name)
+    (recovery / name).write_text(json.dumps(report, indent=1), encoding="utf-8")
+    return report
+
+
+def list_recoveries(storage_dir: str | Path, limit: int = 10) -> list[dict[str, Any]]:
+    reports = []
+    for path in sorted((Path(storage_dir) / "recovery").glob("recovery-*.json"), reverse=True)[:limit]:
+        report = _read_json(path)
+        if report:
+            reports.append(report)
+    return reports
 
 
 def _describe(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:

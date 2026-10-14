@@ -91,7 +91,7 @@
   ],
   "incidents": {"merge_window_s": 120, "close_after_s": 120, "corroboration_behaviors": 3},
   "alerts": {
-    "notify_min_severity": {"disarmed": "none", "home": "high", "away": "medium"},
+    "notify_min_severity": {"disarmed": "none", "home": "high", "away": "medium", "night": "medium", "vacation": "low"},
     "max_notifications": 6,
     "rate_window_s": 600,
     "ack_timeout_s": 300,
@@ -105,6 +105,7 @@
   "health": {
     "frame_timeout_s": 10, "frozen_after_s": 60, "startup_grace_s": 30, "notify_after_s": 120,
     "notifications": true, "notify_recovery": true, "max_notifications_per_hour": 6,
+    "inference_timeout_s": 15, "unverified_notify_after_s": 21600,
     "supervisor": {"stall_after_s": 30, "backoff_initial_s": 5, "backoff_max_s": 300, "max_restarts": 5, "window_s": 3600, "cooldown_s": 1800},
     "heartbeat": {"url": "", "fail_url": "", "interval_s": 300}
   },
@@ -113,6 +114,7 @@
     "backups": {"enabled": true, "interval_h": 24, "keep": 7, "include_credentials": false}
   },
   "logging": {"level": "INFO", "max_mb": 10, "backups": 5},
+  "activity": {"enabled": true, "retention_days": 90, "window_days": 30, "min_days": 7, "min_samples": 10, "rarity": 0.05, "recent_hours": 48},
   "mqtt": {"enabled": false, "host": "localhost", "port": 1883, "topic_prefix": "sentinel", "tls": false},
   "api": {"host": "127.0.0.1", "port": 8080},
   "settings_defaults": {"arm_mode": "home", "sensitivity": "normal", "notifications_enabled": true},

@@ -1,0 +1,22 @@
+{
+ "name": "gate_then_shed",
+ "description": "A person comes through the side gate, crosses the backyard and reaches the shed within three minutes. Used with a night-time sequence rule: one coherent incident at night, no rule match by day.",
+ "duration_s": 75,
+ "loop": false,
+ "actors": [
+  {
+   "id": "visitor",
+   "label": "person",
+   "noise": 0.004,
+   "miss_rate": 0.03,
+   "path": [
+    {"t": 0, "camera": "cam_backyard", "x": 0.12, "y": 0.62},
+    {"t": 8, "camera": "cam_backyard", "x": 0.16, "y": 0.66},
+    {"t": 30, "camera": "cam_backyard", "x": 0.45, "y": 0.72},
+    {"t": 50, "camera": "cam_backyard", "x": 0.82, "y": 0.6},
+    {"t": 70, "camera": "cam_backyard", "x": 0.84, "y": 0.6},
+    {"t": 71, "camera": null}
+   ]
+  }
+ ]
+}

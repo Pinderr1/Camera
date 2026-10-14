@@ -163,6 +163,9 @@ class Incident:
     clip_paths: list[str] = field(default_factory=list)
     snapshot_path: str = ""
     protected: bool = False  # recordings kept past normal retention and never purged for disk space
+    labels: list[str] = field(default_factory=list)  # object categories involved (person, vehicle, ...)
+    clip_starts: dict[str, dict[str, Any]] = field(default_factory=dict)  # clip path -> {camera_id, started_ms}
+    notes: list[dict[str, Any]] = field(default_factory=list)  # operator annotations: {by, ms, text}
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -28,6 +28,7 @@ class ClipRecorder:
         self._writer = None
         self._clip: dict[str, Any] | None = None
         self.paused = False  # set by the storage guard when the disk is nearly full
+        self.on_finalized = None  # callback(media-relative path) once a clip or snapshot is complete (evidence hashing)
 
     def set_paused(self, paused: bool) -> None:
         """Called from another thread: only flips the flag; the camera thread,
@@ -108,11 +109,17 @@ class ClipRecorder:
             raise OSError(f"could not write snapshot {relative.as_posix()}")
         return relative.as_posix()
 
+    def clip_started_ms(self) -> int | None:
+        return self._clip["started_ms"] if self._clip else None
+
     def finish(self) -> None:
+        clip = self._clip
         if self._writer is not None:
             self._writer.release()
         self._writer = None
         self._clip = None
+        if clip and self.on_finalized:
+            self.on_finalized(clip["relative_path"])
 
     def _resize(self, image: Any) -> Any:
         import cv2

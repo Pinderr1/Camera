@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import threading
@@ -9,8 +10,9 @@ from typing import Any, Callable
 
 from .config import ARM_MODES, SENSITIVITIES, cameras, zone_index
 from .engine import TemporalEventEngine
+from .explain import notification_reason
 from .health import HealthMonitor, HealthSettings
-from .incidents import AlertPolicy, AlertPolicyConfig, IncidentConfig, IncidentManager
+from .incidents import DISCLAIMER, AlertPolicy, AlertPolicyConfig, IncidentConfig, IncidentManager
 from .models import Incident, Notification, SecurityEvent, Track, effective_categories, severity_at_least
 from .notify import NotificationDispatcher, Notifier, build_notifiers
 from .credentials import SecretStore
@@ -177,6 +179,9 @@ class SentinelRuntime:
             self.bus.publish("incident", incident.as_dict())
             notification = self.policy.evaluate(incident, incident_events, self.settings["arm_mode"], now_ms)
             if notification:
+                reason = notification_reason(incident_events, {rule["id"]: rule for rule in self.config.get("rules", [])})
+                if reason and notification.message.endswith(DISCLAIMER):
+                    notification = dataclasses.replace(notification, message=notification.message[: -len(DISCLAIMER)] + reason + "\n" + DISCLAIMER)
                 self._notify(notification)
             self._maybe_request_drone(incident)
 
@@ -235,6 +240,8 @@ class SentinelRuntime:
 
                 camera_zones = self.camera_configs.get(event.camera_id, {}).get("zones", [])
                 event.snapshot_path = recorder.snapshot(annotate(image, active, camera_zones), event.timestamp_ms, event.event_id)
+                if event.snapshot_path:
+                    self.record_evidence(event.snapshot_path)
                 if event.snapshot_path and not incident.snapshot_path:
                     incident.snapshot_path = event.snapshot_path
             if privacy.get("store_clips", True):
@@ -243,6 +250,8 @@ class SentinelRuntime:
                     event.clip_path = clip
                     if clip not in incident.clip_paths:
                         incident.clip_paths.append(clip)
+                    if clip not in incident.clip_starts and recorder.clip_started_ms():
+                        incident.clip_starts[clip] = {"camera_id": event.camera_id, "started_ms": recorder.clip_started_ms()}
         except Exception as error:  # a failed recording must never lose the event or its alert
             self.recording_failed(event.camera_id, error)
 
@@ -259,6 +268,8 @@ class SentinelRuntime:
                     return
                 if clip and clip not in incident.clip_paths:
                     incident.clip_paths.append(clip)
+                if clip and clip not in incident.clip_starts and recorder.clip_started_ms():
+                    incident.clip_starts[clip] = {"camera_id": camera_id, "started_ms": recorder.clip_started_ms()}
 
     def _notify(self, notification: Notification) -> None:
         self.bus.publish("notification", notification.as_dict())
@@ -310,6 +321,50 @@ class SentinelRuntime:
                 incident.acknowledged_by = actor
 
         return self._update_incident(incident_id, actor, "incident_resolved", apply, outcome=outcome)
+
+    def add_note(self, incident_id: str, actor: str, text: str) -> dict[str, Any]:
+        """Operator annotation. Notes are appended, never edited, and audited."""
+        text = text.strip()[:2000]
+        if not text:
+            raise ValueError("note is empty")
+
+        def apply(incident: Incident) -> None:
+            incident.notes.append({"by": actor, "ms": int(time.time() * 1000), "text": text})
+
+        return self._update_incident(incident_id, actor, "incident_note_added", apply)
+
+    def report_missed(self, actor: str, *, occurred_ms: int, camera_id: str, zone_id: str = "", category: str = "", description: str = "") -> dict[str, Any]:
+        """The owner saw something Sentinel did not report. Stored for evaluation,
+        together with what Sentinel did record on that camera around that time."""
+        if camera_id not in self.camera_configs:
+            raise KeyError(camera_id)
+        window = 300_000
+        nearby = self.store.list_events(since_ms=occurred_ms - window, until_ms=occurred_ms + window, camera_id=camera_id, limit=50)
+        status = self.camera_status.get(camera_id, {}).get("health", {})
+        now = int(time.time() * 1000)
+        report = {
+            "report_id": f"miss_{now}", "created_ms": now, "reported_by": actor, "occurred_ms": int(occurred_ms), "camera_id": camera_id,
+            "zone_id": zone_id, "category": category, "description": description.strip()[:1000],
+            "sentinel_recorded": [{"event_id": e["event_id"], "event_type": e["event_type"], "summary": e["summary"], "timestamp_ms": e["timestamp_ms"]} for e in nearby],
+            "camera_state_now": status.get("state"),
+        }
+        self.store.add_missed_report(report)
+        self.store.audit(actor, "missed_event_reported", {"report_id": report["report_id"], "camera_id": camera_id})
+        return report
+
+    def record_evidence(self, relative_path: str) -> None:
+        """Fingerprint a finished clip or snapshot (SHA-256) so exports can show it is unchanged."""
+        import hashlib
+
+        path = self.media_root / relative_path
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(chunk)
+            self.store.record_evidence(relative_path, digest.hexdigest(), path.stat().st_size)
+        except OSError as error:
+            log.warning("could not fingerprint %s: %s", relative_path, error)
 
     def protect(self, incident_id: str, actor: str, protected: bool = True) -> dict[str, Any]:
         """Keep an incident's recordings past normal retention and out of disk-space purges."""
@@ -374,6 +429,9 @@ class SentinelRuntime:
         now_ms = now_ms or int(time.time() * 1000)
         with self._lock:
             self.engine.tick(now_ms)
+            visits, trips = self.engine.drain_activity()
+            if (visits or trips) and self.config.get("activity", {}).get("enabled", True):
+                self.store.add_activity(visits, trips)
             self.health.evaluate(self.camera_status, now_ms)
             if self.store.last_write_ok:
                 self.health.set_component("database", "ok", "", now_ms)
@@ -393,6 +451,7 @@ class SentinelRuntime:
                 media_root=self.media_root,
                 protected_before_ms=now_ms - int(retention.get("protected", 90) * DAY_MS),
             )
+            purged["activity"] = self.store.purge_activity(now_ms - int(self.config.get("activity", {}).get("retention_days", 90) * DAY_MS))
             if any(purged.values()):
                 log.info("retention purge: %s", purged)
 

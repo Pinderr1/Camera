@@ -34,7 +34,7 @@ class SessionBody(BaseModel):
 
 
 class SettingsBody(BaseModel):
-    arm_mode: Literal["disarmed", "home", "away"] | None = None
+    arm_mode: Literal["disarmed", "home", "away", "night", "vacation"] | None = None
     sensitivity: Literal["low", "normal", "high"] | None = None
     notifications_enabled: bool | None = None
 
@@ -87,6 +87,39 @@ class BackupBody(BaseModel):
 
 class RestoreBody(BaseModel):
     parts: list[Literal["config", "settings", "database"]] = Field(default_factory=lambda: ["config", "settings"])
+
+
+class RuleEnabledBody(BaseModel):
+    enabled: bool
+
+
+class WalkStep(BaseModel):
+    zone_id: str = Field(max_length=80)
+    stay_s: float = Field(default=10, ge=1, le=3600)
+    gap_s: float = Field(default=5, ge=0.5, le=600)
+
+
+class RuleTestBody(BaseModel):
+    rule: dict[str, Any]
+    source: Literal["walk", "scenario", "history"] = "walk"
+    arm_mode: Literal["disarmed", "home", "away", "night", "vacation"] = "away"
+    start: str | None = Field(default=None, max_length=32)  # ISO local time for walk/scenario
+    steps: list[WalkStep] = Field(default_factory=list, max_length=12)
+    label: Literal["person", "vehicle", "bicycle", "animal"] = "person"
+    scenario: str | None = Field(default=None, max_length=60)
+    days: float = Field(default=7, gt=0, le=14)
+
+
+class NoteBody(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class MissedBody(BaseModel):
+    occurred_ms: int
+    camera_id: str = Field(max_length=80)
+    zone_id: str = Field(default="", max_length=80)
+    category: Literal["person", "vehicle", "bicycle", "animal", "other", ""] = ""
+    description: str = Field(default="", max_length=1000)
 
 
 class DroneCommandBody(BaseModel):
@@ -231,6 +264,103 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
             return runtime.protect(incident_id, actor, body.protected)
         except KeyError:
             raise HTTPException(status_code=404, detail="unknown incident") from None
+
+    # ---- investigation ------------------------------------------------------------
+
+    @app.get("/api/v1/search/incidents")
+    def search_incidents(
+        since_ms: int | None = None, until_ms: int | None = None, camera_id: str | None = None, zone_id: str | None = None,
+        label: str | None = None, min_severity: Literal["info", "low", "medium", "high"] | None = None,
+        outcome: Literal["expected_activity", "false_alarm", "real_concern", "unclear", "unreviewed"] | None = None,
+        rule_id: str | None = None, q: str | None = None, limit: int = 200, _: str = Depends(require_auth),
+    ) -> list[dict[str, Any]]:
+        return runtime.store.search_incidents(since_ms=since_ms, until_ms=until_ms, camera_id=camera_id, zone_id=zone_id, label=label,
+                                              min_severity=min_severity, outcome=outcome, rule_id=rule_id, text=(q or "")[:100] or None, limit=limit)
+
+    @app.get("/api/v1/incidents/{incident_id}/explanation")
+    def incident_explanation(incident_id: str, _: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return service.explain(incident_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown incident") from None
+
+    @app.post("/api/v1/incidents/{incident_id}/notes")
+    def add_note(incident_id: str, body: NoteBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return runtime.add_note(incident_id, actor, body.text)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown incident") from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.get("/api/v1/incidents/{incident_id}/export")
+    def export_incident(incident_id: str, include_media: bool = False, actor: str = Depends(require_auth)) -> Response:
+        try:
+            data = service.export_incident(incident_id, actor, include_media=include_media)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown incident") from None
+        return Response(data, media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="sentinel-{incident_id}.zip"', "Cache-Control": "no-store"})
+
+    @app.post("/api/v1/missed")
+    def report_missed(body: MissedBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return runtime.report_missed(actor, occurred_ms=body.occurred_ms, camera_id=body.camera_id, zone_id=body.zone_id,
+                                         category=body.category, description=body.description)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown camera") from None
+
+    @app.get("/api/v1/missed")
+    def missed_reports(days: float = 30, _: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        return runtime.store.list_missed_reports(since_ms=int(time.time() * 1000 - days * 86_400_000))
+
+    @app.get("/api/v1/reports/performance")
+    def performance(days: float = 30, _: str = Depends(require_auth)) -> dict[str, Any]:
+        from .reports import performance_report
+
+        return performance_report(runtime.store, service.config, days=max(1.0, min(days, 365.0)))
+
+    @app.get("/api/v1/insights")
+    def insights(days: float | None = None, _: str = Depends(require_auth)) -> dict[str, Any]:
+        return service.insights(days)
+
+    # ---- security rules ---------------------------------------------------------------
+
+    @app.get("/api/v1/rules")
+    def list_rules(_: str = Depends(require_auth)) -> dict[str, Any]:
+        return service.rules_view()
+
+    @app.post("/api/v1/rules")
+    def create_rule(body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.save_rule, None, body, actor)
+
+    @app.put("/api/v1/rules/{rule_id}")
+    def update_rule(rule_id: str, body: dict[str, Any], actor: str = Depends(require_auth)) -> dict[str, Any]:
+        return config_call(site.save_rule, rule_id, body, actor)
+
+    @app.delete("/api/v1/rules/{rule_id}")
+    def delete_rule(rule_id: str, actor: str = Depends(require_auth)) -> dict[str, bool]:
+        config_call(site.delete_rule, rule_id, actor)
+        return {"ok": True}
+
+    @app.put("/api/v1/rules/{rule_id}/enabled")
+    def enable_rule(rule_id: str, body: RuleEnabledBody, actor: str = Depends(require_auth)) -> dict[str, bool]:
+        config_call(site.set_rule_enabled, rule_id, body.enabled, actor)
+        return {"ok": True}
+
+    @app.post("/api/v1/rules/check")
+    def check_rule(body: dict[str, Any], _: str = Depends(require_auth)) -> dict[str, Any]:
+        """Validate a draft rule and describe it in plain language, without saving."""
+        return service.check_rule(body)
+
+    @app.post("/api/v1/rules/test")
+    def test_rule(body: RuleTestBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            result = service.test_rule(body.model_dump())
+        except (ValueError, SiteConfigError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        runtime.store.audit(actor, "rule_tested", {"rule_id": body.rule.get("id", ""), "source": body.source, "fired": len(result["fired"])})
+        return result
 
     # ---- system health, outages, backups ----------------------------------------
 

@@ -67,9 +67,10 @@ class _ThreadedSource:
             "error_kind": self.error_kind,
         }
 
-    def _publish(self, image) -> None:
+    def _publish(self, image, pts_ms: float | None = None) -> None:
+        meta = {"pts_ms": round(pts_ms, 1)} if pts_ms and pts_ms > 0 else {}
         with self._lock:
-            self._latest = Frame(image=image, timestamp_ms=int(time.time() * 1000))
+            self._latest = Frame(image=image, timestamp_ms=int(time.time() * 1000), meta=meta)
             self.frames_read += 1
         if self.resolution is None:
             self.resolution = (image.shape[1], image.shape[0])
@@ -144,7 +145,7 @@ class OpenCVSource(_ThreadedSource):
                     self.last_error, self.error_kind = "stream ended or dropped", "stream_dropped"
                     self.reconnects += 1
                     break
-                self._publish(image)
+                self._publish(image, capture.get(cv2.CAP_PROP_POS_MSEC))  # stream timestamp: shows whether frames are new
                 if file_fps:
                     time.sleep(1.0 / file_fps)
             capture.release()

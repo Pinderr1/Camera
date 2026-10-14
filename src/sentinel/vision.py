@@ -49,27 +49,75 @@ def appearance_vector(image: Any, bbox: tuple[float, float, float, float]) -> li
     return [round(float(value), 4) for value in hist.flatten()]
 
 
-class FreezeDetector:
-    """A live camera's picture is never bit-for-bit still: sensor noise and
-    periodic key frames keep changing it. Pixels are sampled (not averaged, so
-    noise survives); when the samples stay identical, the feed is frozen, e.g. a
-    decoder or recorder repeating its last image. Returns the timestamp since
-    which the picture has not changed, or 0."""
+class ContentMonitor:
+    """Is the picture itself still live? Classifies each frame-to-frame change
+    on sampled pixels (not averages, so sensor noise survives):
 
-    def __init__(self) -> None:
+    - `noise`: small changes spread over most of the frame. Live sensors do this
+      even when nothing moves, so a noisy static scene is *not* frozen.
+    - `changed`: any other change over a large area (movement, light).
+    - `overlay`: changes confined to one small box, such as a recorder's
+      on-screen clock that keeps ticking over a frozen picture.
+    - `identical`: nothing changed.
+
+    A run of `overlay`/`identical` frames is a static period. The health monitor
+    calls it frozen only when the picture was noisy right before it went still
+    (a live sensor does not lose its noise abruptly). A scene that was already
+    noise-free cannot be told apart from a frozen feed, so it is reported as
+    unverified instead of frozen."""
+
+    def __init__(self, *, overlay_max_area: float = 0.03, fine_max_diff: int = 6, noise_cells: float = 0.75, noise_fraction: float = 0.02) -> None:
+        self.overlay_max_area = overlay_max_area
+        self.fine_max_diff = fine_max_diff
+        self.noise_cells = noise_cells
+        self.noise_fraction = noise_fraction
         self._previous = None
         self._previous_ms = 0
-        self.unchanged_since_ms = 0
+        self.noise_level = 0.0  # moving average of "this frame showed sensor noise" (0..1)
+        self.last_change_ms = 0
+        self.static_since_ms = 0
+        self.static_kind = ""
+        self.noisy_before_static = False
 
-    def update(self, image: Any, timestamp_ms: int) -> int:
+    def update(self, image: Any, timestamp_ms: int) -> dict[str, Any]:
+        import numpy as np
+
         height, width = image.shape[:2]
-        sample = image[:: max(1, height // 90), :: max(1, width // 160)].copy()
-        if self._previous is not None and sample.shape == self._previous.shape and not (sample != self._previous).any():
-            self.unchanged_since_ms = self.unchanged_since_ms or self._previous_ms
-        else:
-            self.unchanged_since_ms = 0
+        sample = image[:: max(1, height // 90), :: max(1, width // 160)].astype(np.int16)
+        kind = "changed"
+        if self._previous is not None and sample.shape == self._previous.shape:
+            diff = np.abs(sample - self._previous)
+            if diff.ndim == 3:
+                diff = diff.max(axis=2)
+            changed = diff > 0
+            if not changed.any():
+                kind = "identical"
+            else:
+                rows, cols = np.nonzero(changed)
+                box = (rows.max() - rows.min() + 1) * (cols.max() - cols.min() + 1) / changed.size
+                fine = changed & (diff <= self.fine_max_diff)
+                h, w = fine.shape
+                cells = [fine[r * h // 4:(r + 1) * h // 4, c * w // 4:(c + 1) * w // 4].any() for r in range(4) for c in range(4)]
+                if sum(cells) / 16 >= self.noise_cells and fine.mean() >= self.noise_fraction:
+                    kind = "noise"
+                elif box <= self.overlay_max_area:
+                    kind = "overlay"
+            self.noise_level = 0.9 * self.noise_level + 0.1 * (kind == "noise")
+        if kind in ("noise", "changed"):
+            self.last_change_ms = timestamp_ms
+            self.static_since_ms, self.static_kind = 0, ""
+        elif not self.static_since_ms:
+            self.static_since_ms = self._previous_ms
+            self.static_kind = kind
+            self.noisy_before_static = self.noise_level >= 0.5
+        elif kind == "overlay":
+            self.static_kind = "overlay"
         self._previous, self._previous_ms = sample, timestamp_ms
-        return self.unchanged_since_ms
+        return {
+            "kind": kind, "static_since_ms": self.static_since_ms, "static_kind": self.static_kind,
+            "noisy_before_static": self.noisy_before_static if self.static_since_ms else None,
+            "noise_level": round(self.noise_level, 2), "last_change_ms": self.last_change_ms,
+        }
 
 
 class MotionGate:
