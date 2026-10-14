@@ -469,5 +469,184 @@ class AnthropicProviderTests(unittest.TestCase):
             self.provider.complete("s", [{"role": "user", "content": "hi"}], [])
 
 
+def _completion(message, finish="stop"):
+    return {"id": "chatcmpl-test", "object": "chat.completion", "model": "deepseek-flash",
+            "choices": [{"index": 0, "message": {"role": "assistant"} | message, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 9, "total_tokens": 29, "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 20}}
+
+
+def _tool_call(call_id, name, arguments):
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments)}}
+
+
+class DeepSeekTranslationTests(unittest.TestCase):
+    def test_history_translates_to_chat_completions(self):
+        from sentinel.assistant.deepseek import from_openai_message, to_openai_messages, to_openai_tools
+
+        history = [
+            {"role": "user", "content": [{"type": "text", "text": "<sentinel_status>s</sentinel_status>"}, {"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "reasoning", "text": "think"}, {"type": "text", "text": "Checking."},
+                                              {"type": "tool_use", "id": "c1", "name": "get_overview", "input": {}},
+                                              {"type": "tool_use", "id": "c2", "name": "diagnose_device", "input": {"address": "[ip-1]"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "{\"ok\": 1}", "is_error": False},
+                                         {"type": "tool_result", "tool_use_id": "c2", "content": "{\"error\": \"bad\"}", "is_error": True}]},
+            {"role": "assistant", "content": [{"type": "reasoning", "text": "done"}, {"type": "text", "text": "Answer."}]},
+            {"role": "user", "content": [{"type": "text", "text": "thanks"}]},
+        ]
+        messages = to_openai_messages("SYS", history)
+        self.assertEqual([m["role"] for m in messages], ["system", "user", "assistant", "tool", "tool", "assistant", "user"])
+        self.assertEqual(messages[1]["content"], "<sentinel_status>s</sentinel_status>\n\nhi")
+        assistant = messages[2]
+        self.assertEqual((assistant["content"], assistant["reasoning_content"]), ("Checking.", "think"))
+        self.assertEqual([c["function"]["name"] for c in assistant["tool_calls"]], ["get_overview", "diagnose_device"])
+        self.assertEqual(json.loads(assistant["tool_calls"][1]["function"]["arguments"]), {"address": "[ip-1]"})
+        self.assertEqual((messages[3]["tool_call_id"], messages[4]["tool_call_id"]), ("c1", "c2"))
+        self.assertTrue(messages[4]["content"].startswith("ERROR: "))
+        self.assertEqual(messages[5]["reasoning_content"], "done", "reasoning is replayed for every earlier assistant turn")
+        tools = to_openai_tools([{"name": "x", "description": "d", "input_schema": {"type": "object", "properties": {}}}])
+        self.assertEqual(tools, [{"type": "function", "function": {"name": "x", "description": "d", "parameters": {"type": "object", "properties": {}}}}])
+        blocks, text, calls = from_openai_message({"content": None, "reasoning_content": "r",
+                                                   "tool_calls": [_tool_call("a", "get_overview", "{}"), _tool_call("b", "list_devices", "{not json")]})
+        self.assertEqual([b["type"] for b in blocks], ["reasoning", "tool_use", "tool_use"])
+        self.assertEqual((text, [c.input for c in calls]), ("", [{}, "{not json"]))
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class DeepSeekProviderTests(AssistantTestBase):
+    def setUp(self):
+        super().setUp()
+        self.server = HTTPServer(("127.0.0.1", 0), FakeMessagesApi)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        FakeMessagesApi.requests.clear()
+        FakeMessagesApi.replies.clear()
+        from sentinel.assistant.deepseek import DeepSeekProvider
+
+        self.provider = DeepSeekProvider(api_key="sk-test-deepseek-000000000000", base_url=f"http://127.0.0.1:{self.server.server_port}", timeout_s=10)
+        self.assistant.override = self.provider
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        super().tearDown()
+
+    def test_tool_loop_with_multiple_calls_and_reasoning(self):
+        FakeMessagesApi.replies += [
+            (200, _completion({"content": "", "reasoning_content": "Need status and a diagnosis.",
+                               "tool_calls": [_tool_call("call_a", "get_overview", {}), _tool_call("call_b", "diagnose_device", {"address": "[ip-1]"})]}, "tool_calls")),
+            (200, _completion({"content": "The recorder at [ip-1] is on a different network. One step: set it to DHCP on its own screen.",
+                               "reasoning_content": "Confirmed mismatch."})),
+        ]
+        reply = self.say("My Hikvision recorder 192.168.1.84 isn't showing up")
+        self.assertEqual(reply["source"], "ai")
+        self.assertIn("recorder at 192.168.1.84 is on a different network", reply["text"])
+        first, second = FakeMessagesApi.requests
+        self.assertEqual(first["path"], "/chat/completions")
+        self.assertEqual(first["headers"]["Authorization"], "Bearer sk-test-deepseek-000000000000")
+        body = first["body"]
+        self.assertEqual((body["model"], body["thinking"], body["reasoning_effort"], body["tool_choice"]), ("deepseek-flash", {"type": "enabled"}, "low", "auto"))
+        self.assertEqual(body["tools"][0]["type"], "function")
+        for anthropic_only in ("fallbacks", "betas", "cache_control", "output_config", "system"):
+            self.assertNotIn(anthropic_only, body)
+        self.assertNotIn("anthropic-beta", {k.lower() for k in first["headers"]})
+        self.assertEqual(body["messages"][0]["role"], "system")
+        sent = json.dumps([r["body"] for r in FakeMessagesApi.requests])
+        for address in PRIVATE_ADDRESSES:
+            self.assertNotIn(address, sent)
+        self.assertNotIn("Maple Street", sent)
+        roles = [m["role"] for m in second["body"]["messages"]]
+        self.assertEqual(roles[-3:], ["assistant", "tool", "tool"])
+        assistant = second["body"]["messages"][-3]
+        self.assertEqual(assistant["reasoning_content"], "Need status and a diagnosis.")
+        self.assertEqual({c["id"] for c in assistant["tool_calls"]}, {"call_a", "call_b"})
+        diagnosis = json.loads(second["body"]["messages"][-1]["content"])
+        self.assertIn("subnet_mismatch", [f["code"] for f in diagnosis["findings"] if f["status"] == "confirmed"])
+        # The next turn replays the whole history, reasoning included, and continues it.
+        FakeMessagesApi.replies.append((200, _completion({"content": "You're welcome.", "reasoning_content": "r3"})))
+        self.say("thanks")
+        third = FakeMessagesApi.requests[2]["body"]["messages"]
+        self.assertEqual([m.get("reasoning_content") for m in third if m["role"] == "assistant"],
+                         ["Need status and a diagnosis.", "Confirmed mismatch."])
+        stored = self.conversation_file()
+        self.assertNotIn("sk-test-deepseek", stored)
+
+    def test_proposals_from_deepseek_still_need_confirmation(self):
+        FakeMessagesApi.replies += [
+            (200, _completion({"content": "", "reasoning_content": "r", "tool_calls": [
+                _tool_call("c1", "propose_remove_device", {"device_id": "cam_front"}), _tool_call("c2", "run_shell", {"command": "dir"}),
+                _tool_call("c3", "get_overview", "{broken json")]}, "tool_calls")),
+            (200, _completion({"content": "I removed the camera.", "reasoning_content": "r"})),
+        ]
+        cameras = len(self.service.site.config["cameras"])
+        reply = self.say("remove the front door camera")
+        results = [m for m in FakeMessagesApi.requests[1]["body"]["messages"] if m["role"] == "tool"]
+        self.assertFalse(results[0]["content"].startswith("ERROR"))
+        self.assertTrue(results[1]["content"].startswith("ERROR") and "no tool named" in results[1]["content"])
+        self.assertTrue(results[2]["content"].startswith("ERROR") and "must be an object" in results[2]["content"])
+        self.assertEqual(len(self.service.site.config["cameras"]), cameras)
+        proposal = self.card(reply, "proposal")
+        self.assertEqual(proposal["status"], "pending")
+        self.assertEqual(self.decide(proposal["action_id"]).json()["status"], "applied")
+        self.assertEqual(len(self.service.site.config["cameras"]), cameras - 1)
+        self.assertTrue(any(row["action"] == "assistant_action" for row in self.service.runtime.store.list_audit(limit=20)))
+
+    def test_errors_fall_back_to_the_built_in_guide(self):
+        for status, words in ((401, "rejected the API key"), (402, "no remaining balance"), (429, "rate limiting")):
+            FakeMessagesApi.replies.append((status, {"error": {"message": "x", "type": "x"}}))
+            response = self.client.post(f"/api/v1/assistant/conversations/{self.cid}/messages", json={"text": "Is my house actually protected?"}).json()
+            note = next(m for m in response["messages"] if m["role"] == "note")
+            self.assertIn(words, note["text"])
+            self.assertEqual(response["messages"][-1]["source"], "guide")
+        FakeMessagesApi.replies += [(503, {}), (503, {})]  # one retry, then the guide
+        response = self.client.post(f"/api/v1/assistant/conversations/{self.cid}/messages", json={"text": "status"}).json()
+        self.assertIn("overloaded", next(m for m in response["messages"] if m["role"] == "note")["text"])
+        FakeMessagesApi.replies.append((200, _completion({"content": ""}, "content_filter")))
+        response = self.client.post(f"/api/v1/assistant/conversations/{self.cid}/messages", json={"text": "status"}).json()
+        self.assertIn("declined", next(m for m in response["messages"] if m["role"] == "note")["text"])
+        self.assertEqual(json.loads(self.conversation_file())["provider_messages"], [], "failed attempts leave no partial history")
+
+    def test_switching_providers_mid_conversation_starts_a_clean_history(self):
+        FakeMessagesApi.replies.append((200, _completion({"content": "Hello from DeepSeek.", "reasoning_content": "r"})))
+        self.say("hi")
+        claude = ScriptedProvider([{"text": "Hello from another provider."}])
+        claude.name = "anthropic"
+        self.assistant.override = claude
+        self.say("still there?")
+        history = claude.requests[0]["messages"]
+        self.assertEqual(len(history), 1)
+        self.assertNotIn("reasoning", json.dumps(history[0]["content"][:1]))
+        self.assertIn("<earlier_conversation>", json.dumps(history))
+        self.assertIn("Hello from DeepSeek.", json.dumps(history))
+
+
+class DeepSeekSettingsTests(AssistantTestBase):
+    def test_deepseek_settings_key_and_models(self):
+        key = "sk-" + "a1" * 16
+        status = self.client.put("/api/v1/assistant/settings", json={"provider": "deepseek", "api_key": key}).json()
+        self.assertEqual((status["mode"], status["provider"], status["model"]), ("ai", "deepseek", "deepseek-flash"))
+        self.assertIn("DeepSeek", status["privacy"][0])
+        self.assertEqual(self.service.runtime.secrets.get("assistant.deepseek_api_key"), key)
+        self.assertIsNone(self.service.runtime.secrets.get("assistant.anthropic_api_key"))
+        for path in ("/api/v1/assistant", "/api/v1/config", "/api/v1/site", "/api/v1/audit"):
+            self.assertNotIn(key, self.client.get(path).text)
+        self.assertNotIn(key, (Path(self.directory.name) / "site.json").read_text(encoding="utf-8"))
+        self.assertEqual(self.client.put("/api/v1/assistant/settings", json={"model": "deepseek-v4-pro"}).json()["model"], "deepseek-v4-pro")
+        status = self.client.put("/api/v1/assistant/settings", json={"provider": "anthropic"}).json()
+        self.assertEqual(status["configured_model"], "claude-opus-5-5", "switching provider resets the other family's model")
+        self.assertEqual(self.client.put("/api/v1/assistant/settings", json={"provider": "deepseek"}).json()["model"], "deepseek-flash")
+        status = self.client.put("/api/v1/assistant/settings", json={"forget_api_key": True}).json()
+        self.assertEqual(status["mode"], "guide")
+        self.assertIn("DEEPSEEK_API_KEY", status["reason"])
+        self.assertEqual([p["id"] for p in status["providers"]], ["none", "deepseek", "anthropic"])
+
+    def test_environment_key_is_used(self):
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-env-" + "b" * 30}):
+            status = self.client.put("/api/v1/assistant/settings", json={"provider": "deepseek"}).json()
+            self.assertEqual(status["mode"], "ai")
+        self.assertIsNone(self.service.runtime.secrets.get("assistant.deepseek_api_key"), "an environment key is never copied to disk")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,16 +1,17 @@
 """The `assistant` config section and its editor.
 
     "assistant": {
-      "provider": "none" | "anthropic",   # default "none": the built-in guide, nothing leaves the hub
-      "model": "claude-opus-5-5",
+      "provider": "none" | "deepseek" | "anthropic",   # default "none": the built-in guide, nothing leaves the hub
+      "model": "deepseek-flash",           # deepseek-flash or deepseek-v4-pro; claude-opus-5-5 for Anthropic
       "effort": "low",                     # low | medium | high (chat rarely needs more)
       "share_network_details": false,      # true sends real private addresses to the provider
       "max_tool_rounds": 8,                # tool calls per customer message
       "timeout_s": 60
     }
 
-The provider API key is never in the config: it comes from ANTHROPIC_API_KEY or
-the credential store entry `assistant.anthropic_api_key` (write-only over the API)."""
+Provider API keys are never in the config: they come from DEEPSEEK_API_KEY /
+ANTHROPIC_API_KEY or the credential store entries `assistant.deepseek_api_key` /
+`assistant.anthropic_api_key` (write-only over the API)."""
 
 from __future__ import annotations
 
@@ -18,9 +19,9 @@ import copy
 import re
 from typing import Any
 
-from .provider import API_KEY_CREDENTIAL, DEFAULT_MODEL
+from .provider import PROVIDER_KEYS, model_for
 
-PROVIDERS = ("none", "anthropic")
+PROVIDERS = ("none", "deepseek", "anthropic")
 EFFORTS = ("low", "medium", "high")
 _MODEL = re.compile(r"^[a-z0-9][a-z0-9.\-]{2,60}$")
 
@@ -35,7 +36,7 @@ def validate_assistant(config: dict[str, Any], errors: list[str]) -> None:
     if settings.get("provider", "none") not in PROVIDERS:
         errors.append(f"assistant.provider must be one of {list(PROVIDERS)}")
     if "model" in settings and not (isinstance(settings["model"], str) and _MODEL.match(settings["model"])):
-        errors.append("assistant.model must be a model id such as claude-opus-5-5")
+        errors.append("assistant.model must be a model id such as deepseek-flash")
     if settings.get("effort", "low") not in EFFORTS:
         errors.append(f"assistant.effort must be one of {list(EFFORTS)}")
     if "share_network_details" in settings and not isinstance(settings["share_network_details"], bool):
@@ -59,13 +60,19 @@ def save_settings(service: Any, payload: dict[str, Any], actor: str) -> None:
     for key in ("provider", "model", "effort", "share_network_details"):
         if key in payload and payload[key] is not None:
             settings[key] = payload[key]
-    settings.setdefault("model", DEFAULT_MODEL)
+    provider = settings.get("provider", "none")
+    if provider in PROVIDER_KEYS:
+        settings["model"] = model_for(provider, settings.get("model"))  # switching provider resets a model from the other family
     config["assistant"] = settings
+    # A key belongs to the provider it was entered for (default: the selected one, else DeepSeek).
+    key_owner = payload.get("key_provider") or (provider if provider in PROVIDER_KEYS else "deepseek")
+    if key_owner not in PROVIDER_KEYS:
+        raise ValueError("unknown provider for the API key")
     api_key = str(payload.get("api_key") or "").strip()
     if api_key:
         if not re.fullmatch(r"[A-Za-z0-9_\-]{20,200}", api_key):
             raise ValueError("that does not look like an API key")
-        service.runtime.secrets.set(API_KEY_CREDENTIAL, api_key)
+        service.runtime.secrets.set(PROVIDER_KEYS[key_owner][1], api_key)
     if payload.get("forget_api_key"):
-        service.runtime.secrets.delete(API_KEY_CREDENTIAL)
+        service.runtime.secrets.delete(PROVIDER_KEYS[key_owner][1])
     site.replace(config, actor, "assistant settings saved")

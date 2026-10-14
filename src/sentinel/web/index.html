@@ -59,9 +59,9 @@
             <summary>Assistant settings</summary>
             <form id="guide-settings" class="install-form" autocomplete="off">
               <label class="field">Answers from
-                <select name="provider"><option value="none">Built-in guide (nothing leaves this hub)</option><option value="anthropic">Claude by Anthropic (external AI service)</option></select></label>
-              <label class="field">Model <input type="text" name="model" maxlength="60" placeholder="claude-opus-5-5"></label>
-              <label class="field">API key <input type="password" name="api_key" maxlength="200" autocomplete="new-password" placeholder="stored on this hub only; leave blank to keep"></label>
+                <select name="provider"><option value="none">Built-in guide (nothing leaves this hub)</option><option value="deepseek">DeepSeek (external AI service, recommended)</option><option value="anthropic">Claude by Anthropic (external AI service)</option></select></label>
+              <label class="field">Model <select name="model"></select></label>
+              <label class="field"><span id="guide-key-label">API key</span> <input type="password" name="api_key" maxlength="200" autocomplete="new-password" placeholder="stored encrypted on this hub; leave blank to keep"></label>
               <label class="field checkbox"><input type="checkbox" name="share_network_details"> Send real network addresses to the AI (off: they are replaced by placeholders)</label>
               <button type="submit">Save</button>
             </form>

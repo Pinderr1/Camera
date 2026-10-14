@@ -27,11 +27,12 @@ class EventBody(BaseModel):
 
 
 class SettingsBody(BaseModel):
-    provider: Literal["none", "anthropic"] | None = None
+    provider: Literal["none", "deepseek", "anthropic"] | None = None
     model: str | None = Field(default=None, max_length=60)
     effort: Literal["low", "medium", "high"] | None = None
     share_network_details: bool | None = None
     api_key: str | None = Field(default=None, max_length=200)  # write-only: stored in the credential store, never returned
+    key_provider: Literal["deepseek", "anthropic"] | None = None  # which provider the key is for (default: the selected one)
     forget_api_key: bool = False
 
 

@@ -158,19 +158,34 @@ class AssistantUiTests(unittest.TestCase):
         expect(page.locator(".guide-welcome")).to_be_visible()
         self.assertEqual(self.service.assistant.store.list(), [])
 
-    def test_unavailable_provider_is_explained(self):
-        self.page.locator(".guide-settings-box summary").click()
-        self.page.select_option("#guide-settings [name=provider]", "anthropic")
-        self.page.once("dialog", lambda dialog: dialog.accept())
-        self.page.click("#guide-settings button[type=submit]")
-        expect(self.page.locator(".toast").last).to_contain_text("Assistant settings saved")
-        if self.service.assistant.status()["mode"] == "guide":  # no API key on this machine
-            expect(self.page.locator("#guide-mode")).to_contain_text("Built-in guide")
-            reply = self.say("Is my house actually protected?")
-            expect(reply).to_contain_text("can't promise protection")
-        self.service.assistant.provider()  # settings applied without restart
-        self.page.request.put(f"http://127.0.0.1:{self.port}/api/v1/assistant/settings", data=json.dumps({"provider": "none"}),
-                              headers={"Content-Type": "application/json"})
+    def test_deepseek_selection_without_a_key_is_explained(self):
+        import os
+        from unittest import mock
+
+        page = self.page
+        page.locator(".guide-settings-box summary").click()
+        page.select_option("#guide-settings [name=provider]", "deepseek")
+        expect(page.locator("#guide-settings [name=model] option")).to_have_count(2)
+        expect(page.locator("#guide-settings [name=model]")).to_have_value("deepseek-flash")
+        expect(page.locator("#guide-key-label")).to_have_text("DeepSeek API key")
+        page.select_option("#guide-settings [name=model]", "deepseek-v4-pro")
+        messages = []
+        page.once("dialog", lambda dialog: (messages.append(dialog.message), dialog.accept()))
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEEPSEEK_API_KEY", None)
+            page.click("#guide-settings button[type=submit]")
+            expect(page.locator(".toast").last).to_contain_text("Assistant settings saved")
+            self.assertIn("DeepSeek's AI service", messages[0])
+            self.assertIn("placeholders", messages[0])
+            settings = self.service.site.config["assistant"]
+            self.assertEqual((settings["provider"], settings["model"]), ("deepseek", "deepseek-v4-pro"))
+            # No key on the hub: the built-in guide answers and says why.
+            expect(page.locator("#guide-mode")).to_contain_text("Built-in guide")
+            page.locator("#guide-mode summary").click()
+            expect(page.locator("#guide-mode")).to_contain_text("DEEPSEEK_API_KEY")
+            expect(self.say("Is my house actually protected?")).to_contain_text("can't promise protection")
+        page.request.put(f"http://127.0.0.1:{self.port}/api/v1/assistant/settings", data=json.dumps({"provider": "none"}),
+                         headers={"Content-Type": "application/json"})
 
     def test_phone_layout(self):
         self.page.set_viewport_size({"width": 390, "height": 844})

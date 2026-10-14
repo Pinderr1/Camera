@@ -140,8 +140,8 @@ Full detail: [installation.md](./installation.md).
 Full detail: [assistant.md](./assistant.md).
 - `assistant/tools.py`: a fixed tool set over existing services: `read` tools (live data), `ui` tools (buttons, cards, the secure sign-in form) and `propose` tools that store a pending proposal; `Toolbox.apply` runs a confirmed proposal through the existing validated backend calls.
 - `assistant/core.py`: conversations, the provider tool loop (bounded rounds, append-only history), fallback to the built-in guide, confirmations and follow-ups computed from backend results.
-- `assistant/guide.py`: the deterministic built-in guide over the same tools. `assistant/provider.py`: provider interface and the Anthropic implementation (optional `anthropic` SDK). `assistant/privacy.py`: secret scrubbing and address placeholders. `assistant/store.py`: conversations under `<storage>/assistant/`. `assistant/routes.py`: `/api/v1/assistant`.
-- Settings: the `assistant` config section (validated in `assistant/settings.py`); the provider key lives in the credential store or `ANTHROPIC_API_KEY`.
+- `assistant/guide.py`: the deterministic built-in guide over the same tools. `assistant/provider.py`: provider interface, selection and the Anthropic implementation (optional `anthropic` SDK). `assistant/deepseek.py`: DeepSeek over its OpenAI-format Chat Completions API (`httpx`), translating messages, tool calls and `reasoning_content`. `assistant/privacy.py`: secret scrubbing and address placeholders. `assistant/store.py`: conversations under `<storage>/assistant/`. `assistant/routes.py`: `/api/v1/assistant`.
+- Settings: the `assistant` config section (validated in `assistant/settings.py`); provider keys live in the credential store or `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY`.
 
 ## Configuration editing (`site_config.py`, `credentials.py`)
 - `SiteConfigManager` owns the editable config. `load_effective` prefers `<storage>/site.json` over the file the service was started with (which is never modified). Every mutation is validated as a whole, written atomically (10 backups in `config_history/`), and then passed to `SentinelService.apply_config`.

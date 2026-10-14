@@ -39,7 +39,7 @@ python -m unittest discover -s tests
 
 ## Installing Sentinel
 
-The dashboard opens on the **Guide** tab until installation is finished: describe what you want ("I already have eight Hikvision cameras", "watch my driveway at night") and Sentinel AI Guide checks the system, explains what it finds and proposes changes for you to confirm. It works offline with a built-in guide; an AI provider (Claude) can be turned on in Guide → Assistant settings. See [docs/assistant.md](./docs/assistant.md).
+The dashboard opens on the **Guide** tab until installation is finished: describe what you want ("I already have eight Hikvision cameras", "watch my driveway at night") and Sentinel AI Guide checks the system, explains what it finds and proposes changes for you to confirm. It works offline with a built-in guide; an AI provider (DeepSeek by default, or Claude) can be turned on in Guide → Assistant settings. See [docs/assistant.md](./docs/assistant.md).
 
 Or open the dashboard's **Install** tab and pick how you are starting: connect existing cameras, install new cameras, start with a drone (no fixed cameras needed), or build a complete Sentinel package. The journey saves as you go, plans cameras on a property map with approximate coverage, registers recorders, drones, docks and sensors, and ends with a readiness summary that separates "connected", "video available" and "AI monitoring verified". See [docs/installation.md](./docs/installation.md). A drone-first demo with no cameras: `python -m sentinel serve --config config/sentinel.drone-first.example.json`.
 

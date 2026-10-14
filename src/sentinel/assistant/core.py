@@ -23,6 +23,11 @@ from .store import ConversationStore
 from .tools import PROPOSAL_TTL_MS, Toolbox, Turn
 
 MAX_MESSAGE_CHARS = 2000
+PROVIDER_CHOICES = [
+    {"id": "none", "label": "Built-in guide (nothing leaves this hub)", "models": []},
+    {"id": "deepseek", "label": "DeepSeek (external AI service, recommended)", "models": ["deepseek-flash", "deepseek-v4-pro"]},
+    {"id": "anthropic", "label": "Claude by Anthropic (external AI service)", "models": ["claude-opus-5-5"]},
+]
 WELCOME = "Welcome to Sentinel. I'll help you get everything connected."
 
 SYSTEM_PROMPT = """You are Sentinel AI Guide, the assistant built into Sentinel, a local-first home and small-business security system. You help customers install Sentinel and use it day to day: connect existing cameras and recorders, plan and install new cameras, register a Sentinel drone, configure what Sentinel watches, and understand alerts and system health.
@@ -67,12 +72,13 @@ class Assistant:
         return self.service.site.config.get("assistant", {})
 
     def provider(self):
-        from .provider import API_KEY_CREDENTIAL
+        from .provider import PROVIDER_KEYS, provider_key
 
         if self.override is not None:
             return self.override, ""
         secret = self.service.runtime.secrets.get
-        key = json.dumps(self.settings, sort_keys=True) + str(bool(secret(API_KEY_CREDENTIAL)))
+        # Rebuild when settings change or a key is added or removed (the key itself is not kept in the cache key).
+        key = json.dumps(self.settings, sort_keys=True) + "".join(str(bool(provider_key(name, secret))) for name in PROVIDER_KEYS)
         if self._provider_cache is None or self._provider_cache[0] != key:
             provider, reason = build_provider(self.settings, secret)
             self._provider_cache = (key, provider, reason)
@@ -82,15 +88,18 @@ class Assistant:
         provider, reason = self.provider()
         sharing = bool(self.settings.get("share_network_details", False))
         if provider is not None:
-            privacy = [f"Answers come from {provider.name.capitalize()}'s Claude ({provider.model}). Your messages and summaries of Sentinel's status "
-                       "are sent to that service to answer you.",
+            privacy = [f"Answers come from {getattr(provider, 'display_name', provider.name)} ({provider.model}), an external AI service. "
+                       "Your messages and summaries of Sentinel's status are sent to it to answer you.",
                        "Never sent: video, pictures, recordings, passwords, API keys, the property name or location"
                        + ("." if sharing else ", or network addresses (they are replaced by placeholders)."),
                        "Conversations are stored only on this hub and can be deleted."]
         else:
             privacy = ["Answers come from Sentinel's built-in guide, entirely on this hub. Nothing is sent to an external AI service.",
                        "Conversations are stored only on this hub and can be deleted."]
+        configured = self.settings.get("provider", "none")
         return {"mode": "ai" if provider else "guide", "provider": provider.name if provider else None, "model": provider.model if provider else None,
+                "provider_display": getattr(provider, "display_name", None) if provider else None, "configured_provider": configured,
+                "configured_model": self.settings.get("model"), "providers": PROVIDER_CHOICES,
                 "external": bool(provider and provider.external), "reason": reason, "privacy": privacy, "starters": STARTERS, "welcome": WELCOME,
                 "share_network_details": sharing}
 
@@ -202,15 +211,21 @@ class Assistant:
         if notes:
             content.append({"type": "text", "text": "<sentinel_events>\n" + hide("\n".join(notes)) + "\n</sentinel_events>"})
         content.append({"type": "text", "text": hide(text)})
+        if conversation.get("provider_name") not in (None, provider.name) and conversation["provider_messages"]:
+            # Another provider's history (thinking blocks, reasoning) cannot be replayed here: start fresh with a short recap.
+            recap = [f"{m['role']}: {m['text'][:400]}" for m in conversation["display"][:-1] if m["role"] in ("user", "assistant")][-10:]
+            conversation["provider_messages"] = []
+            content.insert(1, {"type": "text", "text": "<earlier_conversation>\n" + hide("\n".join(recap)) + "\n</earlier_conversation>"})
         working = copy.deepcopy(conversation["provider_messages"]) + [{"role": "user", "content": content}]
         tools = self.toolbox.definitions()
         rounds = int(self.settings.get("max_tool_rounds", 8))
-        final = ""
+        texts: list[str] = []  # text written alongside tool calls is part of the answer too
         try:
             for _ in range(rounds):
                 reply = provider.complete(SYSTEM_PROMPT, working, tools)
                 working.append({"role": "assistant", "content": reply.content})
-                final = reply.text
+                if reply.text.strip():
+                    texts.append(reply.text.strip())
                 if not reply.tool_calls:
                     break
                 results = []
@@ -220,12 +235,13 @@ class Assistant:
                     results.append({"type": "tool_result", "tool_use_id": call.id, "content": hide(payload)[:20000], "is_error": is_error})
                 working.append({"role": "user", "content": results})
             else:
-                final = (final + "\n\n" if final else "") + "I ran several checks in a row; ask me to continue if you need more."
+                texts.append("I ran several checks in a row; ask me to continue if you need more.")
         except ProviderError:
             conversation["provider_notes"] = notes  # not delivered; keep them for the next attempt
             raise
         conversation["provider_messages"] = working
-        shown = turn.aliases.reveal(final).strip()
+        conversation["provider_name"] = provider.name
+        shown = turn.aliases.reveal("\n\n".join(texts)).strip()
         return shown or ("I've put the options below." if turn.cards else "Done checking.")
 
     def _record_guide_exchange(self, conversation: dict[str, Any], turn: Turn, text: str, reply: str) -> None:

@@ -9,7 +9,8 @@ It does not replace the installation wizard, troubleshooter, zone editor or rule
 | Mode | When | What leaves the hub |
 | --- | --- | --- |
 | **Built-in guide** (default) | No AI provider is configured, the provider fails or times out, or it declines a request | Nothing |
-| **AI assistant** (Claude, by Anthropic) | `assistant.provider: "anthropic"` and an API key on the hub | The customer's messages, a short status summary, and tool results with addresses replaced by placeholders (below) |
+| **AI assistant: DeepSeek** (the default external choice) | `assistant.provider: "deepseek"` and a DeepSeek key on the hub | The customer's messages, a short status summary, and tool results with addresses replaced by placeholders (below) |
+| **AI assistant: Claude** (Anthropic, optional) | `assistant.provider: "anthropic"` and an Anthropic key on the hub | The same |
 
 Both modes use the same tools, so every fact comes from Sentinel itself. The built-in guide recognises the common requests with keyword rules: setup and the four installation paths, existing cameras and recorders, connection problems (with one next step and Retest), new cameras (PoE versus Wi-Fi, placement from the property plan), drones, security rules from plain language, "stop notifying me about the sidewalk", "is my house protected?", "why did it alert?", "what happened while I was away?", storage, unusual activity, and improvements. The UI says which mode answered each message.
 
@@ -49,16 +50,32 @@ Run commands, read files, change router, firewall, computer or camera network se
 
 ## Configuring the AI provider
 
+### DeepSeek (default external choice)
+
+1. Put the key on the hub, never in the browser or the config file. Either:
+   - open **Guide → Assistant settings**, choose **DeepSeek**, paste the key into **DeepSeek API key** and Save (stored in the DPAPI-encrypted credential store as `assistant.deepseek_api_key`; write-only: it is never shown again or returned by the API), or
+   - set `DEEPSEEK_API_KEY` in the environment of the Sentinel service (it is used as is and never copied to disk).
+2. Choose the model: `deepseek-flash` (DeepSeek-V4.1-Flash, the default) or `deepseek-v4-pro`.
+3. Save. The browser asks the person to confirm what will be shared. The status line then reads "AI assistant: DeepSeek (deepseek-flash)".
+
+Sentinel talks to DeepSeek's own Chat Completions API (`https://api.deepseek.com/chat/completions`, OpenAI format) with `httpx`; no extra package is needed. Each request carries `model`, the translated `messages`, `tools` (function definitions), `tool_choice: "auto"`, `thinking: {"type": "enabled"}`, `reasoning_effort` (`low` for Sentinel's default effort, `high` for medium/high) and `max_tokens`. Tool calls come back as `tool_calls` with JSON-string arguments; results go back as `role: "tool"` messages with the matching `tool_call_id`, several per round when the model calls several tools. DeepSeek requires the `reasoning_content` of every earlier assistant turn to be sent back when `tools` are present, so Sentinel stores it and replays it unchanged. No Anthropic parameters are sent.
+
+Errors: 401 (key rejected), 402 (no balance), 422/400 (rejected request), 429 (rate limit), a `content_filter` finish, timeouts and network failures all fall back to the built-in guide with a visible note; 500/503 and connection errors are retried once.
+
+### Claude (Anthropic, optional)
+
 1. Install the SDK (already in `requirements.txt`): `pip install anthropic`.
-2. Provide the key on the hub, never in the browser or the config file: set `ANTHROPIC_API_KEY` in the service environment, or paste it into **Guide → Assistant settings → API key** (stored in the DPAPI-encrypted credential store; write-only).
-3. Choose "Claude by Anthropic" in Assistant settings (or set `"assistant": {"provider": "anthropic"}` in the site config). The person is asked to confirm what will be shared.
+2. Set `ANTHROPIC_API_KEY`, or choose **Claude by Anthropic** in Assistant settings and paste the key (stored as `assistant.anthropic_api_key`).
+3. Save and confirm.
+
+Switching provider in the middle of a conversation starts a fresh provider history (one provider's reasoning or thinking blocks cannot be replayed to another) with a short recap of the earlier messages.
 
 Settings (`assistant` config section, validated):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `provider` | `none` | `none` (built-in guide only) or `anthropic` |
-| `model` | `claude-opus-5-5` | Model id |
+| `provider` | `none` | `none` (built-in guide only), `deepseek` or `anthropic` |
+| `model` | `deepseek-flash` for DeepSeek, `claude-opus-5-5` for Claude | Model id; switching provider resets a model from the other provider's family |
 | `effort` | `low` | `low`, `medium` or `high`; chat rarely needs more than low |
 | `share_network_details` | `false` | Send real private addresses to the provider |
 | `max_tool_rounds` | `8` | Tool calls per customer message before the guide stops and asks |
@@ -68,9 +85,10 @@ API keys in the config are rejected by validation.
 
 ### Cost and reliability
 
-- One provider request per tool round, at most `max_tool_rounds` per message; the stable system prompt and tool list are cached (`cache_control`), and the per-message status summary is a few lines.
-- History is append-only, so cached prefixes and thinking blocks stay valid across turns.
-- Requests use the server-side refusal fallback (`fallbacks: "default"`); a refusal that still comes back, a timeout, a rate limit, a bad key or a network error falls back to the built-in guide with a visible note. A failed attempt leaves no partial history.
+- One provider request per tool round, at most `max_tool_rounds` per message. The system prompt and tool list come first and never change, so the providers' prompt caches apply (DeepSeek caches matching prefixes automatically; Claude requests set `cache_control`). The per-message status summary is a few lines.
+- History is append-only, so cached prefixes, DeepSeek reasoning and Claude thinking blocks stay valid across turns.
+- Text the model writes alongside its tool calls is shown too, not only the last round's text.
+- Claude requests use the server-side refusal fallback (`fallbacks: "default"`). For either provider, a refusal, a timeout, a rate limit, a bad key or a network error falls back to the built-in guide with a visible note. A failed attempt leaves no partial history.
 - Malformed tool calls (unknown tool, unknown or missing arguments, wrong types) return an error result to the model; nothing raises.
 
 ## API
@@ -87,6 +105,7 @@ Messages are plain text in and plain text plus structured cards out, so a voice 
 | --- | --- |
 | Built-in guide, all flows above | Built; backend and Edge tests on simulated cameras, drone, sensors and the simulated Hikvision network |
 | AI tool loop, confirmation gating, prompt-injection containment, address placeholders, provider failure fallback | Built; tested with a scripted provider |
+| DeepSeek provider (translation, multiple tool calls, reasoning replay, errors, retries) | Built; tested against a local fake API, and run against the live DeepSeek API (`deepseek-flash`) on a simulated site: three turns, 12 tool calls including two in one round, no address sent, both changes left as unconfirmed proposals |
 | Anthropic provider (request shape, tool calls, refusal fallback handling, errors) | Built; tested against a local fake Messages API. **Not yet exercised against the live Claude API** |
 | Real cameras, recorders and networks | **Not tested**: the same troubleshooter and onboarding code as the Install tab, which has not met real hardware yet |
 | Real sensors, drone video | Not available: the guide says so |

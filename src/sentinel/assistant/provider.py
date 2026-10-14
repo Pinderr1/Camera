@@ -4,12 +4,15 @@ Conversations are kept in the Messages API shape (role + content blocks:
 text, tool_use, tool_result), which is the canonical format here; another
 provider implements `complete()` by translating to and from it.
 
-The only built-in external provider is Anthropic's Claude, used through the
-official `anthropic` SDK (an optional dependency). It is off unless the owner
-turns it on (`assistant.provider: "anthropic"`), and its key comes from the
-server (the `ANTHROPIC_API_KEY` environment variable or the credential store),
-never from the browser. Any failure raises `ProviderError`, and the assistant
-answers with the built-in guide instead."""
+External providers (both off unless the owner turns one on):
+- DeepSeek (`assistant.provider: "deepseek"`, the default external choice), over
+  its own OpenAI-format Chat Completions API: see deepseek.py. Key from
+  `DEEPSEEK_API_KEY` or the credential store.
+- Anthropic's Claude (`"anthropic"`), through the official `anthropic` SDK. Key
+  from `ANTHROPIC_API_KEY` or the credential store.
+
+Keys stay on the server and never reach the browser. Any failure raises
+`ProviderError`, and the assistant answers with the built-in guide instead."""
 
 from __future__ import annotations
 
@@ -65,6 +68,7 @@ def _echoable(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 class AnthropicProvider:
     name = "anthropic"
+    display_name = "Claude by Anthropic"
     external = True
 
     def __init__(self, *, api_key: str, model: str = DEFAULT_MODEL, effort: str = "low", timeout_s: float = 60.0,
@@ -112,15 +116,44 @@ class AnthropicProvider:
         return ProviderReply(blocks, text, calls, response.stop_reason or "end_turn", usage)
 
 
+PROVIDER_KEYS = {"deepseek": ("DEEPSEEK_API_KEY", "assistant.deepseek_api_key"), "anthropic": ("ANTHROPIC_API_KEY", API_KEY_CREDENTIAL)}
+
+
+def default_model(provider: str) -> str:
+    from .deepseek import DEEPSEEK_DEFAULT_MODEL
+
+    return DEEPSEEK_DEFAULT_MODEL if provider == "deepseek" else DEFAULT_MODEL
+
+
+def model_for(provider: str, model: str | None) -> str:
+    """The configured model if it belongs to this provider's family, else its default."""
+    if not model or (provider == "deepseek") != model.startswith("deepseek"):
+        return default_model(provider)
+    return model
+
+
+def provider_key(provider: str, secret: Any) -> str | None:
+    variable, credential = PROVIDER_KEYS[provider]
+    return os.environ.get(variable) or secret(credential)
+
+
 def build_provider(settings: dict[str, Any], secret: Any = lambda name: None) -> tuple[Provider | None, str]:
     """(provider, reason). None means the built-in guide answers, with `reason` saying why."""
-    if settings.get("provider", "none") != "anthropic":
+    name = settings.get("provider", "none")
+    if name not in PROVIDER_KEYS:
         return None, "No AI provider is turned on: Sentinel's built-in guide is answering, entirely on this hub."
-    key = os.environ.get("ANTHROPIC_API_KEY") or secret(API_KEY_CREDENTIAL)
+    label = "DeepSeek" if name == "deepseek" else "Claude"
+    key = provider_key(name, secret)
     if not key:
-        return None, "The AI provider is turned on but has no API key (set ANTHROPIC_API_KEY or save a key in the assistant settings)."
+        return None, (f"{label} is selected but has no API key (set {PROVIDER_KEYS[name][0]} on the hub or save a key in the assistant settings). "
+                      "Sentinel's built-in guide is answering.")
+    common = {"api_key": key, "model": model_for(name, settings.get("model")), "effort": settings.get("effort", "low"),
+              "timeout_s": float(settings.get("timeout_s", 60)), "base_url": settings.get("base_url")}
     try:
-        return AnthropicProvider(api_key=key, model=settings.get("model", DEFAULT_MODEL), effort=settings.get("effort", "low"),
-                                 timeout_s=float(settings.get("timeout_s", 60)), base_url=settings.get("base_url")), ""
-    except ProviderError as error:
-        return None, f"The AI provider is not available: {error}."
+        if name == "deepseek":
+            from .deepseek import DeepSeekProvider
+
+            return DeepSeekProvider(**common), ""
+        return AnthropicProvider(**common), ""
+    except (ProviderError, ImportError) as error:
+        return None, f"{label} is not available: {error}."

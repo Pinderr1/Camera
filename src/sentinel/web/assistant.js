@@ -53,14 +53,25 @@ function renderGuideStatus() {
   const s = guide.status;
   const mode = $("#guide-mode");
   mode.className = `guide-mode ${s.external ? "external" : "local"}`;
-  mode.innerHTML = `<strong>${s.mode === "ai" ? `AI assistant (${esc(s.provider)})` : "Built-in guide (offline)"}</strong>
+  mode.innerHTML = `<strong>${s.mode === "ai" ? `AI assistant: ${esc(s.provider_display || s.provider)} (${esc(s.model)})` : "Built-in guide (offline)"}</strong>
     <details><summary class="small">What is shared</summary><ul class="small">${s.privacy.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>
     ${s.reason ? `<p class="small muted">${esc(s.reason)}</p>` : ""}</details>`;
   const form = $("#guide-settings");
-  form.provider.value = s.provider || "none";
+  form.provider.value = s.configured_provider || "none";
   form.share_network_details.checked = !!s.share_network_details;
-  if (s.model) form.model.value = s.model;
+  fillModels(form, s.configured_model || s.model);
 }
+
+// The model list follows the selected provider; the key field says which provider it is for.
+function fillModels(form, selected) {
+  const choice = (guide.status?.providers || []).find((p) => p.id === form.provider.value) || { models: [] };
+  form.model.innerHTML = choice.models.map((m) => `<option value="${esc(m)}">${esc(m)}${m === choice.models[0] ? " (default)" : ""}</option>`).join("");
+  form.model.disabled = !choice.models.length;
+  if (choice.models.includes(selected)) form.model.value = selected;
+  form.api_key.disabled = form.provider.value === "none";
+  $("#guide-key-label").textContent = form.provider.value === "none" ? "API key" : `${form.provider.value === "deepseek" ? "DeepSeek" : "Anthropic"} API key`;
+}
+$("#guide-settings").provider.addEventListener("change", (event) => fillModels(event.target.form, null));
 
 function renderConversationList() {
   $("#guide-conversations").innerHTML = guide.conversations.map((c) => `<li class="${c.id === guide.conversationId ? "selected" : ""}">
@@ -317,9 +328,10 @@ $("#guide-settings").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   const body = { provider: form.provider.value, share_network_details: form.share_network_details.checked };
-  if (form.model.value.trim()) body.model = form.model.value.trim();
-  if (form.api_key.value.trim()) body.api_key = form.api_key.value.trim();
-  if (body.provider !== "none" && !confirm("Messages and summaries of Sentinel's status will be sent to the AI provider to answer you. Video, passwords and the property location are never sent. Continue?")) return;
+  if (!form.model.disabled && form.model.value) body.model = form.model.value;
+  if (form.api_key.value.trim() && body.provider !== "none") Object.assign(body, { api_key: form.api_key.value.trim(), key_provider: body.provider });
+  const service = body.provider === "deepseek" ? "DeepSeek" : "Anthropic";
+  if (body.provider !== "none" && !confirm(`Messages and summaries of Sentinel's status will be sent to ${service}'s AI service to answer you. Video, pictures, passwords and the property location are never sent${body.share_network_details ? "" : ", and network addresses are replaced by placeholders"}. Continue?`)) return;
   try {
     guide.status = await api("/assistant/settings", { method: "PUT", body: JSON.stringify(body) });
     form.api_key.value = "";

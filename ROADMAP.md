@@ -165,6 +165,8 @@ So the cause is not yet confirmed. Next on site:
 - [x] Built-in offline guide over the same tools; optional Claude provider (`assistant.provider: "anthropic"`, key from the environment or credential store) with address placeholders, prompt caching, refusal fallback, bounded tool rounds, and fallback to the guide on any failure.
 - [x] 27 new tests (backend with a scripted provider and a fake Messages API, and Edge). Two defects found by them were fixed: addresses ending a sentence escaped the placeholders, and a confirmed cause was labelled as unconfirmed.
 
+- [x] DeepSeek provider (default external choice): `deepseek-flash` (default) or `deepseek-v4-pro` over DeepSeek's Chat Completions API, with tool calls, several calls per round, `reasoning_content` replay, error fallback and the same protections. Key from `DEEPSEEK_API_KEY` or the credential store. Checked against the live API on a simulated site.
+
 **Not yet verified:** the live Claude API (only a fake API was used), real hardware through the guide, and use by non-technical customers.
 
 ## Detector upgrade findings (2026-10-13)

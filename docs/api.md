@@ -155,8 +155,8 @@ Sentinel AI Guide; see [assistant.md](./assistant.md). Conversations live on the
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/api/v1/assistant` | `mode` (`ai` or `guide`), `provider`, `model`, `external`, `reason` (why the built-in guide is answering), `privacy` (what is shared), `starters`, `welcome` |
-| PUT | `/api/v1/assistant/settings` | `{"provider"?: "none\|anthropic", "model"?, "effort"?, "share_network_details"?, "api_key"? (write-only, credential store), "forget_api_key"?}`. Validated through the config editor; returns the status |
+| GET | `/api/v1/assistant` | `mode` (`ai` or `guide`), `provider`, `provider_display`, `model`, `configured_provider`, `configured_model`, `providers` (choices with their models), `external`, `reason` (why the built-in guide is answering), `privacy` (what is shared), `starters`, `welcome` |
+| PUT | `/api/v1/assistant/settings` | `{"provider"?: "none\|deepseek\|anthropic", "model"? (`deepseek-flash`, `deepseek-v4-pro`, `claude-opus-5-5`), "effort"?, "share_network_details"?, "api_key"? (write-only, credential store), "key_provider"? (`deepseek\|anthropic`; default: the selected provider), "forget_api_key"?}`. Validated through the config editor; returns the status |
 | GET / POST | `/api/v1/assistant/conversations` | List (id, title, updated, message count) / create |
 | GET / DELETE | `/api/v1/assistant/conversations/{id}` | `messages[]`: `{id, role: user\|assistant\|note, text, source: ai\|guide\|system, cards[], actions[], ms}` / delete permanently |
 | POST | `/api/v1/assistant/conversations/{id}/messages` | `{"text"}` (≤ 2000 chars; passwords and keys are removed before storing). Returns the new messages. Cards: `choices`, `proposal` (`action_id`, `title`, `summary`, `effects`, `status`), `recorder_login` (host, brand, template, port), `preview` (camera ids), `devices_found`. Actions: `{"type": "open", "target", "label", ...}` |
