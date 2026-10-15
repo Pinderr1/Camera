@@ -398,8 +398,35 @@ Exit for each step is listed in the drone doc. Never skip steps. The drone track
 
 **Still simulated:** aircraft physics, both cameras, the scripted drone detector, the pilot, the companion (ran on the Hub, not a Pi), and the radio link (loopback UDP). No real gimbal attitude, video latency, link range, endurance or wind has been measured.
 
+### Phase 5.0b: drone models, cheapest drone first (done, 2026-10-14; no hardware bought, no physical flight)
+- [x] Three reference designs sharing flight stack, radio, camera protocol and software (`docs/drone-models.md`):
+  - **Sentinel Lite**, the engineering priority: X500 V2 PX4 dev kit (Pixhawk 6C, M10), SIYI A8 mini, HM30, ExpressLRS, **no companion computer**; about $1.3–1.8k in parts (est.);
+  - **Sentinel Pro**: X650, Pixhawk 6X + CM4, ZR10 zoom, dual GPS, optional lidar; about $3.1–4.2k;
+  - **Sentinel Thermal**: the V1 full configuration (ZT6, lidar); about $6.4–8.0k.
+  - Consumer drones (DJI MSDK runs only in an Android app on the controller) are not claimed as supported.
+- [x] Finding (SITL, ArduCopter 4.7.2): `MAV_OPTIONS` bit 0 with `MAV_GCS_SYSID` set to the pilot makes the flight controller ignore every Hub command. That is the Lite's independent command lockout without a companion. It also drops the Hub's stream and parameter requests, so:
+  - commissioning sets stream rates on the radio port;
+  - Sentinel audits the parameters and fence it overhears when the pilot's ground station downloads them.
+
+  **4.7 numbers MAVLink stream groups from 1:** TELEM1/SERIAL1 is `MAV2_*` (`MAV1_*` produced nothing on SERIAL1); 4.6 uses `SR1_*`.
+- [x] Model capability system (`drone/catalog.py`):
+  - registration with `drone_model`, options and a write-only stream address;
+  - model-specific readiness: lockout, companion, camera stream, daylight/lights, wind and temperature limits, model FC settings;
+  - route endurance check at approval;
+  - camera geometry and simulator performance per model;
+  - troubleshooting with model-specific steps (`drone/troubleshoot.py`);
+  - a comparison screen (Install and Drone tabs);
+  - AI Guide tools `get_drone_models` and `diagnose_drone`, and model-aware registration.
+- [x] Fixed on the way: drone video stream addresses were returned by `GET /config` (now write-only); a drone registered without a position sat on the geofence corner and failed readiness (now the middle of the property); Sentinel stayed silent when the FC's own failsafe was already returning (now it says why).
+- [x] Tests:
+  - per-model simulated inspections in the built-in simulator (incident → approval → flight → video → evidence; link loss; low battery; night refused for Lite, flown by Thermal);
+  - **Lite in SITL** with its own commissioning (`SENTINEL_SITL=lite`, 4/4): lockout and passive audit, pilot-flown inspection with video and evidence, radio loss → FC return home, low battery → FC failsafe plus advisory;
+  - **Pro/Thermal profiles in the V1 SITL suite** (`SENTINEL_SITL=1`, 7/7).
+- [ ] Measure everything the catalog estimates (hover time, wind limit, mass, ZR10/ZT6 field of view, A8 mini RTSP address) on hardware.
+
 ### Phase 5.1 onwards: physical prototype (owner approval needed for each purchase)
-- [ ] Bench rig (Pixhawk 6X + CM4 baseboard, M10, A8 mini; about $1.0–1.4k): bench steps 8.1–8.4 and 8.10 of the hardware doc; companion pairing on a real Pi; record results here.
+- [ ] **Sentinel Lite bench, stage 1 (smallest purchase, about $760–920):** X500 V2 PX4 dev kit (motors not fitted) and an A8 mini. Prove on a real Pixhawk 6C: the `MAV_OPTIONS` lockout, passive audit, `MAV2_*` stream rates, the gimbal angle via `MNT1_TYPE 8`, and A8 mini RTSP into the Hub with measured latency. Stage 2: HM30 (shared radio, range around a house). Stage 3: assemble and fly pilot-flown with a qualified pilot.
+- [ ] Bench rig for Pro/Thermal (Pixhawk 6X + CM4 baseboard, M10, A8 mini; about $1.0–1.4k): bench steps 8.1–8.4 and 8.10 of the hardware doc; companion pairing on a real Pi; record results here.
 - [ ] Video on real hardware: latency (target under 400 ms), the gimbal attitude source, `drone.video.camera` from the datasheet.
 - [ ] Full V1 airframe, props off: assembly, weighing, every FC failsafe on the bench, companion power-loss, EMI, lidar check.
 - [ ] SITL: fence-breach and EKF-failure injection; SF45/B proximity and BendyRuler configuration tested in SITL before hardware.

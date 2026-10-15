@@ -2,6 +2,7 @@
 # Start ArduPilot SITL (ArduCopter) for Sentinel development. Linux or WSL2.
 #
 #   bash scripts/sitl/start_sitl.sh [SPEEDUP]
+#   SITL_PARAMS=config/drone/sentinel-lite-sitl.parm bash scripts/sitl/start_sitl.sh 3   # Sentinel Lite commissioning
 #
 # Uses the official prebuilt SITL binary from firmware.ardupilot.org (GPLv3;
 # run as a separate program, never linked into Sentinel), downloaded once into
@@ -19,6 +20,7 @@ SPEEDUP="${1:-1}"
 SITL_DIR="${SITL_DIR:-$HOME/sentinel-sitl}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOME_POS="${SITL_HOME:-44.999964067553,-74.99992377576919,80,0}"
+PARAMS="$REPO/${SITL_PARAMS:-config/drone/sentinel-v1-sitl.parm}"
 mkdir -p "$SITL_DIR/bin" "$SITL_DIR/params"
 if [ ! -x "$SITL_DIR/bin/arducopter" ]; then
   echo "downloading ArduCopter SITL (stable) from firmware.ardupilot.org"
@@ -31,7 +33,7 @@ fi
 cd "$SITL_DIR"
 pkill -f "$SITL_DIR/bin/arducopter" 2>/dev/null || true
 "$SITL_DIR/bin/arducopter" --model + --speedup "$SPEEDUP" \
-  --defaults "params/copter.parm,$REPO/config/drone/sentinel-v1-sitl.parm" \
+  --defaults "params/copter.parm,$PARAMS" \
   --home "$HOME_POS" -I0 -w < /dev/null > "$SITL_DIR/sitl.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT INT TERM
@@ -52,5 +54,5 @@ while True:
         break
 EOF
 sleep 2
-echo "ArduCopter SITL running (pid $PID, speedup $SPEEDUP). Sentinel: tcp:127.0.0.1:5762  Ground station: tcp:127.0.0.1:5763"
+echo "ArduCopter SITL running (pid $PID, speedup $SPEEDUP, parameters $(basename "$PARAMS")). Sentinel: tcp:127.0.0.1:5762  Ground station: tcp:127.0.0.1:5763"
 wait $PID

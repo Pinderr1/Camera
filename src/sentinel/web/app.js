@@ -331,6 +331,39 @@ async function requestInspection(body) {
 const DRONE_STATE_LABELS = { offline: "Offline", link_lost: "LINK LOST", docked: "Docked", on_ground: "On the ground", armed: "Armed",
   taking_off: "Taking off", airborne: "Airborne", returning: "Returning home", landing: "Landing" };
 
+const DRONE_CAPABILITY_LABELS = {
+  telemetry: "Telemetry", gps: "GPS", dual_gps: "Redundant GPS", battery_monitoring: "Battery monitoring", manual_control: "Independent pilot radio",
+  fc_failsafes: "Failsafes", parameter_audit: "Settings audit", command_lockout: "Hub command lockout", video_stream: "Live video",
+  stabilized_video: "Stabilised camera", gimbal_attitude: "Gimbal angle", optical_zoom: "Optical zoom", thermal: "Thermal",
+  night_inspection: "Night inspections", obstacle_sensing: "Obstacle sensing", companion_computer: "Companion computer",
+};
+const DRONE_VALUE_MARKS = { yes: "✓", optional: "Option", limited: "Limited", no: "–" };
+
+// What each Sentinel drone can do, side by side. Shared by the Drone and Install tabs.
+function droneComparisonHtml(table, current) {
+  const models = table.models;
+  const head = `<tr><th></th>${models.map((m) => `<th class="${m.id === current ? "current" : ""}">${esc(m.name)}<div class="small muted">${esc(m.cost_label)}</div></th>`).join("")}</tr>`;
+  const facts = table.facts.map((row) => `<tr><td>${esc(row.label)}</td>${models.map((m) => `<td class="small wrap">${esc(row.values[m.id])}</td>`).join("")}</tr>`).join("");
+  const rows = table.rows.map((row) => `<tr title="${esc(row.detail)}"><td>${esc(row.label)}</td>${models.map((m) => {
+    const value = row.values[m.id];
+    return `<td class="cap cap-${esc(value)}" data-model="${esc(m.id)}" data-capability="${esc(row.id)}">${esc(DRONE_VALUE_MARKS[value] || value)}</td>`;
+  }).join("")}</tr>`).join("");
+  return `<div class="drone-compare card inner">
+    <h3>Drone models</h3>
+    <div class="grid3">${models.map((m) => `<div><strong>${esc(m.name)}</strong><p class="small">${esc(m.summary)}</p><p class="small muted">Best for: ${esc(m.best_for)}</p></div>`).join("")}</div>
+    <div class="scroll"><table class="table compare-table">${head}${facts}${rows}</table></div>
+    <p class="small"><strong>Shared by all three:</strong> ${table.shared.map(esc).join("; ")}.</p>
+    <p class="small muted">${esc(table.support_note)} Hover times and wind limits are estimates until flight tests measure them.</p></div>`;
+}
+
+function droneDiagnosisHtml(report) {
+  return `<div class="card inner drone-diagnosis"><p><strong>${esc(report.summary)}</strong></p>
+    ${report.findings.map((f) => `<details ${f.blocks_approval ? "open" : ""} data-finding="${esc(f.check)}"><summary>${f.blocks_approval ? "✗" : "!"} ${esc(f.label)} <span class="small muted">${esc(f.detail)}</span></summary>
+      ${f.causes.length ? `<div class="small">Likely cause: ${f.causes.map(esc).join(" ")}</div>` : ""}
+      ${f.steps.length ? `<ol class="small">${f.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}</details>`).join("")}
+    <p class="small muted">${esc(report.retest)}</p></div>`;
+}
+
 function droneLayout() {
   if ($("#drone-readiness")) return;
   $("#tab-drone").innerHTML = `
@@ -347,6 +380,9 @@ function droneLayout() {
         <div class="card"><h3>Flight log</h3><div class="scroll"><table class="table" id="drone-flights"></table></div></div>
       </div>
       <div>
+        <div class="card" id="drone-aircraft"><h3>Aircraft</h3><div id="drone-model"></div>
+          <div class="button-row"><button type="button" id="drone-diagnose">Troubleshoot</button><button type="button" id="drone-compare">Compare drone models</button></div>
+          <div id="drone-diagnosis"></div></div>
         <div class="card"><h3>Readiness</h3><ul class="list compact" id="drone-readiness"></ul>
           <details><summary class="small">Flight-controller settings audit</summary><div class="scroll"><table class="table" id="drone-audit"></table></div>
             <p class="small muted">Sentinel only reads these values. Change them with the ground station, then record commissioning below.</p></details></div>
@@ -357,6 +393,8 @@ function droneLayout() {
             <label><input type="checkbox" name="visibility_ok" checked> Visibility good</label>
             <label>Wind (m/s) <input type="number" name="wind_mps" min="0" max="60" step="0.5"></label>
             <label>Temperature (°C) <input type="number" name="temperature_c" min="-60" max="60" step="1"></label>
+            <label>Light <select name="daylight"><option value="true">Daylight</option><option value="false">Dark (dusk or night)</option></select></label>
+            <label><input type="checkbox" name="lights_ok"> Anti-collision lights on</label>
             <button class="primary" type="submit">Confirm conditions</button>
           </form><div class="small muted" id="drone-conditions-state"></div></div>
         <div class="card" id="drone-commands-card"><h3>Simulator commands</h3>
@@ -380,7 +418,7 @@ function droneLayout() {
     const number = (key) => (form.get(key) === "" ? null : Number(form.get(key)));
     try {
       await api("/drone/conditions", { method: "POST", body: JSON.stringify({ precipitation: form.has("precipitation"), visibility_ok: form.has("visibility_ok"),
-        wind_mps: number("wind_mps"), temperature_c: number("temperature_c") }) });
+        wind_mps: number("wind_mps"), temperature_c: number("temperature_c"), daylight: form.get("daylight") === "true", lights_ok: form.has("lights_ok") }) });
       renderDrone(await api("/drone"));
     } catch (error) { toast("Conditions not saved", error.message); }
   });
@@ -393,6 +431,16 @@ function droneLayout() {
       toast("Maintenance recorded", "", "low");
       renderDrone(await api("/drone"));
     } catch (error) { toast("Not recorded", error.message); }
+  });
+  $("#drone-diagnose").addEventListener("click", async () => {
+    try { $("#drone-diagnosis").innerHTML = droneDiagnosisHtml(await api("/drone/diagnosis")); }
+    catch (error) { toast("No diagnosis", error.message); }
+  });
+  $("#drone-compare").addEventListener("click", async () => {
+    const box = $("#drone-diagnosis");
+    if (box.querySelector(".drone-compare")) { box.innerHTML = ""; return; }
+    try { box.innerHTML = droneComparisonHtml(await api("/drone/models"), state.drone?.model?.id); }
+    catch (error) { toast("Comparison unavailable", error.message); }
   });
   $("#drone-pair").addEventListener("click", async () => {
     try {
@@ -442,6 +490,12 @@ function renderDrone(status) {
     tile("Companion", companion ? companion.state : "none"),
     tile("Safety", status.safety_state),
   ].join("");
+  const model = status.model || {};
+  const offered = Object.entries(model.capabilities || {}).filter(([, value]) => value === "yes").map(([key]) => key);
+  $("#drone-model").innerHTML = `<div><strong>${esc(model.label || model.name || "Drone")}</strong> <span class="small muted">${esc(model.camera || "")}</span></div>
+    ${model.status === "reference_design" ? '<p class="small muted">Reference design: no Sentinel drone has been built or flown. Physical aircraft are telemetry-only.</p>' : ""}
+    <div class="chips small">${offered.map((key) => `<span class="chip">${esc((DRONE_CAPABILITY_LABELS[key] || key))}</span>`).join("")}</div>
+    ${(model.limitations || []).length ? `<details class="small"><summary>Limits of this model</summary><ul>${model.limitations.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}`;
   const icon = { pass: "✓", fail: "✗", warn: "!", na: "–" };
   $("#drone-readiness").innerHTML = status.readiness.checks.map((c) => `<li class="row-between" data-check="${esc(c.id)}" data-state="${esc(c.state)}"><span>${icon[c.state]} ${esc(c.label)}</span>
     <span class="small muted wrap">${esc(c.detail)}</span></li>`).join("") +
@@ -483,7 +537,8 @@ function renderDrone(status) {
     const id = encodeURIComponent(r.request_id);
     return `<li data-request="${esc(r.request_id)}">
       <div><strong>${esc(r.target_label || "Custom point")}</strong> <span class="muted small">${esc(r.status.replace(/_/g, " "))}${r.phase && r.phase !== "done" ? ` · ${esc(r.phase.replace(/_/g, " "))}` : ""}</span></div>
-      <div class="small muted">${dateTime(r.created_ms)} · by ${esc(r.requested_by)}${r.reason ? ` · ${esc(r.reason)}` : ""}${r.incident_id ? ` · ${esc(r.incident_id)}` : ""}</div>
+      <div class="small muted">${dateTime(r.created_ms)} · by ${esc(r.requested_by)}${r.reason ? ` · ${esc(r.reason)}` : ""}${r.incident_id ? ` · ${esc(r.incident_id)}` : ""}${r.aircraft ? ` · ${esc(r.aircraft)}` : ""}</div>
+      ${r.flight_estimate && r.flight_estimate.detail ? `<div class="small muted">Endurance: ${esc(r.flight_estimate.detail)}</div>` : ""}
       ${r.note ? `<div class="small">${esc(r.note)}</div>` : ""}
       <div class="small"><a href="${API}/drone/inspections/${id}/mission" download>Route (.plan)</a> · <a href="${API}/drone/inspections/${id}/mission?format=waypoints" download>.waypoints</a></div>
       ${r.status === "approved" ? `<div class="small"><strong>Approved:</strong> load the route in the ground station and fly it before ${time(r.approved_until_ms)}. Sentinel follows the flight from telemetry.</div>` : ""}

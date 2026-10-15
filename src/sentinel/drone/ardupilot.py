@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .base import DroneTelemetry, geo_to_offset
+from .catalog import rule_passes
 
 COPTER_MODES = {
     0: "STABILIZE", 1: "ACRO", 2: "ALT_HOLD", 3: "AUTO", 4: "GUIDED", 5: "LOITER", 6: "RTL", 7: "CIRCLE", 9: "LAND",
@@ -147,7 +148,8 @@ def parameter_value(parameters: dict[str, float], name: str) -> tuple[float | No
 
 def audit_parameters(parameters: dict[str, float], *, max_altitude_m: float, safe_transit_altitude_m: float,
                      fence_polygon: list[list[float]] | None = None, geofence_polygon: list[list[float]] | None = None,
-                     baseline: dict[str, float] | None = None) -> dict[str, Any]:
+                     baseline: dict[str, float] | None = None, extra_rules: list[dict[str, Any]] | None = None,
+                     extra_label: str = "") -> dict[str, Any]:
     """Compare the vehicle's parameters with what a Sentinel inspection needs.
     Returns {"ok", "findings": [...], "blocking": [...], "fingerprint", "changed_since_commissioning"}."""
     if not parameters:
@@ -167,6 +169,12 @@ def audit_parameters(parameters: dict[str, float], *, max_altitude_m: float, saf
         ok = any(float(parameters.get(name, 0) or 0) > 0 for name in names)
         findings.append({"param": " or ".join(names), "expected": "a threshold above 0", "actual": ", ".join(f"{n}={_fmt(n, parameters.get(n, 0))}" for n in names),
                          "ok": ok, "blocking": True, "why": "The battery failsafe needs a threshold to act on."})
+    for rule in extra_rules or ():
+        # Hardware-specific settings of the drone model (catalog.py), e.g. the gimbal driver or the lidar.
+        value, source = parameter_value(parameters, rule["param"])
+        actual = "not reported" if value is None else _fmt(rule["param"], value)
+        findings.append({"param": rule["param"], "expected": rule["expected"], "actual": actual, "ok": rule_passes(rule, value),
+                         "blocking": bool(rule.get("blocking", True)), "why": rule["why"], "model": extra_label})
     if geofence_polygon:
         findings.append(_fence_finding(fence_polygon, geofence_polygon))
     changed: list[str] = []

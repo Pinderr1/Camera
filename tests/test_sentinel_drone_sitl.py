@@ -66,8 +66,9 @@ class SitlIntegrationTests(unittest.TestCase):
 
     # ---- helpers --------------------------------------------------------------
 
-    def manager(self, adapter, **safety):
-        from sentinel.drone.manager import DroneManager, DroneSafetyConfig
+    def manager(self, adapter, model=None, options=None, **safety):
+        from sentinel.drone import catalog
+        from sentinel.drone.manager import DroneManager, DroneSafetyConfig, WeatherLimits
         from sentinel.store import EventStore
 
         self.gcs.swap_battery()  # manual charging between flights
@@ -76,9 +77,17 @@ class SitlIntegrationTests(unittest.TestCase):
         self.store = EventStore(Path(tempfile.mkdtemp()) / "sentinel.db")
         self.cleanup.append(self.store.close)
         settings = {"inspection_altitude_m": 12, "hover_s": 4} | safety
+        extra = {}
+        if model:
+            extra = {"model": catalog.MODEL_INDEX[model], "options": options or {},
+                     "weather": WeatherLimits.from_dict(catalog.weather_defaults(catalog.MODEL_INDEX[model]))}
         manager = DroneManager(adapter, self.fence, ORIGIN, DroneSafetyConfig(**settings), records=self.store, drone_id="sitl", home=self.home,
-                               audit=self.store.audit)
-        manager.set_conditions("tester", precipitation=False, visibility_ok=True, wind_mps=2, temperature_c=12)
+                               audit=self.store.audit, **extra)
+        if model:
+            manager.video_status = lambda: {"state": "idle", "detail": "camera stream configured"}
+        manager.set_conditions("tester", precipitation=False, visibility_ok=True, wind_mps=2, temperature_c=12, daylight=True)
+        if model == "sentinel_thermal":
+            return manager  # the caller checks why it is not ready
         self.wait(manager, lambda: manager.readiness()["ready"], 120, "aircraft ready")
         return manager
 
@@ -213,6 +222,45 @@ class SitlIntegrationTests(unittest.TestCase):
             self.gcs.set_param("BATT_CAPACITY", 3300)
         self.assertEqual(request.status, "aborted")
         self.assertIn("drone_auto_return_home", [row["action"] for row in self.store.list_audit(200)])
+
+    def test_7_pro_and_thermal_profiles_on_the_same_core(self):
+        from sentinel.drone.mavlink import MavlinkTelemetryAdapter
+
+        relay = self.relay("telemetry")
+        companion = lambda: {"name": "cm4", "state": "reporting", "report": {"relay": relay.status()}}  # noqa: E731
+        # Thermal carries a lidar: the real firmware is not configured for one here, and Sentinel must block it.
+        thermal = self.manager(MavlinkTelemetryAdapter("udpin:127.0.0.1:14551"), model="sentinel_thermal")
+        thermal.companion_status = companion
+        self.wait(thermal, lambda: thermal.adapter.params_complete(), 60, "parameters read")
+        self.assertIn("flight_controller_settings", thermal.readiness()["blockers"])
+        finding = next(f for f in thermal.parameter_audit()["blocking"] if f["param"] == "PRX1_TYPE")
+        self.assertEqual(finding["model"], "Sentinel Thermal")
+        thermal.adapter.disconnect()
+        # The Pro (no lidar option) is ready through its companion relay and flies the same proposed inspection.
+        pro = MavlinkTelemetryAdapter("udpin:127.0.0.1:14551")
+        from sentinel.drone import catalog
+        from sentinel.drone.manager import DroneManager, DroneSafetyConfig, WeatherLimits
+
+        pro.connect()
+        self.cleanup.append(pro.disconnect)
+        manager = DroneManager(pro, self.fence, ORIGIN, DroneSafetyConfig(inspection_altitude_m=12, hover_s=4), records=self.store, drone_id="pro",
+                               home=self.home, audit=self.store.audit, model=catalog.MODEL_INDEX["sentinel_pro"],
+                               weather=WeatherLimits.from_dict(catalog.weather_defaults(catalog.MODEL_INDEX["sentinel_pro"])))
+        manager.companion_status = companion
+        manager.video_status = lambda: {"state": "idle", "detail": "camera stream configured"}
+        manager.set_conditions("tester", precipitation=False, visibility_ok=True, wind_mps=2, temperature_c=12, daylight=True)
+        self.wait(manager, lambda: manager.readiness()["ready"], 120, "Pro ready")
+        checks = {check["id"]: check for check in manager.readiness()["checks"]}
+        self.assertEqual((checks["lockout"]["state"], checks["companion"]["state"]), ("pass", "pass"))
+        request = manager.request_inspection(requested_by="sentinel", map_point=(35.5, 3), label="Shed", source="incident", incident_id="inc_pro")
+        manager.approve(request.request_id, "operator")
+        self.assertEqual((request.mode, request.aircraft), ("propose", "Sentinel Pro (aircraft, telemetry only)"))
+        _, plan = manager.mission_export(request.request_id)
+        self.gcs.load_mission(json.loads(plan))
+        self.gcs.start_mission()
+        self.wait(manager, lambda: request.status == "completed", 240, "Pro inspection completed")
+        self.landed(manager)
+        self.assertEqual(relay.status()["hub_frames_dropped"], 0, "the Hub sent nothing that needed dropping")
 
     @staticmethod
     def _consumed_mah(manager) -> float:

@@ -6,6 +6,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from . import catalog
 from .ardupilot import RETURN_MODES, audit_parameters, flight_state
 from .base import DroneAdapter, FlightCommandRejected, distance_m, map_point_to_geo
 from .geofence import Geofence
@@ -43,6 +44,8 @@ class InspectionRequest:
     flight_id: str = ""
     observations: dict[str, Any] = field(default_factory=dict)
     evidence_paths: list[str] = field(default_factory=list)
+    aircraft: str = ""  # drone model name at request time, e.g. "Sentinel Lite (simulated)"
+    flight_estimate: dict[str, Any] = field(default_factory=dict)  # model endurance check at approval
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -120,6 +123,9 @@ class DroneManager:
         records: Any = None,
         weather: WeatherLimits | None = None,
         firmware_tested: tuple[str, ...] = (),
+        model: dict[str, Any] | None = None,
+        options: dict[str, bool] | None = None,
+        gcs_system_id: int = 245,
     ) -> None:
         self.adapter = adapter
         self.geofence = geofence
@@ -132,6 +138,9 @@ class DroneManager:
         self.records = records if records is not None else _NoRecords()
         self.weather = weather or WeatherLimits()
         self.firmware_tested = tuple(firmware_tested)
+        self.model = model or catalog.get_model(None)
+        self.options = options or {}
+        self.gcs_system_id = gcs_system_id
         self.companion_status: Callable[[], dict[str, Any] | None] = lambda: None  # set by the service
         self.video_status: Callable[[], dict[str, Any] | None] = lambda: None
         self.on_inspection_finished: Callable[[dict[str, Any]], None] = lambda request: None
@@ -200,16 +209,34 @@ class DroneManager:
                 add("fc_settings", "Failsafe and fence settings", "pass" if audit["ok"] else "fail", detail, "flight_controller_settings")
             self._conditions_check(add)
             companion = self.companion_status()
+            needs_companion = self.model["requires"]["companion"]
             if companion is None:
-                add("companion", "Companion computer", "warn" if self.adapter.is_physical else "na",
-                    "none paired: telemetry comes straight from the flight-controller link" if self.adapter.is_physical else "not used by this simulator")
+                if not self.adapter.is_physical:
+                    add("companion", "Companion computer", "na", "not used by this simulator")
+                elif needs_companion == "required":
+                    add("companion", "Companion computer", "fail", f"none paired: the {self.model['name']} carries one; pair it on the Drone tab",
+                        "companion_not_paired")
+                elif needs_companion == "none" and not self.options.get("companion"):
+                    add("companion", "Companion computer", "na", f"not part of the {self.model['name']}: telemetry comes over the radio link")
+                else:
+                    add("companion", "Companion computer", "warn", "none paired: telemetry comes straight from the flight-controller link")
             else:
                 reporting = companion.get("state") == "reporting"
                 add("companion", "Companion computer", "pass" if reporting else "fail",
                     f"{companion.get('name', '')} reporting" if reporting else f"{companion.get('name', '')} silent", "companion_silent")
+            if self.adapter.flight_controller == "ardupilot":
+                state, detail = catalog.command_lockout(self.model, self.adapter.parameters(), self.gcs_system_id, companion)
+                if state == "fail" and not self.adapter.is_physical:
+                    # A verified simulator may be commanded by Sentinel; the real aircraft of this model needs the lockout.
+                    state, detail = "warn", f"simulator: {detail}"
+                add("lockout", "Hub command lockout", state, detail, "no_command_lockout")
             video = self.video_status()
             if video is None:
-                add("video", "Drone video", "warn", "no drone video configured: inspections will have telemetry only")
+                if self.model["requires"]["video"]:
+                    add("video", "Drone video", "fail", f"no stream configured for the {self.model['camera']['name']}: set its address in the drone's settings",
+                        "no_drone_video")
+                else:
+                    add("video", "Drone video", "warn", "no drone video configured: inspections will have telemetry only")
             else:
                 add("video", "Drone video", "pass" if video.get("state") in ("ready", "streaming", "idle") else "warn", video.get("detail", video.get("state", "")))
             version = telemetry.autopilot_version
@@ -222,20 +249,22 @@ class DroneManager:
             add("maintenance", "Maintenance", "warn" if due else "pass",
                 f"{maintenance['flights_since_inspection']} flight(s) since the last recorded inspection" + (" (inspection due)" if due else ""))
             blockers = [check["blocker"] for check in checks if check["state"] == "fail"]
-            return {"ready": not blockers, "checks": checks, "blockers": blockers, "mode": self.mode()[0]}
+            return {"ready": not blockers, "checks": checks, "blockers": blockers, "mode": self.mode()[0], "model": self.model["id"]}
 
     def _conditions_check(self, add: Callable[..., None]) -> None:
         required = self.weather.require_attestation
         if required is None:
             required = self.adapter.kind != "simulated"
-        if not required:
-            add("conditions", "Weather and conditions", "na", "not required for the built-in simulator")
-            return
         now = int(time.time() * 1000)
         conditions = self.conditions
-        if conditions is None or now - conditions["recorded_ms"] > self.weather.conditions_ttl_s * 1000:
+        stale = conditions is None or now - conditions["recorded_ms"] > self.weather.conditions_ttl_s * 1000
+        if not required and stale:
+            add("conditions", "Weather and conditions", "na", "not required for the built-in simulator")
+            return
+        if stale:
             add("conditions", "Weather and conditions", "fail", "not confirmed by the operator in the last hour", "conditions_not_confirmed")
             return
+        add("daylight", "Light and camera", *catalog.night_check(self.model, conditions))
         problems = []
         if conditions.get("precipitation"):
             problems.append("precipitation")
@@ -260,13 +289,15 @@ class DroneManager:
         return audit_parameters(
             self.adapter.parameters(), max_altitude_m=self.geofence.max_altitude_m, safe_transit_altitude_m=self.safety.transit_altitude_m,
             fence_polygon=self.adapter.fence_polygon(), geofence_polygon=self.geofence.polygon, baseline=(baseline or {}).get("parameters"),
+            extra_rules=catalog.parameter_rules(self.model, self.options), extra_label=self.model["name"],
         )
 
     def set_conditions(self, operator: str, *, precipitation: bool, visibility_ok: bool, wind_mps: float | None = None,
-                       temperature_c: float | None = None, note: str = "") -> dict[str, Any]:
+                       temperature_c: float | None = None, note: str = "", daylight: bool | None = None,
+                       lights_ok: bool | None = None) -> dict[str, Any]:
         with self._lock:
             self.conditions = {"recorded_ms": int(time.time() * 1000), "by": operator, "precipitation": precipitation, "visibility_ok": visibility_ok,
-                               "wind_mps": wind_mps, "temperature_c": temperature_c, "note": note[:300]}
+                               "wind_mps": wind_mps, "temperature_c": temperature_c, "note": note[:300], "daylight": daylight, "lights_ok": lights_ok}
             self.audit(operator, "drone_conditions_confirmed", self.conditions | {"drone": self.drone_id})
             self._changed()
             return dict(self.conditions)
@@ -307,6 +338,7 @@ class DroneManager:
             request = InspectionRequest(
                 request_id=f"insp_{now}_{self._seq}", created_ms=now, source=source, target_lat=lat, target_lon=lon,
                 target_label=label, requested_by=requested_by, incident_id=incident_id, drone_id=self.drone_id, reason=reason[:300],
+                aircraft=self.aircraft_label(),
             )
             self.requests[request.request_id] = request
             self.audit(requested_by, "drone_inspection_requested", request.as_dict())
@@ -314,10 +346,19 @@ class DroneManager:
             self._changed()
             return request
 
+    def aircraft_label(self) -> str:
+        return f"{self.model['name']} ({'aircraft, telemetry only' if self.adapter.is_physical else 'simulated'})"
+
     def plan(self, request: InspectionRequest) -> Route:
-        return plan_route(self.current_home(), (request.target_lat, request.target_lon), self.geofence,
-                          safe_transit_altitude_m=self.safety.transit_altitude_m, inspection_altitude_m=self.safety.inspection_altitude_m,
-                          hover_s=self.safety.hover_s, label=request.target_label)
+        route = plan_route(self.current_home(), (request.target_lat, request.target_lon), self.geofence,
+                           safe_transit_altitude_m=self.safety.transit_altitude_m, inspection_altitude_m=self.safety.inspection_altitude_m,
+                           hover_s=self.safety.hover_s, label=request.target_label)
+        estimate = self.endurance(route)
+        route.notes.append(f"Endurance: {estimate['detail']}.")
+        return route
+
+    def endurance(self, route: Route) -> dict[str, Any]:
+        return catalog.endurance_check(self.model, route.as_dict(), self.adapter.telemetry().battery_pct, self.safety.rth_battery_pct)
 
     def approve(self, request_id: str, operator: str) -> InspectionRequest:
         with self._lock:
@@ -328,6 +369,10 @@ class DroneManager:
             route = self.plan(request)
             if route.problems:
                 raise FlightCommandRejected(f"route rejected: {', '.join(route.problems)}")
+            estimate = self.endurance(route)
+            if not estimate["ok"]:
+                raise FlightCommandRejected(f"route_exceeds_endurance: {estimate['detail']}")
+            request.flight_estimate = estimate
             mode, _ = self.mode()
             now = int(time.time() * 1000)
             request.route, request.mode, request.decided_by, request.decided_ms = route.as_dict(), mode, operator, now
@@ -484,6 +529,9 @@ class DroneManager:
             return {
                 "drone_id": self.drone_id,
                 "adapter": self.adapter.kind,
+                "model": {"id": self.model["id"], "name": self.model["name"], "tier": self.model["tier"], "status": self.model["status"],
+                          "camera": self.model["camera"]["name"], "capabilities": self.model["capabilities"], "options": self.options,
+                          "limitations": self.model["limitations"], "label": self.aircraft_label()},
                 "physical": self.adapter.is_physical,
                 "mode": mode,
                 "mode_reason": mode_reason,
@@ -692,20 +740,24 @@ class DroneManager:
             self._save(request)
 
     def _safe_action(self, action: str, reason: str, flight_mode: str) -> None:
-        if action == "return_home" and flight_mode in RETURN_MODES | {"landing", "LAND"}:
-            return
-        if action == "land" and flight_mode in {"landing", "LAND"}:
-            return
+        already = (action == "return_home" and flight_mode in RETURN_MODES | {"landing", "LAND"}) or                   (action == "land" and flight_mode in {"landing", "LAND"})
         if self.mode()[0] != "command":
             # Sentinel may not command this aircraft: tell the operator; the FC failsafe acts on its own.
-            text = {"low_battery": "Battery low: the pilot should return home now",
-                    "critical_battery": "Battery critical: the pilot should land now",
-                    "geofence_breach": "Outside the approved area: the pilot should return home now"}.get(reason, reason)
+            if already:  # the flight controller (failsafe) or the pilot is already doing it: say why
+                text = {"low_battery": "Battery low: the aircraft is returning home",
+                        "critical_battery": "Battery critical: the aircraft is landing",
+                        "geofence_breach": "Outside the approved area: the aircraft is returning home"}.get(reason, reason)
+            else:
+                text = {"low_battery": "Battery low: the pilot should return home now",
+                        "critical_battery": "Battery critical: the pilot should land now",
+                        "geofence_breach": "Outside the approved area: the pilot should return home now"}.get(reason, reason)
             if not self.advisories or self.advisories[-1]["reason"] != reason:
                 self.advisories.append({"ms": int(time.time() * 1000), "reason": reason, "text": text})
                 self.audit("system", "drone_operator_advisory", {"reason": reason, "drone": self.drone_id})
                 if self._flight is not None:
                     self._flight["safety_events"].append([int(time.time() * 1000), f"advisory:{reason}"])
+            return
+        if already:
             return
         self._abort_mission(reason)
         try:

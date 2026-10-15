@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from . import catalog
 from .base import DroneAdapter, DroneTelemetry, FlightCommandRejected, map_point_to_geo
 from .geofence import Geofence
 from .manager import DroneManager, DroneSafetyConfig, InspectionRequest, WeatherLimits
@@ -42,11 +43,12 @@ def build_drone_manager(
     if "map_polygon" in fence:
         fence["polygon"] = [list(map_point_to_geo(origin, x, y)) for x, y in fence.pop("map_polygon")]
     adapter_kind = aircraft.get("adapter", "simulated")
+    model = catalog.model_for(aircraft)
     link = {"gcs_system_id": int(drone.get("gcs_system_id", 245))}
     if adapter_kind == "simulated":
         from .mock import SimulatedDrone
 
-        adapter: DroneAdapter = SimulatedDrone(home, **drone.get("simulator", {}))
+        adapter: DroneAdapter = SimulatedDrone(home, **(catalog.simulator_settings(model) | drone.get("simulator", {})))
     elif adapter_kind == "mavlink":
         from .mavlink import MavlinkTelemetryAdapter
 
@@ -69,8 +71,11 @@ def build_drone_manager(
         drone_id=(device or {}).get("id", "drone"),
         home=home,
         records=records,
-        weather=WeatherLimits.from_dict(drone.get("weather")),
-        firmware_tested=tuple(drone.get("firmware_tested", ())),
+        weather=WeatherLimits.from_dict(catalog.weather_defaults(model) | (drone.get("weather") or {})),
+        firmware_tested=tuple(drone.get("firmware_tested") or model["firmware_tested"]),
+        model=model,
+        options=catalog.options_for(model, aircraft),
+        gcs_system_id=link["gcs_system_id"],
     )
 
 

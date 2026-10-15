@@ -359,3 +359,15 @@ legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
   .grid3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
 [hidden] { display: none !important; }
+
+/* Drone models: capability chips, comparison table, diagnosis */
+.chip { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); }
+.compare-table th.current { color: var(--accent); }
+.compare-table td.cap { text-align: center; font-weight: 600; }
+.compare-table td.cap-yes { color: var(--low); }
+.compare-table td.cap-optional, .compare-table td.cap-limited { color: var(--medium); }
+.compare-table td.cap-no { color: var(--muted); }
+.drone-diagnosis details { border-top: 1px solid var(--border); padding: 6px 0; }
+.drone-diagnosis summary { cursor: pointer; }
+.drone-model-summary { margin: 4px 0 8px; }
+@media (max-width: 560px) { .drone-compare .grid3 { grid-template-columns: minmax(0, 1fr); } }

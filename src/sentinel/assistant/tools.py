@@ -412,21 +412,63 @@ class Toolbox:
                     "coverage": report["coverage"]["state"],
                     "components": {name: {"state": c["state"], "detail": c["detail"]} for name, c in report["coverage"]["components"].items()}}
 
-        @add("get_drone_status", "read", "Registered drones: simulated or physical, link, battery, docked/charging, safety state, preflight "
-             "blockers, inspection locations and requests. Physical flight commands are disabled in this build.")
+        @add("get_drone_status", "read", "Registered drones: model (Sentinel Lite/Pro/Thermal or other), simulated or physical, link, battery, "
+             "docked/charging, safety state, readiness checks that fail or warn, inspection locations and requests. "
+             "Physical flight commands are disabled in this build.")
         def get_drone_status(args, turn):
             drones = [self._device_summary(d) for d in self.service.devices_view() if d["category"] in ("drone", "dock")]
             config = self._config().get("drone", {})
             primary = self.service.drone
             status = primary.status() if primary else None
             turn.open("drone", "Open the Drone tab")
-            return {"drones": drones, "drone_features_on": bool(config.get("enabled")),
-                    "primary": {"adapter": status["adapter"], "physical": status["physical"], "preflight_blockers": status["preflight_blockers"],
-                                "safety_state": status["safety_state"], "pending_requests": sum(1 for r in status["requests"] if r["status"] == "pending_approval")}
-                    if status else None,
+            primary_view = None
+            if status:
+                primary_view = {"model": status["model"]["label"], "adapter": status["adapter"], "physical": status["physical"],
+                                "preflight_blockers": status["preflight_blockers"], "safety_state": status["safety_state"],
+                                "checks_not_passing": [{k: c[k] for k in ("id", "label", "state", "detail")} for c in status["readiness"]["checks"]
+                                                       if c["state"] in ("fail", "warn")],
+                                "pending_requests": sum(1 for r in status["requests"] if r["status"] == "pending_approval"),
+                                "video": (status.get("video") or {}).get("detail") or "no drone video configured"}
+            return {"drones": drones, "drone_features_on": bool(config.get("enabled")), "primary": primary_view,
                     "inspection_points": [{"id": p["id"], "name": untrusted(p["name"])} for p in config.get("inspection_points", [])],
                     "limits": ["Every flight needs an operator to approve it on the Drone tab; the assistant cannot approve flights.",
-                               "Physical drones are telemetry-only: flight commands are refused.", "Drone video is not ingested yet."]}
+                               "Physical drones are telemetry-only: flight commands are refused, and the pilot flies the exported route.",
+                               "Drone video is analysed on the hub only during an approved inspection; thermal video is not analysed.",
+                               "Sentinel Lite, Pro and Thermal are reference designs: none has been built or flown yet."]}
+
+        @add("get_drone_models", "read", "Sentinel's drone models (Lite, Pro, Thermal) side by side: capabilities, camera, estimated hover time "
+             "and wind limit, what is shared, and honest limits. Pass a few needs to get a recommendation with reasons. No prices: parts "
+             "estimates are in the documentation, never quoted as a price.",
+             {"night": boolean("Needs inspections after dark"), "windy": boolean("Often windier than 6 m/s"),
+              "zoom": boolean("Wants to inspect from farther or higher (zoom)"), "obstacles": boolean("Trees or wires near likely routes"),
+              "property_size_m": number("Longest property dimension in metres"),
+              "budget": string("Budget priority", enum=["lowest", "balanced", "capability"])})
+        def get_drone_models(args, turn):
+            from ..drone import catalog
+
+            table = catalog.comparison()
+            models = [{"id": m["id"], "name": m["name"], "cost": m["cost_label"], "summary": m["summary"], "best_for": m["best_for"],
+                       "camera": m["hardware"]["camera"], "companion": m["hardware"]["companion"],
+                       "hover_min_estimate": m["flight"]["endurance_min_est"], "wind_limit_mps_estimate": m["flight"]["max_wind_mps"],
+                       "night_inspections": m["capabilities"]["night_inspection"], "options": m["options"], "limitations": m["limitations"]}
+                      for m in table["models"]]
+            result = {"models": models, "capabilities": {row["label"]: row["values"] for row in table["rows"]}, "shared": table["shared"],
+                      "status": table["support_note"]}
+            result["recommendation"] = catalog.recommend(args)
+            return result
+
+        @add("diagnose_drone", "read", "Troubleshoot a registered drone: every failing or warning readiness check with its likely cause and "
+             "model-specific steps for the person at the drone or ground station (radio link, command lockout, stream rates, parameters, "
+             "camera stream, conditions). Read-only: Sentinel never changes flight-controller settings.",
+             {"drone_id": string("Drone device id (default: the primary drone)")})
+        def diagnose_drone(args, turn):
+            from ..drone.troubleshoot import diagnose
+
+            manager = self.service.drone_manager(args.get("drone_id"))
+            if manager is None:
+                raise ToolError("no operable drone with that id (planned hardware has no connection)")
+            turn.open("drone", "Open the Drone tab")
+            return diagnose(manager.status(), manager.model)
 
         @add("get_notification_settings", "read", "Push notification channels (ntfy, MQTT), whether a topic is set (never the topic itself), "
              "push levels per arm mode, and the last test notification result.")
@@ -568,15 +610,24 @@ class Toolbox:
             return self._propose(turn, "notifications", dict(args), "Change notification settings", "Applied without a restart.", effects)
 
         @add("propose_register_device", "propose", "Propose registering a recorder, drone, dock or sensor (cameras are added through the sign-in form "
-             "or the camera wizard). Registration records the device; it never claims the device is connected.",
+             "or the camera wizard). Registration records the device; it never claims the device is connected. For a drone, give its model "
+             "and how Sentinel connects: the built-in simulator (try everything now), ArduPilot SITL, or a real aircraft (telemetry only).",
              {"category": string("Device kind", enum=["recorder", "drone", "dock", "contact_sensor", "motion_sensor", "environmental_sensor"]),
               "name": string("Name"), "profile": string("Hardware profile id from get_hardware_compatibility"),
               "address": string("Recorder address or alias"), "channels": {"type": "integer", "description": "Recorder channel count"},
-              "zone_id": string("Sensor zone")}, ["category", "name"])
+              "zone_id": string("Sensor zone"),
+              "drone_model": string("Drone model", enum=["sentinel_lite", "sentinel_pro", "sentinel_thermal", "generic_ardupilot"]),
+              "connect": string("How Sentinel connects to the drone", enum=["simulator", "sitl", "aircraft"]),
+              "mavlink_connection": string("MAVLink endpoint for SITL or a real aircraft, e.g. udpin:0.0.0.0:14551"),
+              "obstacle_sensor": boolean("Sentinel Pro: the optional lidar is installed")}, ["category", "name"])
         def propose_register_device(args, turn):
             from ..devices import PROFILE_INDEX, default_profile
 
             category = args["category"]
+            if category == "drone" and args.get("connect"):
+                args = args | {"profile": {"simulator": "simulated_drone", "sitl": "ardupilot_sitl", "aircraft": "mavlink_drone"}[args["connect"]]}
+            if category == "drone" and args.get("connect") in ("sitl", "aircraft") and not args.get("mavlink_connection"):
+                raise ToolError("a SITL or real drone needs mavlink_connection (ask the customer which address and port the radio sends to)")
             profile = args.get("profile") or default_profile(category, category != "recorder")
             info = PROFILE_INDEX.get(profile)
             if info is None or info["category"] != category or info["support"] == "unsupported":
@@ -589,6 +640,20 @@ class Toolbox:
             if args.get("zone_id"):
                 params["zone_id"] = args["zone_id"]
             effects = [f"Hardware: {info['name']} ({info['support']})"]
+            if category == "drone":
+                from ..drone import catalog
+
+                model = catalog.get_model(args.get("drone_model") or "sentinel_lite")
+                params["drone_model"] = model["id"]
+                if args.get("mavlink_connection"):
+                    params["connection"] = args["mavlink_connection"]
+                if args.get("obstacle_sensor"):
+                    if "obstacle_sensor" not in model["options"]:
+                        raise ToolError(f"{model['name']} has no optional obstacle sensor")
+                    params["drone_options"] = {"obstacle_sensor": True}
+                effects.append(f"Model: {model['name']} ({model['cost_label'].lower()}); readiness checks follow this model")
+                if model["status"] == "reference_design":
+                    effects.append("Reference design: no Sentinel drone has been built or flown yet")
             if info["support"] == "planned":
                 effects.append("Planned hardware: registration only, Sentinel cannot connect to it yet")
             if info["support"] == "simulated":

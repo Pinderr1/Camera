@@ -58,6 +58,8 @@ class Guide:
                 return self.diagnose(turn, state["last_host"], retest=True)
             if _has(lower, "drone"):
                 return self.drone(turn, lower)
+            if state.get("drone_retest") and _has(lower, "retest", "test again", "try again", "check again", "done", "i did", "fixed", "changed"):
+                return self.drone_diagnosis(turn)
             if _has(lower, "not connect", "aren't connect", "arent connect", "not showing", "aren't showing", "can't find", "cannot find", "not working",
                     "offline", "no picture", "troubleshoot", "won't connect", "doesn't connect", "not found", "connection problem"):
                 return self.troubleshoot(turn)
@@ -252,30 +254,75 @@ class Guide:
                 "How do the new cameras connect?")
 
     def drone(self, turn: Turn, lower: str) -> str:
+        needs = {"night": _has(lower, "night", "dark", "thermal"), "windy": _has(lower, "wind"), "zoom": _has(lower, "zoom", "far away", "from far"),
+                 "obstacles": _has(lower, "tree", "wire"), "budget": "lowest" if _has(lower, "cheap", "budget", "afford", "lowest", "lite") else ""}
+        needs = {key: value for key, value in needs.items() if value}
+        if _has(lower, "compare", "which drone", "what drone", "difference", "models", "cheapest", "lite", "pro ", "sentinel pro", "thermal", "recommend"):
+            return self.drone_models(turn, needs)
         status = self._call("get_drone_status", turn)
         drones = [d for d in status["drones"] if d["category"] == "drone"]
         if not drones:
             location = self.tools.service.site.config.get("site", {}).get("map", {}).get("origin_geo")
-            text = ("No drone is registered. Sentinel's own drones are not available yet, but you can register a **simulated** drone now "
-                    "to set up inspection locations and the approval workflow.")
+            advice = self._call("get_drone_models", turn, **needs)["recommendation"]
+            text = (f"No drone is registered. For your needs I'd start with **{advice['name']}**: {advice['reasons'][0]} "
+                    "Sentinel's drones are reference designs that have not been built or flown yet, so register it with the **built-in "
+                    "simulator** now: inspection locations, approvals, video and evidence all work the same way, and the real aircraft "
+                    "can replace it later.")
             if location:
-                self.tools.call("propose_register_device", {"category": "drone", "name": "Simulated drone", "profile": "simulated_drone"}, turn)
-                return text + " Confirm below to add one."
+                self.tools.call("propose_register_device", {"category": "drone", "name": f"{advice['name']} (simulated)", "drone_model": advice["model"],
+                                                            "connect": "simulator"}, turn)
+                self.choices(turn, ["Compare drone models"])
+                return text + " Confirm below to add it."
             self.tools.call("show_screen", {"target": "install:property", "label": "Set the property location"}, turn)
             return text + " First set the property's location (it places the drone geofence; it stays on this hub)."
+        primary = status.get("primary") or {}
+        if _has(lower, "troubleshoot", "not ready", "problem", "why", "fix", "can't", "cannot", "won't", "isn't", "not working", "no telemetry",
+                "no link", "help"):
+            return self.drone_diagnosis(turn)
         lines = []
         for drone in drones:
             kind = "simulated" if drone.get("simulated") else "physical, telemetry only"
             battery = f", battery {round(drone['battery_pct'])}%" if drone.get("battery_pct") is not None else ""
             dock = ", docked" + (" and charging" if drone.get("charging") else "") if drone.get("docked") else ""
-            lines.append(f"**{drone['name']}** ({kind}): {drone.get('detail', drone['state'])}{battery}{dock}.")
-        primary = status.get("primary") or {}
+            model = f" {drone['model_name']}," if drone.get("model_name") else ""
+            lines.append(f"**{drone['name']}** ({model} {kind}): {drone.get('detail', drone['state'])}{battery}{dock}.".replace("( ", "("))
         if primary.get("preflight_blockers"):
-            lines.append("Before any inspection can launch: " + ", ".join(b.replace("_", " ") for b in primary["preflight_blockers"]) + ".")
+            lines.append("Before any inspection can launch: " + ", ".join(b.replace("_", " ") for b in primary["preflight_blockers"])
+                         + ". Ask me to troubleshoot the drone for the steps.")
+            self.choices(turn, ["Troubleshoot my drone"])
         lines.append("Every inspection flight needs an operator's approval on the Drone tab. Physical drones are telemetry-only in this build: "
-                     "flight commands are disabled, and drone video is not shown yet.")
+                     "Sentinel never sends them flight commands; the pilot flies the exported route.")
         if status["inspection_points"]:
             lines.append("Inspection locations: " + ", ".join(p["name"] for p in status["inspection_points"]) + ".")
+        return "\n\n".join(lines)
+
+    def drone_models(self, turn: Turn, needs: dict[str, Any]) -> str:
+        result = self._call("get_drone_models", turn, **needs)
+        lines = []
+        for model in result["models"]:
+            night = {"yes": "inspects at night", "limited": "daytime (night only where lit)", "no": "daytime only"}[model["night_inspections"]]
+            lines.append(f"**{model['name']}** ({model['cost'].lower()}): {model['summary']} {model['camera']}; about "
+                         f"{model['hover_min_estimate']:g} min hover and {model['wind_limit_mps_estimate']:g} m/s wind (estimates); {night}.")
+        lines.append("All three share the flight controller software, the radio, the camera protocol and every Sentinel feature.")
+        advice = result.get("recommendation")
+        if advice:
+            lines.append(f"For what you described I'd suggest **{advice['name']}**: {' '.join(advice['reasons'])}")
+            lines.extend(caution for caution in advice["cautions"][2:])
+        lines.append(result["status"])
+        self.tools.call("show_screen", {"target": "install:hardware", "label": "Register a drone"}, turn)
+        return "\n\n".join(lines)
+
+    def drone_diagnosis(self, turn: Turn) -> str:
+        report = self._call("diagnose_drone", turn)
+        lines = [f"{report['model_name']}: {report['summary']}"]
+        for finding in report["findings"][:4]:
+            first = finding["steps"][:2]
+            lines.append(f"**{finding['label']}** ({'blocks approval' if finding['blocks_approval'] else 'warning'}): {finding['detail']}"
+                         + (f"\n- " + "\n- ".join(first) if first else ""))
+        if len(report["findings"]) > 4:
+            lines.append(f"{len(report['findings']) - 4} more item(s) are listed under Troubleshoot on the Drone tab.")
+        lines.append(report["retest"] + " Tell me when you've changed something and I'll check again.")
+        turn.conversation["guide"]["drone_retest"] = True
         return "\n\n".join(lines)
 
     # ---- security configuration ---------------------------------------------------------------

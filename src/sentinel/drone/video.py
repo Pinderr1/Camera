@@ -226,14 +226,26 @@ class DroneVideoWorker(threading.Thread):
                     evidence.append(observation.snapshot_path)
                 if time.monotonic() - last_publish >= 2.0:
                     last_publish = time.monotonic()
-                    self.manager.attach_observations(request_id, observer.summary(), evidence)
+                    self.manager.attach_observations(request_id, self._summary(observer), evidence)
         finally:
             source.close()
             close = getattr(detector, "close", None)
             if close:
                 close()
-            self.manager.attach_observations(request_id, observer.summary() | {"final": True}, evidence)
+            self.manager.attach_observations(request_id, self._summary(observer) | {"final": True}, evidence)
             self.state, self.detail = "idle", "inspection finished"
+
+    def _summary(self, observer: InspectionObserver) -> dict[str, Any]:
+        """The observer's summary plus what this aircraft's camera could not
+        contribute (for example an unanalysed thermal channel)."""
+        summary = observer.summary()
+        notes = list(self.settings.get("notes") or [])
+        if notes:
+            summary["video_notes"] = notes
+            summary["text"] = summary["text"][:-1] + notes + summary["text"][-1:]  # keep the disclaimer last
+        if self.settings.get("model"):
+            summary["model"] = self.settings["model"]
+        return summary
 
     def _save_snapshot(self, request_id: str, observation_id: str, frame_ms: int, jpeg: bytes) -> str:
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{frame_ms}_{observation_id.rsplit('_', 1)[-1]}")

@@ -154,6 +154,17 @@ class ConditionsBody(BaseModel):
     wind_mps: float | None = Field(default=None, ge=0, le=60)
     temperature_c: float | None = Field(default=None, ge=-60, le=60)
     note: str = Field(default="", max_length=300)
+    daylight: bool | None = None
+    lights_ok: bool | None = None
+
+
+class DroneNeedsBody(BaseModel):
+    night: bool = False
+    windy: bool = False
+    zoom: bool = False
+    obstacles: bool = False
+    property_size_m: float = Field(default=0, ge=0, le=5000)
+    budget: str = Field(default="", max_length=20)
 
 
 class MaintenanceBody(BaseModel):
@@ -592,7 +603,29 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
     @app.post("/api/v1/drone/conditions")
     def drone_conditions(body: ConditionsBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
         return drone_or_404().set_conditions(actor, precipitation=body.precipitation, visibility_ok=body.visibility_ok,
-                                             wind_mps=body.wind_mps, temperature_c=body.temperature_c, note=body.note)
+                                             wind_mps=body.wind_mps, temperature_c=body.temperature_c, note=body.note,
+                                             daylight=body.daylight, lights_ok=body.lights_ok)
+
+    @app.get("/api/v1/drone/models")
+    def drone_models(_: str = Depends(require_auth)) -> dict[str, Any]:
+        from .drone import catalog
+
+        return catalog.comparison() | {"all": [catalog.public_model(model) for model in catalog.MODELS], "capabilities": catalog.CAPABILITIES}
+
+    @app.post("/api/v1/drone/models/recommend")
+    def drone_model_recommendation(body: DroneNeedsBody, _: str = Depends(require_auth)) -> dict[str, Any]:
+        from .drone import catalog
+
+        return catalog.recommend(body.model_dump())
+
+    @app.get("/api/v1/drone/diagnosis")
+    def drone_diagnosis(drone_id: str | None = None, _: str = Depends(require_auth)) -> dict[str, Any]:
+        from .drone.troubleshoot import diagnose
+
+        manager = service.drone_manager(drone_id)
+        if manager is None:
+            raise HTTPException(status_code=404, detail="no operable drone with that id")
+        return diagnose(manager.status(), manager.model)
 
     @app.get("/api/v1/drone/inspections")
     def drone_inspections(incident_id: str | None = None, limit: int = 50, _: str = Depends(require_auth)) -> list[dict[str, Any]]:

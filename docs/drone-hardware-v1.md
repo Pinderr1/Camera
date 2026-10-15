@@ -5,6 +5,8 @@ Status, 2026-10-14:
 - **No hardware has been bought. No physical flight has happened. Physical flight commands stay disabled.**
 - Specifications below come from manufacturer or distributor listings, cited at the end. Figures that are estimates are marked **est.**; measure them on the bench before relying on them.
 
+**The product range is now three models (`docs/drone-models.md`):** "V1 full" below is **Sentinel Thermal**; the X650 platform with a zoom camera is **Sentinel Pro**; and the new cheapest design, **Sentinel Lite** (X500 V2 dev kit, Pixhawk 6C, A8 mini, HM30, no companion), is the engineering priority. This document remains the detailed reference for the X650 platform, wiring, bench procedure, product readiness and Canadian rules, which apply to all three.
+
 This replaces the earlier $300 feasibility study. Its conclusions still hold:
 - consumer drones are closed;
 - assembling on ArduPilot beats modifying a locked aircraft;

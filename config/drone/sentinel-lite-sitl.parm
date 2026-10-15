@@ -1,0 +1,70 @@
+# Sentinel Lite commissioning parameters (ArduCopter 4.6/4.7), SITL reference
+# for the demo site (config/sentinel.example.json: geofence ceiling 25 m,
+# inspection altitude 12 m).
+#
+# The Lite has no companion computer. Its second layer against the Hub flying
+# the aircraft is the flight controller itself: it accepts commands only from
+# the pilot's ground station (MAV_GCS_SYSID), so everything the Hub (system id
+# 245) sends is ignored. Verified in SITL (tests/test_sentinel_drone_lite_sitl.py).
+# Because the Hub's own telemetry and parameter requests are ignored as well:
+#   - telemetry stream rates are set here, on the radio port;
+#   - Sentinel reads parameters and the fence when the pilot's ground station
+#     downloads them over the shared HM30 link.
+#
+# Load with:  SITL_PARAMS=config/drone/sentinel-lite-sitl.parm bash scripts/sitl/start_sitl.sh 3
+# On a real aircraft the commissioning engineer loads the equivalent set from
+# the ground station. Sentinel only READS and audits these values.
+# Both 4.6 and 4.7 names are listed; the firmware ignores the one it does not know.
+
+# Command lockout: only the pilot's ground station (id 255) may command.
+MAV_GCS_SYSID 255
+SYSID_MYGCS 255
+MAV_OPTIONS 1
+SYSID_ENFORCE 1
+# Losing the pilot's ground-station link (the shared radio) returns home,
+# also during a mission.
+FS_GCS_ENABLE 1
+FS_GCS_TIMEOUT 5
+FS_OPTIONS 0
+# Pilot radio loss (ExpressLRS)
+FS_THR_ENABLE 1
+# Navigation failure
+FS_EKF_ACTION 1
+# Battery: low -> RTL, critical -> land. SITL's battery is 3S (12.6 V full);
+# the real Lite's 4S pack needs about 14.0 V low and 13.6 V critical.
+BATT_MONITOR 4
+BATT_FS_LOW_ACT 2
+BATT_FS_CRT_ACT 1
+BATT_LOW_VOLT 10.5
+BATT_CRT_VOLT 10.0
+# Fence: altitude + polygon (the polygon is loaded from Sentinel's exported plan)
+FENCE_ENABLE 1
+FENCE_TYPE 5
+FENCE_ACTION 1
+FENCE_ALT_MAX 25
+FENCE_MARGIN 2
+# Return home at 15 m: above the 12 m transit altitude, below the 25 m ceiling
+RTL_ALT 1500
+RTL_ALT_M 15
+# Missions: 5 m/s, arm and take off in AUTO from the ground station's "start mission"
+WPNAV_SPEED 500
+WP_SPD 5
+AUTO_OPTIONS 3
+# Telemetry streams on the radio port (TELEM1 = SERIAL1; in SITL, tcp 5762).
+# Careful with the numbering: 4.6 names the groups by serial port from 0
+# (SR1_* = SERIAL1), while 4.7 numbers MAVLink ports from 1 (MAV1_* = SERIAL0,
+# the USB port; MAV2_* = SERIAL1). Checked in SITL 4.7.2: MAV1_* rates produce
+# nothing on SERIAL1, MAV2_* rates do.
+MAV2_EXT_STAT 2
+MAV2_POSITION 4
+MAV2_EXTRA1 4
+MAV2_EXTRA2 2
+MAV2_EXTRA3 2
+SR1_EXT_STAT 2
+SR1_POSITION 4
+SR1_EXTRA1 4
+SR1_EXTRA2 2
+SR1_EXTRA3 2
+# On the real Lite also: MNT1_TYPE 8 (SIYI A8 mini gimbal on a serial port with
+# SERIALn_PROTOCOL 8). SITL has no SIYI gimbal attached, so it is left out here and
+# the audit reports it as a non-blocking finding.

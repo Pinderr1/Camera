@@ -25,6 +25,7 @@ class SimulatedDrone(DroneAdapter):
         charge_pct_per_s: float = 0.3,
         link_loss_failsafe_s: float = 5.0,
         video_url: str = "",
+        gimbal_pitch_deg: float | None = None,
     ) -> None:
         self.home = home
         self.cruise_speed = cruise_speed_mps
@@ -33,6 +34,7 @@ class SimulatedDrone(DroneAdapter):
         self.charge = charge_pct_per_s
         self.link_loss_failsafe_s = link_loss_failsafe_s
         self.video_url = video_url
+        self.gimbal_pitch_deg = gimbal_pitch_deg  # a simulated gimbal that reports its angle (drone models with one)
         self.connected = False
         self.link_ok = True
         self._link_lost_s = 0.0
@@ -78,6 +80,8 @@ class SimulatedDrone(DroneAdapter):
             link_ok=self.connected and self.link_ok,
             last_heartbeat_ms=self._last_heartbeat_ms,
             video_url=self.video_url,
+            gimbal_pitch_deg=self.gimbal_pitch_deg,
+            gimbal_yaw_deg=0.0 if self.gimbal_pitch_deg is not None else None,
             home_lat=self.home[0],
             home_lon=self.home[1],
             telemetry_ms=int(time.time() * 1000),

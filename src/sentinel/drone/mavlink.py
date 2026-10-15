@@ -164,6 +164,7 @@ class MavlinkTelemetryAdapter(DroneAdapter):
         self._param_count = 0
         self._fence: list[list[float]] | None = None
         self._fence_exclusions: list[list[list[float]]] = []
+        self._overheard_fence: dict[str, Any] = {"count": None, "items": {}}
         self._lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
@@ -324,6 +325,7 @@ class MavlinkTelemetryAdapter(DroneAdapter):
                 self._acks.put(message)
             elif kind in ("MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ACK"):
                 self._mission_rx.put(message)
+                self._overhear_fence(message)
             if now >= next_housekeeping:
                 next_housekeeping = now + 2.0
                 if not self.params_complete() and param_requested_at and now - max(param_last_rx, param_requested_at) > 2.0:
@@ -396,6 +398,28 @@ class MavlinkTelemetryAdapter(DroneAdapter):
             self._send(lambda mav: mav.mission_ack_send(system, component, 0, 1))
         except FlightCommandRejected:
             return
+        self._store_fence(items)
+
+    def _overhear_fence(self, message: Any) -> None:
+        """On a link shared with the pilot's ground station (one radio), the
+        fence items the FC sends to *that* ground station pass the Hub too. When
+        the FC ignores the Hub's own requests (MAV_OPTIONS command lockout), this
+        is how Sentinel still reads the fence it must audit. Read-only."""
+        if getattr(message, "mission_type", 0) != 1:
+            return
+        heard = self._overheard_fence
+        if message.get_type() == "MISSION_COUNT":
+            heard["count"], heard["items"] = int(message.count), {}
+            if heard["count"] == 0:
+                self._store_fence([])
+                heard["count"] = None
+        elif message.get_type() == "MISSION_ITEM_INT" and heard["count"] is not None:
+            heard["items"][int(message.seq)] = message
+            if len(heard["items"]) >= heard["count"]:
+                self._store_fence([heard["items"][seq] for seq in sorted(heard["items"])])
+                heard["count"], heard["items"] = None, {}
+
+    def _store_fence(self, items: list[Any]) -> None:
         inclusion: list[list[float]] = []
         exclusions: list[list[list[float]]] = []
         current: list[list[float]] = []

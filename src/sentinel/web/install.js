@@ -302,7 +302,7 @@ function devicesHtml() {
   const devices = inst.view.devices;
   const categories = inst.catalog.categories;
   return `<ul class="list device-list">${devices.map((device) => `<li class="device" data-device="${esc(device.id)}">
-      <div class="row-between"><div><strong>${esc(device.name)}</strong> <span class="small muted">${esc(categories[device.category] || device.category)}</span> ${supportBadge(device.support)}</div>
+      <div class="row-between"><div><strong>${esc(device.name)}</strong> <span class="small muted">${esc(categories[device.category] || device.category)}${device.model_name ? ` · ${esc(device.model_name)}` : ""}</span> ${supportBadge(device.support)}</div>
         <div class="button-row tight">
           ${device.category.endsWith("_sensor") && device.simulated ? `<button type="button" data-device-test="${esc(device.id)}">Test</button>` : ""}
           ${device.category === "camera" && device.level !== "ai_verified" && device.state !== "not_running" ? `<button type="button" data-device-troubleshoot="${esc(device.id)}">Troubleshoot</button>` : ""}
@@ -313,6 +313,15 @@ function devicesHtml() {
       <div class="small ${["ready", "monitoring", "reporting", "running", "connected"].includes(device.state) ? "status-ok" : "muted"}">${esc(device.detail || "")}${device.battery_pct != null ? ` · battery ${Math.round(device.battery_pct)}%` : ""}</div>
       ${(device.warnings || []).length ? `<div class="small status-warn">${device.warnings.map((w) => esc(String(w).replace(/_/g, " "))).join(" · ")}</div>` : ""}
     </li>`).join("")}</ul>`;
+}
+
+function droneModels() {
+  const table = inst.catalog.drone_models;
+  return table ? [...table.models, table.other] : [];
+}
+
+function droneModel(id) {
+  return droneModels().find((m) => m.id === id) || droneModels()[0];
 }
 
 function profileOptions(category, selected) {
@@ -334,11 +343,23 @@ function registrationForm(category) {
       <label class="field">Model (optional) <input type="text" name="model" maxlength="60"></label>
       <p class="small muted">No password is stored here. Find the recorder's channels next; its password is entered once for that search and kept in the credential store.</p>`;
   } else if (category === "drone") {
-    body = `${common}<label class="field">Drone <select name="profile">${profileOptions("drone", "simulated_drone")}</select></label>
-      <label class="field">MAVLink connection (MAVLink drones only) <input type="text" name="connection" placeholder="udp:127.0.0.1:14550"></label>
-      <label class="field">Home / dock position <select name="home">${docks.map((d) => `<option value="${esc(d.point.join(","))}">${esc(d.name)} (planned dock)</option>`).join("")}<option value="">Property corner (0, 0)</option></select></label>
+    const chosen = droneModel(inst.form.drone_model || "sentinel_lite");
+    const connection = inst.form.profile || "simulated_drone";
+    const connections = inst.catalog.profiles.filter((p) => p.category === "drone" && !["unsupported", "planned"].includes(p.support));
+    const labels = { simulated_drone: "Built-in simulator (try the whole system now)", ardupilot_sitl: "ArduPilot SITL simulator",
+      mavlink_drone: "Real aircraft over MAVLink (telemetry only)" };
+    body = `${common}<label class="field">Drone model <select name="drone_model">${droneModels().map((m) => `<option value="${esc(m.id)}" ${m.id === chosen.id ? "selected" : ""}>${esc(m.name)}${m.cost_label ? ` (${esc(m.cost_label.toLowerCase())})` : ""}</option>`).join("")}</select></label>
+      <p class="small drone-model-summary" id="register-model-summary">${esc(chosen.summary)}</p>
+      <div class="chips">${Object.entries(chosen.options || {}).map(([key, label]) => `<label><input type="checkbox" name="opt_${esc(key)}"> ${esc(label)}</label>`).join("")}</div>
+      <label class="field">How Sentinel connects <select name="profile">${connections.map((p) => `<option value="${esc(p.id)}" ${p.id === connection ? "selected" : ""}>${esc(labels[p.id] || p.name)}</option>`).join("")}</select></label>
+      ${connection !== "simulated_drone" ? `<label class="field">MAVLink connection <input type="text" name="connection" placeholder="${connection === "ardupilot_sitl" ? "tcp:127.0.0.1:5762" : "udpin:0.0.0.0:14551"}"></label>` : ""}
+      ${connection === "mavlink_drone" ? `<label class="field">Camera stream address <input type="text" name="video_url" maxlength="300" placeholder="${esc(chosen.camera.default_stream || "rtsp://...")}"></label>
+        <p class="small muted">Leave empty until the camera is on the network. ${chosen.camera.default_stream ? `The ${esc(chosen.camera.name)} manual's default is ${esc(chosen.camera.default_stream)}.` : ""} Stored like a camera password: never shown again.</p>` : ""}
+      <label class="field">Home / dock position <select name="home">${docks.map((d) => `<option value="${esc(d.point.join(","))}">${esc(d.name)} (planned dock)</option>`).join("")}<option value="">Middle of the property (set the real launch point later)</option></select></label>
       <label class="field checkbox"><input type="checkbox" name="indoor"> Indoor drone</label>
-      <p class="small muted">Real flight commands are disabled in this build: a MAVLink drone reports telemetry only. Every inspection needs a person's approval.</p>`;
+      <div class="button-row"><button type="button" id="register-compare">Compare drone models</button></div><div id="register-compare-box"></div>
+      <p class="small muted">Sentinel Lite, Pro and Thermal are reference designs: none has been built or flown yet. Real flight commands are disabled in this build:
+        a real aircraft reports telemetry only and the pilot flies. Every inspection needs a person's approval.</p>`;
   } else if (category === "dock") {
     body = `${common}<label class="field">Dock <select name="profile">${profileOptions("dock", "simulated_dock")}</select></label>
       <label class="field">Drone <select name="drone_id"><option value="">Primary drone</option>${drones.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select></label>`;
@@ -521,6 +542,20 @@ function bindStep() {
   if (register) {
     const kind = register.querySelector("[name=category]");
     if (kind) kind.addEventListener("change", () => { inst.form = { category: kind.value }; renderInstall(); });
+    // Model and connection change which fields apply: keep what was typed and redraw.
+    for (const name of ["drone_model", "profile"]) {
+      const select = register.querySelector(`[name=${name}]`);
+      if (select && inst.form?.category === "drone") select.addEventListener("change", () => {
+        const typed = register.querySelector("[name=name]").value;
+        inst.form = { ...inst.form, [name]: select.value, name: typed };
+        renderInstall();
+        $("#register-form [name=name]").value = typed;
+      });
+    }
+    on("#register-compare", "click", () => {
+      const box = $("#register-compare-box");
+      box.innerHTML = box.innerHTML ? "" : droneComparisonHtml(inst.catalog.drone_models, register.querySelector("[name=drone_model]").value);
+    });
     register.addEventListener("submit", submitRegistration);
   }
   on("[data-device-remove]", "click", (e) => removeDevice(e.currentTarget.dataset.deviceRemove));
@@ -565,6 +600,9 @@ async function submitRegistration(event) {
   if (category === "recorder") Object.assign(body, { host: data.host || null, channels: data.channels ? Number(data.channels) : null, model: data.model || null });
   if (category === "drone") {
     if (data.connection) body.connection = data.connection;
+    body.drone_model = data.drone_model;
+    body.drone_options = Object.fromEntries(Object.keys(droneModel(data.drone_model).options || {}).map((key) => [key, data[`opt_${key}`] === "on"]));
+    if (data.video_url) body.video_url = data.video_url;
     body.indoor = data.indoor === "on";
     if (data.home) { const [x, y] = data.home.split(",").map(Number); body.map = { x, y }; }
     if (!inst.view.site.origin_geo) return toast("Set the property location first", "A drone needs the property's location for its geofence (step 2).");

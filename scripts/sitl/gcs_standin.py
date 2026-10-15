@@ -19,6 +19,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,53 @@ class SitlGroundStation:
         self.target = (self.link.target_system, self.link.target_component or 1)
         if self.get_param("SIM_SPEEDUP") is None:
             raise NotASimulator("the vehicle has no SIM_* parameters: refusing to command what may be a real aircraft")
+        self._heartbeats = threading.Event()
+
+    # ---- what a real ground station does on connect ------------------------------
+
+    def start_heartbeats(self) -> None:
+        """Ground stations send a heartbeat every second; the flight controller's
+        GCS failsafe watches the one whose id is MAV_GCS_SYSID."""
+        def beat() -> None:
+            while not self._heartbeats.wait(1.0):
+                try:
+                    self.link.mav.heartbeat_send(6, 8, 0, 0, 4)  # MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID
+                except OSError:
+                    pass
+
+        threading.Thread(target=beat, name="gcs-heartbeat", daemon=True).start()
+
+    def download_parameters(self, timeout: float = 60.0) -> int:
+        """Full parameter download, as QGroundControl does on connect."""
+        self.link.mav.param_request_list_send(*self.target)
+        seen: set[int] = set()
+        count = 0
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            message = self.link.recv_match(type="PARAM_VALUE", blocking=True, timeout=1)
+            if message is None:
+                missing = [i for i in range(count) if i not in seen][:20]
+                for index in missing:
+                    self.link.mav.param_request_read_send(*self.target, b"", index)
+                continue
+            count = max(count, int(message.param_count))
+            seen.add(int(message.param_index))
+            if count and len(seen) >= count:
+                return count
+        raise TimeoutError(f"parameter download incomplete ({len(seen)}/{count})")
+
+    def download_fence(self) -> int:
+        """Read the fence back (mission protocol download, mission_type 1)."""
+        self.link.mav.mission_request_list_send(*self.target, FENCE)
+        message = self.link.recv_match(type="MISSION_COUNT", blocking=True, timeout=5)
+        if message is None:
+            raise TimeoutError("no fence count")
+        for seq in range(int(message.count)):
+            self.link.mav.mission_request_int_send(*self.target, seq, FENCE)
+            if self.link.recv_match(type="MISSION_ITEM_INT", blocking=True, timeout=3) is None:
+                raise TimeoutError(f"fence item {seq} not received")
+        self.link.mav.mission_ack_send(*self.target, 0, FENCE)
+        return int(message.count)
 
     # ---- parameters (simulator fault injection only) --------------------------
 
@@ -138,6 +186,7 @@ class SitlGroundStation:
         return self.mavutil.mode_string_v10(message) if message else "unknown"
 
     def close(self) -> None:
+        self._heartbeats.set()
         self.link.close()
 
 

@@ -36,7 +36,7 @@ SOURCE_FIELDS = {
 WRITE_ONLY_FIELDS = {"path", "sub_path", "url", "sub_url"}  # stream addresses: accepted, never returned
 CAMERA_FIELDS = {"name", "enabled", "fps", "zones", "privacy_masks", "map", "categories", "detector", "conditions", "recorder"}
 DEVICE_FIELDS = {"name", "profile", "simulated", "enabled", "map", "zone_id", "host", "http_port", "rtsp_port", "channels", "model",
-                 "adapter", "connection", "indoor", "drone_id"}
+                 "adapter", "connection", "indoor", "drone_id", "drone_model", "drone_options", "video_url"}
 NTFY_TOPIC_CREDENTIAL = "alerts.ntfy_topic"
 MAX_MAP_BYTES = 10 * 1024 * 1024
 
@@ -106,6 +106,8 @@ class SiteConfigManager:
         for camera in view.get("cameras", []):
             camera["source"] = public_source(camera.get("source", {}))
         view.pop("storage", None)
+        for holder in view.get("devices", []) + [view.get("drone") or {}]:
+            _hide_video_address(holder)
         for channel in view.get("alerts", {}).get("channels", []):
             # An ntfy topic works like a password on public servers: report only whether one is set.
             channel["topic_set"] = bool(channel.pop("topic", None) or channel.pop("topic_credential", None))
@@ -353,13 +355,18 @@ class SiteConfigManager:
             for key in DEVICE_FIELDS & payload.keys():
                 value = payload[key]
                 if value in (None, ""):
-                    device.pop(key, None)
+                    device.pop("video" if key == "video_url" else key, None)
                 elif key in ("name", "model"):
                     device[key] = str(value).strip()[:60]
                 elif key == "map":
                     device[key] = {axis: round(float(value[axis]), 2) for axis in ("x", "y")}
                 elif key in ("http_port", "rtsp_port", "channels"):
                     device[key] = int(value)
+                elif key == "video_url":
+                    # Write-only like camera stream addresses: stored as the drone's video source, never returned.
+                    device["video"] = (device.get("video") or {}) | {"source": {"type": "rtsp", "url": str(value).strip()}}
+                elif key == "drone_options":
+                    device[key] = {str(name): bool(flag) for name, flag in dict(value).items()}
                 else:
                     device[key] = value
             if "profile" not in device:
@@ -368,10 +375,16 @@ class SiteConfigManager:
             device.setdefault("name", profile.get("name", category)[:60])
             if category == "drone" and profile.get("adapter"):
                 device["adapter"] = profile["adapter"]
+            if category == "drone" and "map" not in device:
+                # A home on the fence edge (the map corner) fails readiness; start inside the property until
+                # the installer sets the real launch point.
+                site_map = config.get("site", {}).get("map", {})
+                home = config.get("drone", {}).get("home_map") or [float(site_map.get("width_m", 40)) / 2, float(site_map.get("height_m", 30)) / 2]
+                device["map"] = {"x": round(float(home[0]), 2), "y": round(float(home[1]), 2)}
             if existing is None:
                 devices.append(device)
             self._commit(config, actor, f"device {device['id']} {'saved' if existing else 'registered'}")
-            return copy.deepcopy(device)
+            return _hide_video_address(copy.deepcopy(device))
 
     def delete_device(self, device_id: str, actor: str) -> dict[str, Any]:
         with self._lock:
@@ -617,6 +630,15 @@ def _forget_zones(config: dict[str, Any], removed: set[str]) -> list[str]:
             if set(link.get(key, [])) & removed:
                 link[key] = [zone for zone in link[key] if zone not in removed]
     return notes
+
+
+def _hide_video_address(holder: dict[str, Any]) -> dict[str, Any]:
+    """Drone video stream addresses are write-only, like camera stream addresses."""
+    source = (holder.get("video") or {}).get("source")
+    if isinstance(source, dict):
+        for key in WRITE_ONLY_FIELDS & source.keys():
+            source[f"{key}_set"] = bool(source.pop(key))
+    return holder
 
 
 def _new_id(name: str, taken: set) -> str:

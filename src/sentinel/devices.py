@@ -179,7 +179,8 @@ PROFILES: list[dict[str, Any]] = [
     {
         "id": "sentinel_drone_outdoor", "category": "drone", "name": "Sentinel outdoor drone", "support": "planned",
         "protocols": ["MAVLink"], "codecs": ["H.264"], "power": ["Battery"], "capabilities": ["video_stream", "telemetry", "battery", "inspection"],
-        "notes": ["Future product; hardware is being evaluated separately. Register a simulated drone to set up the rest of the system now."],
+        "notes": ["Placeholder for a Sentinel drone whose model is not chosen yet. Sentinel Lite, Pro and Thermal are reference designs "
+                  "(docs/drone-models.md): register one of them with the simulator, ArduPilot SITL or a MAVLink link instead."],
     },
     {
         "id": "sentinel_drone_indoor", "category": "drone", "name": "Sentinel indoor drone", "support": "planned",
@@ -245,7 +246,10 @@ _PASSWORD_IN_URL = re.compile(r"://[^/@\s]+:[^/@\s$]+@")
 
 
 def catalog() -> dict[str, Any]:
+    from .drone.catalog import comparison, get_model, public_model
+
     return {
+        "drone_models": comparison() | {"other": public_model(get_model(None))},
         "categories": DEVICE_CATEGORIES,
         "registrable": list(REGISTRABLE),
         "capabilities": CAPABILITIES,
@@ -354,6 +358,9 @@ def validate_devices(config: dict[str, Any], camera_ids: set[str], zone_ids: set
                 errors.append(f"{path}.connection must not embed a password")
             if "indoor" in device and not isinstance(device["indoor"], bool):
                 errors.append(f"{path}.indoor must be true or false")
+            from .drone.catalog import validate_drone_model
+
+            validate_drone_model(device, path, errors)
         if category == "dock" and device.get("drone_id") and device["drone_id"] not in {d.get("id") for d in devices}:
             errors.append(f"{path}.drone_id references unknown device {device['drone_id']!r}")
     for index, camera in enumerate(config.get("cameras") or []):
@@ -504,6 +511,8 @@ def device_entry(device: dict[str, Any], live: dict[str, Any] | None, cameras_by
             "battery_pct": telemetry.get("battery_pct"), "docked": telemetry.get("docked"), "charging": telemetry.get("charging"),
             "flight_mode": telemetry.get("flight_mode"), "safety_state": live.get("safety_state"), "primary": live.get("primary", False),
             "physical": live.get("physical", False), "mode": live.get("mode", ""),
+            "drone_model": (live.get("model") or {}).get("id", device.get("drone_model", "")),
+            "model_name": (live.get("model") or {}).get("name", ""),
             "video": (live.get("video") or {}).get("detail") or "No drone video configured",
         }
         if not live.get("primary"):

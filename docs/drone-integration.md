@@ -5,7 +5,7 @@ The drone is Sentinel's **mobile camera, not its brain**:
 - A person approves.
 - The pilot in command flies with a certified flight stack (ArduPilot), whose failsafes are authoritative.
 
-Hardware choice, prototype plan, bill of materials and Canadian rules are in [`docs/drone-hardware-v1.md`](drone-hardware-v1.md).
+Hardware choice, prototype plan, bill of materials and Canadian rules are in [`docs/drone-hardware-v1.md`](drone-hardware-v1.md). The three drone models (Sentinel Lite, Pro, Thermal), the cheapest-drone research and the per-model bills of materials are in [`docs/drone-models.md`](drone-models.md).
 
 ## Current state (2026-10-14)
 
@@ -22,6 +22,8 @@ Hardware choice, prototype plan, bill of materials and Canadian rules are in [`d
 | Companion identity (`drone/pairing.py`) | Built: one-time pairing codes, per-device secret in the credential store, HMAC sessions with replay protection, revocation |
 | Drone video and observations (`drone/video.py`, `drone/observation.py`) | Built: RTSP/file/simulated-aerial sources, detection on the Hub, tracking across frames, ground position with uncertainty, fingerprinted snapshots, incident explanation section. Tested with the simulated aerial camera posed by SITL telemetry. **No real aerial footage yet** |
 | Dashboard Drone tab, API, health | Built: readiness, audit, conditions, approvals with route downloads, live drone camera, companion, flight log, maintenance. `drone_link` health component |
+| Drone models (`drone/catalog.py`) | Built: Lite, Pro, Thermal and "other ArduPilot" with capabilities, camera geometry, flight estimates, requirements, options and model parameter rules. Drive readiness, the simulator, video settings, the endurance check, the comparison screen and the AI Guide. Tested per model in the simulator; Lite in SITL with its own commissioning; Pro/Thermal profiles in SITL |
+| Troubleshooting (`drone/troubleshoot.py`) | Built: every failing check with likely causes and model-specific steps (API, Drone tab, AI Guide) |
 | Physical hardware | **None bought. No physical flight.** |
 
 ## Architecture
@@ -53,6 +55,28 @@ Each layer can be replaced without rewriting the others:
 | Hub | Requests inspections from incidents; shows readiness; audits the FC; records approvals; exports routes; follows flights from telemetry; analyses drone video; attaches observations and evidence to incidents; logs flights and maintenance; notifies on lost links in flight | Fly a real aircraft; write FC parameters; merge drone observations with fixed-camera identities; feed drone video into zone rules |
 | Companion | Relays MAVLink and video; drops Hub traffic that could change flight; reports its health; keeps relaying to the pilot when the Hub is unreachable | Run detection; act on the aircraft on its own |
 | Flight controller | Stabilises and navigates; enforces fence and failsafes; obeys the pilot's RC | Depend on the Hub to stay safe |
+
+## Drone models
+
+Every registered drone has a `drone_model` (default `generic_ardupilot`, which keeps the earlier behaviour). The model changes checks, not the workflow: every model uses the same requests, approvals, route export, telemetry-following, video analysis and evidence.
+
+| Model-specific | Lite | Pro | Thermal |
+| --- | --- | --- | --- |
+| Hub command lockout (`lockout`, blocking on physical aircraft) | Flight controller: `MAV_OPTIONS` bit 0 and `MAV_GCS_SYSID` = the pilot's ground station | Companion relay with the `telemetry` policy (or the FC lockout) | Same as Pro |
+| Companion | Not part of the model (`na`) | Required (`companion_not_paired`) | Required |
+| Camera stream | Required (`no_drone_video`) | Required | Required |
+| Darkness (`daylight`) | Refused (`camera_cannot_see_in_the_dark`) | Refused | Allowed with lights confirmed (`night_lights_not_confirmed`) |
+| Weather limits (defaults) | 6 m/s, 0 to 40 °C | 8 m/s, −5 to 40 °C | 8 m/s, −5 to 40 °C |
+| Extra FC settings audited | `BATT_MONITOR`; `MNT1_TYPE` 8 (warning) | + `GPS_AUTO_SWITCH` (warning), `PRX1_TYPE` 8 when the lidar option is fitted | + `PRX1_TYPE` 8 (blocking) |
+| Endurance at approval | Route time vs 15 min est. above the reserve | 24 min est. | 22 min est. |
+
+The lockout check runs for every ArduPilot adapter; on a verified simulator a missing lockout is a warning, because Sentinel may command a simulator.
+
+**Lite without a companion.** With the lockout on, the flight controller also ignores the Hub's stream and parameter requests:
+- commissioning sets the stream rates on the radio port (ArduCopter 4.7 numbers MAVLink ports from 1, so TELEM1/SERIAL1 is `MAV2_*`; 4.6 calls it `SR1_*`);
+- Sentinel reads parameters and the fence when the pilot's ground station downloads them over the shared HM30 link (`MavlinkTelemetryAdapter` keeps every `PARAM_VALUE` it hears and overhears fence downloads).
+
+Until the pilot's ground station has connected once, the audit reports "not received yet" and approval stays blocked.
 
 ## Operating modes
 
@@ -137,8 +161,9 @@ Safety monitor (every 0.5 s):
 | `safety` | Existing keys, plus `safe_transit_altitude_m`, `approval_window_s`, `arrival_radius_m`, `max_hdop`, `min_satellites`, `inspect_every_flights` |
 | `weather` | `require_attestation` (default: all but the built-in simulator), `max_wind_mps` 8, `min_temperature_c` −5, `max_temperature_c` 40, `conditions_ttl_s` 3600 |
 | `video` | `source` (`rtsp`/`http`/`file`/`simulated_aerial` with `objects`), `camera` (`hfov_deg`, `vfov_deg`, `default_pitch_deg`), `fps`, `detector` |
+| `drone_model` | Legacy single-drone sections only; registered drones carry it per device |
 
-Registered drone devices (`devices[]`) accept the same `adapter`, `connection`, `allow_flight_commands` (**rejected unless `adapter` is `sitl`**) and `video`. The `ardupilot_sitl` profile registers a SITL vehicle.
+Registered drone devices (`devices[]`) accept the same `adapter`, `connection`, `allow_flight_commands` (**rejected unless `adapter` is `sitl`**) and `video`, plus `drone_model` and `drone_options`. Without `video`, a simulated drone gets the simulated aerial camera with its model's field of view (and the site's scripted objects); a physical one gets no video until a stream address is set. Sentinel never guesses a real camera's address. Stream addresses are write-only (`video_url`). The `ardupilot_sitl` profile registers a SITL vehicle.
 
 ## Registration (installation)
 
@@ -176,13 +201,20 @@ python scripts/drone_sitl_demo.py --out bench_runs/drone_demo              # end
 6. The drone video worker analysed 125 frames (all with a pose). It found a person in 23 of them, estimated 1.4 m from the inspection point (±3.3 m; scripted truth about 1.1–1.7 m), and saved a fingerprinted snapshot.
 7. The incident explanation showed the drone section and evidence. The relay forwarded 55 Hub frames and dropped none.
 
+**Sentinel Lite in SITL** (`SITL_PARAMS=config/drone/sentinel-lite-sitl.parm bash scripts/sitl/start_sitl.sh 3`, then `$env:SENTINEL_SITL='lite'; python -m unittest tests.test_sentinel_drone_lite_sitl`, 4 tests, about 70 s). Sentinel's relay in pass-through mode stands in for the single HM30 radio shared by the Hub and the pilot:
+1. the FC lockout ignores the Hub's arm and take-off; telemetry flows from the commissioned `MAV2_*` rates; the audit passes from the overheard parameters and fence;
+2. a pilot-flown proposed inspection with the simulated A8 mini camera produced an observation within 6 m of the target and fingerprinted evidence;
+3. losing the radio made the FC return home on its GCS failsafe, with no command from Sentinel;
+4. a low battery triggered the FC failsafe, and Sentinel told the operator why the aircraft was returning.
+
 SITL integration tests (`tests/test_sentinel_drone_sitl.py`, all passing):
 - telemetry, parameters and audit;
 - **the relay drops Hub flight commands** (a take-off from an adapter that believed it could command was refused, and the vehicle stayed disarmed);
 - a pilot-flown proposed inspection;
 - a Sentinel-commanded inspection in SITL;
 - **link loss → the FC's own GCS failsafe returned home**;
-- low battery → return home.
+- low battery → return home;
+- the Pro and Thermal profiles on the same core: Thermal blocked because the FC has no lidar configured (`PRX1_TYPE`), Pro ready through its companion relay and flying the same proposed inspection.
 
 ### What is still simulated
 

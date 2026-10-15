@@ -14,6 +14,14 @@ Start SITL first (bash scripts/sitl/start_sitl.sh 3), then:
 
     python scripts/drone_sitl_demo.py --out bench_runs/drone_demo
 
+Drone models: `--model sentinel_pro` uses the same companion path with the
+Pro's checks. `--model sentinel_lite` needs SITL started with the Lite
+commissioning (SITL_PARAMS=config/drone/sentinel-lite-sitl.parm): no
+companion, the flight controller's own command lockout, and one shared radio
+(emulated by Sentinel's relay in pass-through mode) carrying the Hub's and the
+pilot's MAVLink; Sentinel audits the parameters and fence the pilot's ground
+station downloads.
+
 What is simulated: the aircraft (SITL physics, real firmware), both cameras,
 and the pilot (scripts/sitl/gcs_standin.py)."""
 
@@ -33,9 +41,11 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts" / "sitl"))
 
 HUB_UDP = 14551
+PILOT_UDP = 14561
+MODELS = ("generic_ardupilot", "sentinel_lite", "sentinel_pro")
 
 
-def demo_config(storage: Path) -> dict[str, Any]:
+def demo_config(storage: Path, model: str = "generic_ardupilot") -> dict[str, Any]:
     config = json.loads((ROOT / "config" / "sentinel.example.json").read_text())
     config = copy.deepcopy(config)
     config["_config_dir"] = str(ROOT / "config")
@@ -59,6 +69,9 @@ def demo_config(storage: Path) -> dict[str, Any]:
             "camera": {"hfov_deg": 80, "vfov_deg": 50, "default_pitch_deg": -90}, "fps": 5,
         },
     })
+    if model != "generic_ardupilot":
+        drone["drone_model"] = model
+        drone["video"].pop("camera")  # the model's camera geometry applies
     return config
 
 
@@ -73,7 +86,8 @@ def wait(predicate: Callable[[], Any], timeout: float, what: str, log: Callable[
     raise TimeoutError(what)
 
 
-def run_demo(out: Path, *, hub_sitl: str = "tcp:127.0.0.1:5762", gcs_sitl: str = "tcp:127.0.0.1:5763", log: Callable[[str], None] = print) -> dict[str, Any]:
+def run_demo(out: Path, *, hub_sitl: str = "tcp:127.0.0.1:5762", gcs_sitl: str = "tcp:127.0.0.1:5763", model: str = "generic_ardupilot",
+             log: Callable[[str], None] = print) -> dict[str, Any]:
     from fastapi.testclient import TestClient
     from gcs_standin import SitlGroundStation
 
@@ -85,7 +99,8 @@ def run_demo(out: Path, *, hub_sitl: str = "tcp:127.0.0.1:5762", gcs_sitl: str =
 
     out.mkdir(parents=True, exist_ok=True)
     storage = Path(tempfile.mkdtemp(prefix="sentinel-drone-demo-"))
-    config = demo_config(storage)
+    config = demo_config(storage, model)
+    lite = model == "sentinel_lite"
     validate_config({k: v for k, v in config.items() if not k.startswith("_")})
     timeline: list[dict[str, Any]] = []
 
@@ -93,19 +108,31 @@ def run_demo(out: Path, *, hub_sitl: str = "tcp:127.0.0.1:5762", gcs_sitl: str =
         timeline.append({"t_ms": int(time.time() * 1000), "step": step} | details)
         log(f"[{len(timeline):2d}] {step}" + (f" {details}" if details else ""))
 
-    relay = MavlinkRelay(hub_sitl, f"udp:127.0.0.1:{HUB_UDP}", policy="telemetry").start()
-    mark("companion relay started", fc=hub_sitl, policy="telemetry")
+    if lite:
+        # Sentinel Lite: no companion. One HM30 radio carries the Hub's and the pilot's MAVLink.
+        relay = MavlinkRelay(hub_sitl, f"udp:127.0.0.1:{HUB_UDP}", [f"udp:127.0.0.1:{PILOT_UDP}"], policy="sitl").start()
+        mark("radio link (HM30 stand-in) started", fc=hub_sitl)
+    else:
+        relay = MavlinkRelay(hub_sitl, f"udp:127.0.0.1:{HUB_UDP}", policy="telemetry").start()
+        mark("companion relay started", fc=hub_sitl, policy="telemetry")
     service = SentinelService(config, start_cameras=True)
     service.runtime.update_settings({"arm_mode": "away"}, "demo")
     service.start()
     api = TestClient(create_app(service, api_token=None))
-    gcs = SitlGroundStation(gcs_sitl)
+    gcs = SitlGroundStation(f"udpin:127.0.0.1:{PILOT_UDP}" if lite else gcs_sitl)
     agent = None
     try:
         drone = service.drone
-        mark("service started", drone_mode=drone.mode()[0], adapter=drone.adapter.kind)
+        mark("service started", drone_mode=drone.mode()[0], adapter=drone.adapter.kind, model=drone.model["name"])
+        if lite:
+            if gcs.get_param("MAV_OPTIONS") != 1:
+                raise SystemExit("start SITL with SITL_PARAMS=config/drone/sentinel-lite-sitl.parm for --model sentinel_lite")
+            gcs.start_heartbeats()
+            run_lite = True
+        else:
+            run_lite = False
 
-        code = api.post("/api/v1/drone/companions/code", json={}).json()
+        code = api.post("/api/v1/drone/companions/code", json={}).json() if not run_lite else None
         identity_path = storage / "companion-identity.json"
         hub_url = str(api.base_url)
 
@@ -120,16 +147,21 @@ def run_demo(out: Path, *, hub_sitl: str = "tcp:127.0.0.1:5762", gcs_sitl: str =
 
         import sentinel.companion.agent as agent_module
 
-        original_post = agent_module._post
-        agent_module._post = post
-        try:
-            paired = pair(hub_url, code["code"], "SITL companion", identity_path)
-        finally:
-            agent_module._post = original_post
-        identity = json.loads(identity_path.read_text())
-        agent = CompanionAgent(identity, relay_status=relay.status, post=post, interval_s=1.0).start()
-        wait(lambda: (drone.companion_status() or {}).get("state") == "reporting", 20, "companion paired and reporting", log)
-        mark("companion paired", companion_id=paired["companion_id"])
+        if not run_lite:
+            original_post = agent_module._post
+            agent_module._post = post
+            try:
+                paired = pair(hub_url, code["code"], "SITL companion", identity_path)
+            finally:
+                agent_module._post = original_post
+            identity = json.loads(identity_path.read_text())
+            agent = CompanionAgent(identity, relay_status=relay.status, post=post, interval_s=1.0).start()
+            wait(lambda: (drone.companion_status() or {}).get("state") == "reporting", 20, "companion paired and reporting", log)
+            mark("companion paired", companion_id=paired["companion_id"])
+        else:
+            wait(lambda: drone.adapter.telemetry().link_ok, 30, "Hub hears the aircraft over the radio", log)
+            count = gcs.download_parameters()
+            mark("pilot's ground station connected and downloaded the parameters; Sentinel overheard them", parameters=count)
 
         wait(lambda: drone.adapter.params_complete() and drone.adapter.telemetry().gps_fix >= 3, 90, "telemetry and parameters", log)
         incident = wait(lambda: next((i for i in api.get("/api/v1/incidents").json() if i["severity"] == "high"), None), 90, "incident from the fixed camera", log)
@@ -142,14 +174,19 @@ def run_demo(out: Path, *, hub_sitl: str = "tcp:127.0.0.1:5762", gcs_sitl: str =
         preview = api.get(f"/api/v1/drone/inspections/{request_id}/mission").json()
         fence_vertices = gcs.load_fence(preview)
         drone.adapter.refresh()
+        if run_lite:
+            gcs.download_fence()  # the ground station reads it back; Sentinel overhears it
         mark("commissioning engineer loaded the fence from Sentinel's export", vertices=fence_vertices)
         gcs.swap_battery()
-        api.post("/api/v1/drone/conditions", json={"precipitation": False, "visibility_ok": True, "wind_mps": 3, "temperature_c": 14})
+        api.post("/api/v1/drone/conditions", json={"precipitation": False, "visibility_ok": True, "wind_mps": 3, "temperature_c": 14, "daylight": True})
         wait(lambda: drone.parameter_audit()["ok"], 60, "parameter audit passes", log)
         commissioning = api.post("/api/v1/drone/maintenance", json={"kind": "commissioning", "note": "SITL demo commissioning"}).json()
         mark("commissioning recorded", fingerprint=commissioning.get("fingerprint"), firmware=commissioning.get("firmware"))
         readiness = wait(lambda: (lambda r: r if r["ready"] else None)(api.get("/api/v1/drone/readiness").json()), 60, "ready for approval", log)
         mark("readiness", checks={c["id"]: c["state"] for c in readiness["checks"]})
+        lockout = next((c for c in readiness["checks"] if c["id"] == "lockout"), None)
+        if lockout:
+            mark("Hub command lockout", state=lockout["state"], detail=lockout["detail"])
 
         approved = api.post(f"/api/v1/drone/inspections/{request_id}/approve", headers={"x-sentinel-operator": "demo-operator"})
         approved.raise_for_status()
@@ -184,6 +221,8 @@ def run_demo(out: Path, *, hub_sitl: str = "tcp:127.0.0.1:5762", gcs_sitl: str =
             "evidence": [item | {"sha256": hashes.get(item["path"], {}).get("sha256"), "exists": (service.runtime.media_root / item["path"]).exists()}
                          for item in evidence],
             "flight": flights[0] if flights else None,
+            "model": drone.status()["model"],
+            "lockout": lockout,
             "relay": relay.status(),
             "companion": drone.companion_status(),
             "audit": [action for action in audit_actions if action.startswith("drone_")],
@@ -210,15 +249,18 @@ def render(report: dict[str, Any]) -> str:
     observations = report["observations"]
     flight = report["flight"] or {}
     lines = [
-        "# Drone inspection demo (ArduPilot SITL)", "",
-        "Simulated: the aircraft (ArduCopter firmware in SITL), the fixed camera, the drone camera, and the pilot.", "",
+        f"# Drone inspection demo (ArduPilot SITL): {report['model']['name']}", "",
+        "Simulated: the aircraft (ArduCopter firmware in SITL), the fixed camera, the drone camera, the pilot and the radio link.", "",
+        f"- Hub command lockout: {(report.get('lockout') or {}).get('detail', 'not checked')}",
         f"- Incident: {report['incident']['title']} ({report['incident']['severity']}), `{report['incident']['incident_id']}`",
         f"- Inspection: `{report['inspection']['request_id']}`, mode {report['inspection']['mode']}, status **{report['inspection']['status']}**, "
         f"approved by {report['inspection']['decided_by']}",
         f"- Flight: {flight.get('duration_s')} s, max altitude {flight.get('max_alt_m')} m, {flight.get('distance_m')} m flown, "
         f"battery {flight.get('battery_start_pct')}% to {flight.get('battery_end_pct')}%",
         f"- Drone video: {observations.get('frames')} frames analysed, {observations.get('frames_with_pose')} with a camera position",
-        f"- Relay: {report['relay']['hub_frames_forwarded']} Hub frames forwarded, {report['relay']['hub_frames_dropped']} dropped",
+        (f"- Radio (pass-through): {report['relay']['hub_frames_forwarded']} Hub frames reached the flight controller, which ignores them (command lockout)"
+         if report['relay']['policy'] == 'sitl' else
+         f"- Relay: {report['relay']['hub_frames_forwarded']} Hub frames forwarded, {report['relay']['hub_frames_dropped']} dropped"),
         f"- Evidence: {len(report['evidence'])} drone snapshot(s), fingerprinted: {all(e['sha256'] for e in report['evidence'])}", "",
         "## What the drone observed", "",
     ] + [f"> {line}" for line in observations.get("text", [])] + ["", "## Timeline", ""]
@@ -231,8 +273,9 @@ def main() -> int:
     parser.add_argument("--out", default="bench_runs/drone_demo")
     parser.add_argument("--hub-sitl", default="tcp:127.0.0.1:5762")
     parser.add_argument("--gcs-sitl", default="tcp:127.0.0.1:5763")
+    parser.add_argument("--model", choices=MODELS, default="generic_ardupilot", help="drone model whose checks and camera apply")
     args = parser.parse_args()
-    report = run_demo(Path(args.out), hub_sitl=args.hub_sitl, gcs_sitl=args.gcs_sitl)
+    report = run_demo(Path(args.out), hub_sitl=args.hub_sitl, gcs_sitl=args.gcs_sitl, model=args.model)
     print(render(report))
     return 0 if report["inspection"]["status"] == "completed" and report["evidence"] else 1
 

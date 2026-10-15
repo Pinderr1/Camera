@@ -650,3 +650,64 @@ class DeepSeekSettingsTests(AssistantTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DroneModelGuideTests(AssistantTestBase):
+    """The guide helps choose, register and troubleshoot a Sentinel drone model."""
+
+    CONFIG = "config/sentinel.drone-first.example.json"
+
+    def prepare(self, config):
+        config["devices"] = [d for d in config["devices"] if d["category"] not in ("drone", "dock")]
+        config["drone"] = {"enabled": False}
+
+    def test_recommend_register_and_troubleshoot(self):
+        compare = self.say("Which drone should I get to check the yard at night?")["text"]
+        self.assertIn("Sentinel Thermal", compare)
+        self.assertIn("Sentinel Lite", compare)
+        self.assertIn("not been built", compare.replace("nothing has flown", "not been built"))
+        self.assertNotIn("$", compare)
+
+        reply = self.say("I want to add a drone, as cheap as possible")
+        self.assertIn("Sentinel Lite", reply["text"])
+        proposal = self.card(reply, "proposal")
+        self.assertTrue(any("Reference design" in effect for effect in proposal["effects"]))
+        result = self.decide(proposal["action_id"]).json()
+        self.assertEqual(result["status"], "applied", result)
+        device = next(d for d in self.service.site.config["devices"] if d["category"] == "drone")
+        self.assertEqual((device["drone_model"], device["profile"]), ("sentinel_lite", "simulated_drone"))
+        self.assertEqual(self.service.drone.model["id"], "sentinel_lite")
+
+        status = self.say("How is my drone?")["text"]
+        self.assertIn("Sentinel Lite", status)
+        self.assertIn("operator's approval", status)
+        self.assertNotIn("ready to fly", status.lower())
+
+        # The built-in simulator is ready; mark the conditions as dark to see a model-specific fix.
+        self.service.drone.set_conditions("operator", precipitation=False, visibility_ok=True, daylight=False)
+        trouble = self.say("Why is my drone not ready?")["text"]
+        self.assertIn("block approval", trouble)
+        self.assertIn("Sentinel Thermal", trouble)
+        self.service.drone.set_conditions("operator", precipitation=False, visibility_ok=True, daylight=True)
+        again = self.say("I changed it, check again")["text"]
+        self.assertIn("All readiness checks pass", again)
+
+    def test_tools_for_models_and_registration(self):
+        from sentinel.assistant.privacy import Aliases
+        from sentinel.assistant.tools import Turn
+
+        conversation = {"pending": {}, "guide": {}}
+        turn = Turn(conversation, "operator", Aliases())
+        models, error = self.assistant.toolbox.call("get_drone_models", {"windy": True}, turn)
+        self.assertFalse(error)
+        self.assertEqual(models["recommendation"]["model"], "sentinel_pro")
+        self.assertEqual([m["id"] for m in models["models"]], ["sentinel_lite", "sentinel_pro", "sentinel_thermal"])
+        _, error = self.assistant.toolbox.call("propose_register_device", {"category": "drone", "name": "Real Lite", "drone_model": "sentinel_lite",
+                                                                            "connect": "aircraft"}, turn)
+        self.assertTrue(error, "a real aircraft needs its MAVLink address")
+        result, error = self.assistant.toolbox.call("propose_register_device", {"category": "drone", "name": "Lite", "drone_model": "sentinel_lite",
+                                                                                 "connect": "simulator", "obstacle_sensor": True}, turn)
+        self.assertTrue(error)
+        self.assertIn("no optional obstacle sensor", result["error"])
+        _, error = self.assistant.toolbox.call("diagnose_drone", {}, turn)
+        self.assertTrue(error, "no drone registered yet")

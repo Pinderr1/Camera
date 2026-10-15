@@ -54,7 +54,7 @@ Cameras stay in `cameras[]` (the pipeline depends on them). Other hardware is re
 | Category | Registration fields | What Sentinel does with it today |
 | --- | --- | --- |
 | `recorder` | profile, `host`, `channels`, `model` | Groups its channels: cameras linked with `recorder`, or streaming from the recorder's address. Channels are found with the troubleshooter's channel search. No password is stored on the recorder entry |
-| `drone` | profile, `adapter` (`simulated`/`mavlink`), `connection`, `indoor`, `map` (home position) | Simulated drones get the simulator; MAVLink drones get the telemetry-only adapter. **Planned drones get no adapter and never appear connected** |
+| `drone` | `drone_model` (`sentinel_lite`, `sentinel_pro`, `sentinel_thermal`, `generic_ardupilot`), `drone_options` (the model's options, e.g. `obstacle_sensor`), profile (how Sentinel connects: `simulated_drone`, `ardupilot_sitl`, `mavlink_drone`), `adapter`, `connection`, write-only `video_url`, `indoor`, `map` (home position; defaults to the drone setup's home or the middle of the property) | Simulated drones get the simulator with the model's speed, endurance and camera; MAVLink drones get the telemetry-only adapter. Readiness follows the model (`docs/drone-models.md`). **Planned drones get no adapter and never appear connected** |
 | `dock` | profile, `drone_id` | A simulated dock reports the simulated drone's docked/charging state |
 | `contact_sensor`, `motion_sensor`, `environmental_sensor` | profile, `zone_id` | Simulated sensors report check-ins and battery; their Test button records an `info` event (`sensor_test`). **Sensors never open incidents in this build.** Real sensors (MQTT/Home Assistant) are planned |
 
@@ -123,6 +123,7 @@ Step 8 edits the ntfy and MQTT channels. A typed ntfy topic goes to the credenti
 
 - A site may have zero cameras. The header then shows "No cameras", the Live tab says there is no continuous video monitoring, and health coverage is `no_cameras` (not an alarm).
 - Registering the first drone turns drone features on with a geofence covering the property rectangle (5–25 m altitude, editable), using the property location from step 2. Planned observation points become inspection locations (`drone.inspection_points`); the Drone tab lists them with **Request inspection**. Every request still needs an operator's approval, and the preflight checks and safety monitor are unchanged.
+- The drone form chooses a **model** (Sentinel Lite, Pro, Thermal, or another ArduPilot multicopter) and how Sentinel connects. **Compare drone models** shows what each can do, what is shared, and their limits. All three Sentinel models are reference designs: none has been built or flown.
 - Several drones can be registered. The primary (`drone.device`, or the first operable one) takes inspection requests and drives the Drone tab; the others report telemetry and readiness.
 - Drone settings changed during a flight are applied only after every drone has landed.
 - Real flight commands stay disabled; see [drone-integration.md](./drone-integration.md). This work covers installation and registration only.

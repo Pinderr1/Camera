@@ -21,7 +21,9 @@ build replaces the relay with mavlink-router plus MAVLink 2 signing (see
 docs/drone-integration.md); the policy stays the same.
 
 `set_hub_link(False)` drops all Hub traffic in both directions, which is how
-tests and demos simulate losing the radio link to the Hub."""
+tests and demos simulate losing the radio link to the Hub. `set_gcs_link(False)`
+does the same for the pilot's ground stations; with both down, the relay
+stands in for a single radio (Sentinel Lite's HM30) that has lost its link."""
 
 from __future__ import annotations
 
@@ -170,6 +172,7 @@ class MavlinkRelay:
         self.policy = policy
         self.stats = RelayStats()
         self.hub_link_up = True
+        self.gcs_link_up = True
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._fc_sock: socket.socket | None = None
@@ -185,6 +188,9 @@ class MavlinkRelay:
 
     def set_hub_link(self, up: bool) -> None:
         self.hub_link_up = up
+
+    def set_gcs_link(self, up: bool) -> None:
+        self.gcs_link_up = up
 
     def start(self) -> "MavlinkRelay":
         self._thread = threading.Thread(target=self._run, name="companion-relay", daemon=True)
@@ -208,7 +214,7 @@ class MavlinkRelay:
         return {"policy": self.policy, "fc_connected": stats.fc_connected, "fc_reconnects": stats.fc_reconnects,
                 "fc_frames": stats.fc_frames, "hub_frames_in": stats.hub_frames_in, "hub_frames_forwarded": stats.hub_frames_forwarded,
                 "hub_frames_dropped": stats.hub_frames_dropped, "dropped_by_reason": dict(list(stats.dropped_by_reason.items())[:10]),
-                "gcs_frames": stats.gcs_frames, "hub_link_up": self.hub_link_up,
+                "gcs_frames": stats.gcs_frames, "hub_link_up": self.hub_link_up, "gcs_link_up": self.gcs_link_up,
                 "last_fc_age_s": round((now - stats.last_fc_ms) / 1000, 1) if stats.last_fc_ms else None,
                 "last_hub_age_s": round((now - stats.last_hub_ms) / 1000, 1) if stats.last_hub_ms else None}
 
@@ -296,8 +302,9 @@ class MavlinkRelay:
         self.stats.last_fc_ms = int(time.time() * 1000)
         if self.hub_link_up:
             self._hub_sock.sendto(data, self.hub_address)
-        for gcs_sock, address in self._gcs_socks:
-            gcs_sock.sendto(data, address)
+        if self.gcs_link_up:
+            for gcs_sock, address in self._gcs_socks:
+                gcs_sock.sendto(data, address)
 
     def _from_hub(self, sock: socket.socket) -> None:
         data, _ = sock.recvfrom(65536)
@@ -318,6 +325,8 @@ class MavlinkRelay:
 
     def _from_gcs(self, sock: socket.socket) -> None:
         data, _ = sock.recvfrom(65536)
+        if not self.gcs_link_up:
+            return
         self.stats.gcs_frames += 1
         self._write_fc(data)  # the pilot's ground station is in command
 

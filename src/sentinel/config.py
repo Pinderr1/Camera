@@ -359,6 +359,9 @@ def _validate_drone_operations(drone: dict[str, Any], fence: dict[str, Any], err
         errors.append("drone.allow_flight_commands is only possible for an ArduPilot SITL simulator (physical aircraft are telemetry only)")
     if "video" in drone:
         validate_drone_video(drone["video"], "drone.video", errors)
+    from .drone.catalog import validate_drone_model
+
+    validate_drone_model(drone, "drone", errors)
 
 
 _HEALTH_NUMBERS = ("frame_timeout_s", "frozen_after_s", "startup_grace_s", "notify_after_s", "slow_after_s", "camera_offline_after_s", "inference_timeout_s")

@@ -236,8 +236,14 @@ class SentinelService:
 
         manager.companion_status = companion
         manager.on_inspection_finished = lambda request: self.runtime.bus.publish("drone_inspection", request)
+        from .drone import catalog
+
         device = next((d for d in config.get("devices", []) if d.get("id") == drone_id), None)
-        settings = (device or {}).get("video") or (config.get("drone", {}).get("video") if drone_id == self.primary_drone else None)
+        site_video = config.get("drone", {}).get("video")
+        aircraft = dict(device) if device else dict(config.get("drone", {}))
+        if not aircraft.get("video") and drone_id == self.primary_drone and site_video:
+            aircraft["video"] = site_video  # legacy: the drone section's video belongs to the primary drone
+        settings = catalog.video_settings(manager.model, aircraft, simulated=not manager.adapter.is_physical, site_video=site_video)
         if not settings:
             return
         from .drone.video import DroneVideoWorker
