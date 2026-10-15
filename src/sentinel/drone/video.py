@@ -31,6 +31,57 @@ from .observation import CameraModel, InspectionObserver, ground_to_image, pose_
 log = logging.getLogger("sentinel.drone.video")
 SIM_WIDTH, SIM_HEIGHT = 640, 360
 OBJECT_SIZES = {"person": (0.6, 0.5, 1.7), "vehicle": (1.9, 4.5, 1.5), "animal": (0.4, 0.9, 0.6)}  # width, length, height (m)
+FROZEN_AFTER_S = 1.5  # a picture that does not change at all for this long is frozen (or cannot be shown to be live)
+NO_VIDEO_AFTER_S = 3.0
+STREAM_CHECK_EVERY_S = 60.0
+STREAM_CHECK_VALID_S = 300.0
+
+
+class VideoQualityMonitor:
+    """Is each drone frame worth analysing? A camera on an aircraft always shows
+    change: movement, wind and at least sensor noise. A picture that stays
+    exactly the same (or changes only in a small overlay, such as a clock) is a
+    frozen encoder, a stalled stream or a replayed frame, and is never counted
+    as observing the scene. A blank frame (lens cap, corrupted decode, a camera
+    sending a test colour) is not analysed either. Darkness and a low frame
+    rate are recorded as quality notes; those frames are still analysed."""
+
+    def __init__(self, expected_fps: float = 5.0) -> None:
+        from ..vision import ContentMonitor
+
+        self.content = ContentMonitor()
+        self.expected_fps = expected_fps
+        self.recent_ms: list[int] = []
+
+    def check(self, image: Any, timestamp_ms: int) -> tuple[bool, str, list[str], bool]:
+        """(usable, rejection reason, quality notes, proven live). A frame is
+        proven live when it differs from the previous one by noise or change;
+        an identical frame is still analysed during the short grace period
+        before it is called frozen, but never counts as live coverage."""
+        import numpy as np
+
+        if image is None or getattr(image, "size", 0) == 0 or image.ndim < 2:
+            return False, "blank", [], False
+        sample = image[:: max(1, image.shape[0] // 90), :: max(1, image.shape[1] // 160)]
+        if float(np.std(sample)) < 2.0:
+            return False, "blank", [], False
+        state = self.content.update(image, timestamp_ms)
+        static_since = state["static_since_ms"]
+        if static_since and timestamp_ms - static_since >= FROZEN_AFTER_S * 1000:
+            return False, "frozen", [], False
+        live = state["kind"] in ("noise", "changed")
+        notes = []
+        mean = float(np.mean(sample))
+        if mean < 25:
+            notes.append("very dark")
+        elif mean > 235:
+            notes.append("overexposed")
+        self.recent_ms = [ms for ms in self.recent_ms if timestamp_ms - ms <= 5000] + [timestamp_ms]
+        if len(self.recent_ms) >= 3 and timestamp_ms - self.recent_ms[0] >= 3000:
+            fps = (len(self.recent_ms) - 1) / ((timestamp_ms - self.recent_ms[0]) / 1000)
+            if fps < 0.5 * self.expected_fps:
+                notes.append("low frame rate")
+        return True, "", notes, live
 
 
 class SimulatedAerialSource:
@@ -53,6 +104,9 @@ class SimulatedAerialSource:
         self.connected = True
         self.last_error = ""
         self._last = 0.0
+        import numpy as np
+
+        self._rng = np.random.default_rng(7)
 
     def _position(self, path: list[dict[str, Any]], t: float) -> tuple[float, float]:
         if len(path) == 1:
@@ -91,6 +145,9 @@ class SimulatedAerialSource:
                 cv2.rectangle(image, (int(u0 * SIM_WIDTH), int(v0 * SIM_HEIGHT)), (int(u1 * SIM_WIDTH), int(v1 * SIM_HEIGHT)), color, -1)
         label = "SIM DRONE CAMERA" + (f"  alt {telemetry.alt_m:.0f} m" if pose else "  no position")
         cv2.putText(image, label, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (235, 235, 235), 1)
+        # Sensor noise, as a real camera has: a live picture is never pixel-identical twice.
+        noise = self._rng.integers(-2, 3, size=image.shape, dtype=np.int16)
+        image = np.clip(image.astype(np.int16) + noise, 0, 255).astype(np.uint8)
         return Frame(image=image, timestamp_ms=now_ms, truth=truth, meta={"pose_ms": telemetry.telemetry_ms})
 
     def _project_box(self, pose: Any, label: str, x: float, y: float) -> tuple[float, float, float, float] | None:
@@ -147,11 +204,14 @@ class DroneVideoWorker(threading.Thread):
         self.source_factory = source_factory or (lambda: video_source_for(
             settings, origin=manager.site_origin, camera=self.camera, telemetry=manager.adapter.telemetry, config=config, secrets=secrets))
         self.fps = float(settings.get("fps", 5))
-        self.state = "idle"
-        self.detail = "waiting for an approved inspection"
+        self.state = "unverified"
+        self.detail = "the camera stream has not been checked yet"
         self.frames = 0
         self.last_frame_ms = 0
         self.latest_jpeg: bytes | None = None
+        self.stream_check: dict[str, Any] | None = None  # newest pre-flight check: {ok, ms, detail}
+        self.check_every_s = float(settings.get("check_every_s", STREAM_CHECK_EVERY_S))
+        self._observers: dict[str, tuple[InspectionObserver, list[str]]] = {}  # survive a retry of the same inspection
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -159,7 +219,66 @@ class DroneVideoWorker(threading.Thread):
 
     def status(self) -> dict[str, Any]:
         return {"configured": True, "state": self.state, "detail": self.detail, "frames": self.frames, "last_frame_ms": self.last_frame_ms,
-                "source": self.settings.get("source", {}).get("type", "")}
+                "source": self.settings.get("source", {}).get("type", ""), "stream_check": dict(self.stream_check) if self.stream_check else None}
+
+    # ---- pre-flight stream check -------------------------------------------------
+
+    def check_stream(self, timeout_s: float = 8.0) -> dict[str, Any]:
+        """Does the camera deliver a live picture right now? Opens the stream,
+        waits for frames, judges them, closes it. Nothing is analysed for
+        objects, recorded or shown: the frames are discarded."""
+        started = time.monotonic()
+        source = None
+        try:
+            source = self.source_factory()
+            quality = VideoQualityMonitor(self.fps)
+            usable = rejected = 0
+            reason = "no frame from the camera"
+            first = True
+            while time.monotonic() - started < timeout_s and usable < 3:
+                frame = source.read()
+                if frame is None:
+                    time.sleep(0.1)
+                    continue
+                ok, why, _, live = quality.check(frame.image, frame.timestamp_ms)
+                if ok and live and not first:  # the first frame has nothing to differ from
+                    usable += 1
+                elif ok:
+                    reason = "the picture has not changed yet (not proven live)"
+                else:
+                    rejected += 1
+                    reason = {"frozen": "the picture is frozen", "blank": "the picture is blank or corrupted"}.get(why, why)
+                first = False
+            ok = usable >= 3
+            detail = (f"live picture verified ({usable} frames in {time.monotonic() - started:.1f} s)" if ok else
+                      f"{reason} within {timeout_s:g} s" + (f" ({rejected} unusable frames)" if rejected else ""))
+        except Exception as error:  # an unreachable camera is a finding, never a crash
+            ok, detail = False, f"cannot open the stream: {type(error).__name__}: {error}"[:200]
+        finally:
+            if source is not None:
+                try:
+                    source.close()
+                except Exception:
+                    pass
+        self.stream_check = {"ok": ok, "ms": int(time.time() * 1000), "detail": detail}
+        return dict(self.stream_check)
+
+    def _idle(self) -> None:
+        """Between inspections: re-check the stream while the aircraft is powered (telemetry flowing)."""
+        check = self.stream_check
+        now_ms = int(time.time() * 1000)
+        telemetry = self.manager.adapter.telemetry()
+        due = check is None or now_ms - check["ms"] >= self.check_every_s * 1000
+        if due and telemetry.connected and telemetry.link_ok and self.check_every_s > 0:
+            check = self.check_stream()
+        if check is None:
+            self.state, self.detail = "unverified", "the camera stream has not been checked yet (it is checked while the aircraft is powered)"
+        elif now_ms - check["ms"] > STREAM_CHECK_VALID_S * 1000:
+            self.state, self.detail = "unverified", f"last checked {(now_ms - check['ms']) / 60000:.0f} min ago: {check['detail']}"
+        elif check["ok"]:
+            self.state, self.detail = "ready", check["detail"]
+        else:
+            self.state, self.detail = "unreachable", check["detail"]
 
     def _default_detector(self) -> Any:
         from ..detectors import create_detector, detection_thresholds, resolve_detector_settings
@@ -176,7 +295,11 @@ class DroneVideoWorker(threading.Thread):
         while not self._stop.is_set():
             active = self.manager.active_inspection()
             if active is None:
-                self.state, self.detail = "idle", "waiting for an approved inspection"
+                self._observers.clear()
+                try:
+                    self._idle()
+                except Exception as error:  # contained like the inspection loop
+                    self.state, self.detail = "unverified", f"stream check failed: {type(error).__name__}: {error}"[:200]
                 self._stop.wait(0.5)
                 continue
             try:
@@ -192,28 +315,44 @@ class DroneVideoWorker(threading.Thread):
         from ..vision import encode_jpeg
 
         request_id = request["request_id"]
-        observer = InspectionObserver(request_id, (request["target_lat"], request["target_lon"]), request["target_label"], self.camera,
-                                      self.manager.site_origin)
-        evidence: list[str] = []
+        if request_id not in self._observers:
+            observer = InspectionObserver(request_id, (request["target_lat"], request["target_lon"]), request["target_label"], self.camera,
+                                          self.manager.site_origin)
+            self._observers[request_id] = (observer, [])
+        observer, evidence = self._observers[request_id]  # a retry after an error continues the same record
         detector = self.detector_factory()
         source = self.source_factory()
+        quality = VideoQualityMonitor(self.fps)
         self.state, self.detail = "streaming", f"analysing inspection {request_id}"
         last_publish = 0.0
+        last_frame = time.monotonic()
+        finished = False
         try:
             while not self._stop.is_set():
                 current = self.manager.active_inspection()
                 if current is None or current["request_id"] != request_id:
+                    finished = True
                     break
                 frame = source.read()
                 if frame is None:
-                    self.detail = "no frame from the drone camera"
+                    if time.monotonic() - last_frame > NO_VIDEO_AFTER_S:
+                        self.state, self.detail = "no_video", f"no frame from the drone camera for {time.monotonic() - last_frame:.0f} s"
                     self._stop.wait(0.2)
                     continue
+                last_frame = time.monotonic()
                 self.frames += 1
                 self.last_frame_ms = frame.timestamp_ms
+                usable, reason, notes, live = quality.check(frame.image, frame.timestamp_ms)
+                if not usable:
+                    observer.reject(frame.timestamp_ms, reason)
+                    self.state, self.detail = reason, f"drone camera picture {reason}: frames are not analysed"
+                    continue
+                self.state, self.detail = "streaming", f"analysing inspection {request_id}"
+                for note in notes:
+                    observer.note_quality(note)
                 pose = pose_from_telemetry(self.manager.adapter.telemetry(), self.camera, frame.timestamp_ms)
                 detections = detector.detect(frame)
-                new = observer.update(detections, frame.timestamp_ms, pose)
+                new = observer.update(detections, frame.timestamp_ms, pose, on_station=current.get("phase") == "inspecting", live=live)
                 image = frame.image.copy()
                 h, w = image.shape[:2]
                 for det in detections:
@@ -223,17 +362,24 @@ class DroneVideoWorker(threading.Thread):
                 self.latest_jpeg = encode_jpeg(image)
                 for observation in new:
                     observation.snapshot_path = self._save_snapshot(request_id, observation.observation_id, frame.timestamp_ms, self.latest_jpeg)
-                    evidence.append(observation.snapshot_path)
+                    if observation.snapshot_path:
+                        evidence.append(observation.snapshot_path)
+                    else:
+                        observer.evidence_failures += 1
                 if time.monotonic() - last_publish >= 2.0:
                     last_publish = time.monotonic()
-                    self.manager.attach_observations(request_id, self._summary(observer), evidence)
+                    self.manager.attach_observations(request_id, self._summary(observer), list(evidence))
         finally:
-            source.close()
-            close = getattr(detector, "close", None)
-            if close:
-                close()
-            self.manager.attach_observations(request_id, self._summary(observer) | {"final": True}, evidence)
-            self.state, self.detail = "idle", "inspection finished"
+            for closer in (source.close, getattr(detector, "close", None)):
+                try:
+                    if closer:
+                        closer()
+                except Exception:  # closing must not hide the summary below
+                    log.exception("drone video: close failed")
+            self.manager.attach_observations(request_id, self._summary(observer) | ({"final": True} if finished else {}), list(evidence))
+            if finished:
+                self._observers.pop(request_id, None)
+                self.state, self.detail = "idle", "inspection finished"
 
     def _summary(self, observer: InspectionObserver) -> dict[str, Any]:
         """The observer's summary plus what this aircraft's camera could not
@@ -251,12 +397,14 @@ class DroneVideoWorker(threading.Thread):
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{frame_ms}_{observation_id.rsplit('_', 1)[-1]}")
         relative = f"drone/{re.sub(r'[^A-Za-z0-9_.-]', '_', request_id)}/{safe}.jpg"
         path = self.media_root / relative
+        if not jpeg:
+            return ""
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(jpeg)
             self.record_evidence(relative, hashlib.sha256(jpeg).hexdigest(), len(jpeg))
-        except OSError as error:  # contained, like other recording writes
-            log.error("drone snapshot not saved: %s", error)
+        except Exception as error:  # disk full, database locked: contained, counted in the summary, the file (if any) is kept
+            log.error("drone snapshot not saved as evidence: %s: %s", type(error).__name__, error)
             return ""
         return relative
 

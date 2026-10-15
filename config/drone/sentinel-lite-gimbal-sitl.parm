@@ -1,0 +1,17 @@
+# Overlay on sentinel-lite-sitl.parm: a simulated SIYI gimbal on SERIAL5, driven
+# by ArduPilot's real SIYI driver (MNT1_TYPE 8), as the Lite's A8 mini is.
+# SITL simulates a ZT30 head with the same SIYI serial protocol; Sentinel only
+# uses the reported attitude. Start with:
+#   SITL_EXTRA_ARGS=--serial5=sim:siyi_zt30 bash scripts/sitl/start_sitl_instance.sh 2 3 \
+#       config/drone/sentinel-lite-sitl.parm,config/drone/sentinel-lite-gimbal-sitl.parm
+SERIAL5_PROTOCOL 8
+SERIAL5_BAUD 115
+MNT1_TYPE 8
+MNT1_PITCH_MIN -90
+MNT1_PITCH_MAX 25
+MNT1_YAW_MIN -80
+MNT1_YAW_MAX 80
+MNT1_DEFLT_MODE 3
+# Gimbal attitude on the radio port (4.7 numbering: SERIAL1 = MAV2_*); EXTRA3 carries GIMBAL_DEVICE_ATTITUDE_STATUS
+MAV2_EXTRA3 4
+SR1_EXTRA3 4

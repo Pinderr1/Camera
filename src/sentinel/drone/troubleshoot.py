@@ -127,8 +127,88 @@ def _check_guide(check: dict[str, Any], model: dict[str, Any], status: dict[str,
     return ([check.get("detail", "")], [])
 
 
+# What a flight-health condition (flight_health.py) usually means and what to do, one step per line, most likely first.
+HEALTH_GUIDE: dict[str, tuple[str, list[str]]] = {
+    "link_lost": ("No telemetry reaches the Hub: the radio link, the aircraft's power, or the Hub's network.",
+                  ["Look at the aircraft: is it powered (flight-controller LED)?", "Check the radio ground unit is on and plugged into the Hub's network.",
+                   "If the aircraft is flying, the pilot is in charge: the flight controller's failsafe returns or lands it on its own."]),
+    "link_unstable": ("The link keeps dropping: range, antennas, interference, or a loose cable.",
+                      ["Check the ground unit's antennas are attached and upright, away from metal.", "Move the ground unit closer to where the drone flies, or higher.",
+                       "Check the network cable between the ground unit and the Hub."]),
+    "link_delayed": ("Telemetry arrives late: a congested radio or a buffering network.",
+                     ["Reduce the video bitrate on the radio if it is shared with telemetry.", "Check nothing else on the Hub's network is saturating it."]),
+    "position_unknown": ("The flight controller has no position yet (it reports 0,0 until it has one).",
+                         ["Take the aircraft outside with open sky and wait a few minutes after power-up."]),
+    "position_stale": ("Position reports stopped while other telemetry continues.",
+                       ["Check the radio port's position stream rate (ArduCopter 4.7: MAV2_POSITION).", "If it persists, restart the aircraft on the ground."]),
+    "gps_no_fix": ("No 3D GPS fix: indoors, under a roof or trees, just powered up, or a GPS cable problem.",
+                   ["Move the aircraft to open sky and wait 2-5 minutes.", "Check the GPS cable and that the GPS sits on its mast away from the video radio.",
+                    "In flight: the pilot flies manually if the flight controller cannot hold position; return-to-home needs GPS."]),
+    "gps_degraded": ("Few satellites or poor accuracy: buildings, trees, or interference from the video radio or camera.",
+                     ["Wait in open sky for more satellites.", "Check the GPS mast is upright and away from the HM30 antennas."]),
+    "gps_stale": ("GPS reports stopped arriving at the Hub.", ["Check the radio port's EXTRA/EXT_STAT stream rates.", "Check the GPS cable."]),
+    "ekf_unhealthy": ("The flight controller's position estimate is not healthy (GPS, compass, vibration).",
+                      ["Wait for GPS lock in open sky.", "Recalibrate the compass away from metal and cars.", "Check the vibration levels in the ground station."]),
+    "ekf_stale": ("Navigation status reports stopped arriving.", ["Check the EXTRA3 stream rate on the radio port."]),
+    "position_jump": ("The position jumped further than the aircraft can fly: a GPS glitch or an estimator reset.",
+                      ["Treat positions and distances from that moment with care.", "Check for GPS interference; repeated jumps mean the aircraft should not fly."]),
+    "home_mismatch": ("The flight controller set home where it was armed or first got a fix, not at the configured home.",
+                      ["Place the aircraft at its configured home before power-up, or update the configured home on the Drone tab."]),
+    "home_unknown": ("The flight controller has not reported its home yet.", ["Connect the pilot's ground station once (it requests home), or wait for a GPS fix."]),
+    "battery_unknown": ("No battery reading: the power module or BATT_MONITOR.", ["Check BATT_MONITOR (4 for an analog power module) and the power-module cable."]),
+    "battery_stale": ("Battery reports stopped arriving: the reading shown is old.", ["Check the EXT_STAT stream rate.", "In flight, judge time by the clock: land soon."]),
+    "battery_frozen": ("The battery level has not changed in flight: the monitor may be stuck.", ["Land and check the power-module calibration (BATT_AMP_PERVLT)."]),
+    "battery_fast_drain": ("The battery drains faster than the estimate: wind, payload, a weak or cold pack.",
+                           ["Plan shorter inspections in this weather.", "Check the pack's age and internal resistance; replace if it sags."]),
+    "battery_return_now": ("At the observed drain the battery reaches the reserve before the aircraft could be home.", ["The pilot should return home now."]),
+    "battery_failsafe": ("The flight controller's own battery check (voltage or capacity) has triggered.",
+                         ["Expect the aircraft to return or land on its own.", "After landing: charge or replace the pack; check BATT_LOW_VOLT for the cell count."]),
+    "fence_breach": ("The aircraft left the area its flight controller allows (polygon or height).",
+                     ["In flight the flight controller's fence action returns or lands it; the pilot stays ready to take over.",
+                      "On the ground: move the aircraft inside the fence, or check the fence loaded on the flight controller matches Sentinel's."]),
+    "vehicle_emergency": ("The flight controller reports a critical or emergency state.", ["Read the latest messages in the ground station; the pilot takes over."]),
+    "fc_restarted": ("The flight controller restarted: power or a crash of its software.",
+                     ["On the ground: check the power connections and BEC.", "Sentinel re-reads the settings before allowing approval again."]),
+    "other_vehicle": ("Another autopilot is on the same radio link.", ["Give each aircraft its own system id (MAV_SYSID), or switch the other one off."]),
+    "gimbal_stale": ("The gimbal stopped reporting its angle.", ["Check the gimbal's serial cable to the flight controller and MNT1_TYPE 8."]),
+    "wind_over_limit": ("Stronger wind than this aircraft's limit (the flight controller's estimate).", ["Return home and wait for calmer weather."]),
+}
+VIDEO_GUIDE: dict[str, tuple[str, list[str]]] = {
+    "unreachable": ("The camera stream cannot be opened: address, network or power.",
+                    ["Check the camera has power (its gimbal moves at power-up).", "Check the stream address in the drone's settings.",
+                     "Check the Hub has an address on the camera's network range (through the radio ground unit)."]),
+    "frozen": ("The camera sends the same picture over and over: a stalled encoder or stream.", ["Restart the camera (power-cycle the aircraft on the ground)."]),
+    "blank": ("The camera sends a blank or corrupted picture.", ["Check the lens cap and the camera's Ethernet cable; restart the camera."]),
+    "no_video": ("No frames arrive from the camera.", ["Check the radio link's video, then the camera's power and cable."]),
+    "unverified": ("The camera stream has not been checked recently.", ["Power the aircraft (propellers off): Sentinel checks the stream by itself."]),
+}
+
+
+# A failing readiness check already explains these; the health finding would repeat it.
+COVERED_BY = {"link_lost": "link", "battery_stale": "battery", "battery_unknown": "battery", "battery_failsafe": "battery", "gps_no_fix": "gps",
+              "gps_degraded": "gps", "gps_stale": "gps", "ekf_unhealthy": "ekf", "position_unknown": "telemetry", "position_stale": "telemetry",
+              "vehicle_emergency": "telemetry", "fence_breach": "telemetry", "home_mismatch": "home_position", **{state: "video" for state in VIDEO_GUIDE}}
+
+
+def diagnose_health(health: dict[str, Any] | None, video: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Findings for the live flight-health conditions and the drone camera."""
+    findings = []
+    for condition in (health or {}).get("conditions", []):
+        cause, steps = HEALTH_GUIDE.get(condition["id"], (condition["text"], []))
+        findings.append({"check": f"health:{condition['id']}", "label": condition["text"], "state": "fail" if condition["severity"] == "critical" else "warn",
+                         "detail": condition["text"], "blocks_approval": condition["severity"] == "critical", "causes": [cause], "steps": steps,
+                         "evidence": condition.get("evidence", {})})
+    state = (video or {}).get("state", "")
+    if state in VIDEO_GUIDE:
+        cause, steps = VIDEO_GUIDE[state]
+        findings.append({"check": f"video:{state}", "label": "Drone camera", "state": "warn", "detail": (video or {}).get("detail", ""),
+                         "blocks_approval": False, "causes": [cause], "steps": steps})
+    return findings
+
+
 def diagnose(status: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
-    """Findings for every failing or warning readiness check, most important first."""
+    """Findings for every failing or warning readiness check and live health
+    condition, most important first, and the single next step to try."""
     readiness = status.get("readiness") or {}
     findings = []
     for check in readiness.get("checks", []):
@@ -137,6 +217,8 @@ def diagnose(status: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
         causes, steps = _check_guide(check, model, status)
         findings.append({"check": check["id"], "label": check["label"], "state": check["state"], "detail": check["detail"],
                          "blocks_approval": check["state"] == "fail", "causes": [c for c in causes if c], "steps": steps})
+    known = {f["check"] for f in findings}
+    findings += [f for f in diagnose_health(status.get("health"), status.get("video")) if COVERED_BY.get(f["check"].split(":", 1)[-1], f["check"]) not in known]
     findings.sort(key=lambda f: (not f["blocks_approval"], f["check"] != "link"))
     blocking = [f["label"] for f in findings if f["blocks_approval"]]
     if not readiness:
@@ -144,11 +226,15 @@ def diagnose(status: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
     elif blocking:
         summary = f"{len(blocking)} problem(s) block approval of an inspection: {', '.join(blocking)}."
     elif findings:
-        summary = f"Ready for operator-approved inspections, with {len(findings)} warning(s)."
+        summary = f"Ready for operator-approved inspections, with {len(findings)} warning(s). Every flight still needs an operator's approval."
     else:
         summary = "All readiness checks pass. Every flight still needs an operator's approval."
+    first = next((f for f in findings if f["steps"]), None)
+    next_step = ({"check": first["check"], "label": first["label"], "step": first["steps"][0], "cause": (first["causes"] or [""])[0],
+                  "remaining_steps": len(first["steps"]) - 1} if first else None)
     return {"drone_id": status.get("drone_id"), "model": model["id"], "model_name": model["name"], "physical": bool(status.get("physical")),
-            "summary": summary, "findings": findings, "retest": "Readiness is re-checked live: fix an item and check again."}
+            "summary": summary, "findings": findings, "next_step": next_step,
+            "retest": "Readiness is re-checked live: fix an item and check again."}
 
 
 __all__ = ["diagnose"]

@@ -63,7 +63,7 @@ What makes it cheap without being unsafe:
 
 **Compromises, stated plainly:**
 - **Daytime and dusk only.** Sentinel refuses to approve a Lite inspection when the operator records darkness (`daylight` check); Thermal is the night model.
-- **Wind limit 6 m/s and about 15 min hover (estimates).** About 10 minutes of flying above the 30% reserve. Sentinel checks every route against that before approval.
+- **Wind limit 6 m/s and about 13 min hover (estimates).** About 9 minutes of flying above the 30% reserve. Sentinel checks every route against that before approval. The estimate was lowered from 15 min after scaling Holybro's no-payload figure for the Lite's payload (`docs/drone-lite-cost.md` section 4).
 - **One GPS.** A glitch near buildings means a failsafe rather than a switch-over.
 - **No obstacle sensing.** Safety relies on the surveyed safe transit altitude.
 - **No paired companion identity, health reports or relay drop counters.** A Raspberry Pi companion can be added later as an option without changing the model.
@@ -82,9 +82,9 @@ What makes it cheap without being unsafe:
 | GPS | One M10 | Two M10, auto switch | Two M10 |
 | Obstacle sensing | None | Optional SF45/B lidar | SF45/B lidar + downward rangefinder |
 | Battery | 4S 5000 mAh ×2 | 6S 10 Ah ×2–3 | 6S 10 Ah ×3 |
-| Hover (est.) | about 15 min | about 24 min | about 22 min |
+| Hover (est.) | about 13 min | about 24 min | about 22 min |
 | Wind limit (est.) | 6 m/s | 8 m/s | 8 m/s |
-| Take-off mass (est.) | about 1.8 kg | about 3.9 kg | about 3.9 kg |
+| Take-off mass (est.) | about 1.9 kg | about 3.9 kg | about 3.9 kg |
 | Night | No | Only where lit (not approved when dark) | Yes, with lights confirmed |
 
 **Shared across all three:**
@@ -112,11 +112,12 @@ USD. Ranges reflect different sellers.
 | Strobe, Ethernet cable, mounts, damping, connectors | $60–100 est. |
 | **Total** | **about $1,310–1,760** |
 
-Cost-down paths, each needing its own bench test first:
-- a separate X500 V2 ARF kit (from about $261) plus a Matek H743-class flight controller ($85–145) and an M10 GPS;
-- a cheaper 4S charger.
-
-Together these could save roughly $100–200. Holding off on rain sealing or a second GPS is already reflected in the design.
+**Updated 2026-10-14 by the cost-down study (`docs/drone-lite-cost.md`):**
+- With today's listings the baseline is about **$1,410–1,850**. Batteries and the charger were under-estimated above.
+- The lowest-cost acceptable Lite is about **$1,190–1,560**: Holybro S500 V2 ARF, an H743-class flight controller (MicoAir743), Matek M10Q GPS, one pack.
+- The recommended prototype stays on the X500 V2 development kit.
+- **F405 boards are ruled out:** their official ArduCopter builds leave out the SIYI gimbal driver.
+- The SIYI A2 mini is ruled out: ArduPilot does not support it.
 
 ### Sentinel Pro
 

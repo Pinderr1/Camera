@@ -424,12 +424,41 @@ Exit for each step is listed in the drone doc. Never skip steps. The drone track
   - **Pro/Thermal profiles in the V1 SITL suite** (`SENTINEL_SITL=1`, 7/7).
 - [ ] Measure everything the catalog estimates (hover time, wind limit, mass, ZR10/ZT6 field of view, A8 mini RTSP address) on hardware.
 
+### Phase 5.0c: reliability, Lite cost-down and hardware readiness (done, 2026-10-15; no hardware bought, no physical flight)
+- [x] Engineering audit of the drone stack (findings and fixes in `docs/drone-reliability.md`). Fixed:
+  - stale or implausible telemetry treated as current: (0,0) positions, battery > 100 %, no per-signal ages, a gimbal angle used after the gimbal stopped reporting;
+  - no altitude check in the in-flight geofence monitor, and the flight controller's own fence and battery verdicts ignored;
+  - "returning home" advised while navigation had failed;
+  - refused safety commands retried every tick with unbounded notes (simulators);
+  - a database outage stopped the drone safety loop;
+  - an expired request approvable between ticks;
+  - an inspection whose aircraft was never heard again blocked all later approvals;
+  - maintenance records in the same millisecond overwrote each other;
+  - frozen or absent drone video reported as "analysed … did not detect anything";
+  - the companion relay forwarded anything sent to its ground-station socket by any device on the network;
+  - the provisioning default sent the pilot's telemetry to the Pi itself;
+  - FC restarts not detected (stale settings audited); ACKs meant for the pilot taken as the Hub's on a shared radio; overlapping fence downloads.
+- [x] Findings from ArduPilot source and SITL:
+  - `MAV_OPTIONS` trusts a system id (a compromised device can claim 255) and ArduPilot routes packets to other MAVLink devices before that check;
+  - MAVLink signing rejects unsigned packets on every port but USB, and is now recognised as a lockout;
+  - ArduCopter keeps `REQUEST_DATA_STREAM` rates in RAM (ArduPlane would save them, so the request is sent to copters only);
+  - with voltage-only battery thresholds the FC kept flying while its capacity count was near empty: `BATT_LOW_MAH` recommended (non-blocking audit item).
+- [x] Flight-health monitor, staleness-aware readiness, the FC's battery/fence verdicts, navigation-loss advisories, lost-contact timeout, simulator restart recovery.
+- [x] Fault-injection framework (`drone/faults.py`) and SITL failure scenarios (`scripts/sitl/fault_scenarios.py`) on a separate SITL instance with a simulated SIYI gimbal. Results (Sentinel Lite parameters, ArduCopter 4.7.2, latest run of each, `bench_runs/recovery_20261015/` and `bench_runs/v1freeze_20261015/`, details in `docs/drone-reliability.md` §6): 45 of 48 scenarios pass. 3 are not modelled by design and remain unvalidated hardware bench items: `companion_power_loss`, `fc_restart_in_flight` and `camera_latency`.
+- [x] Propeller-free hardware bench tool (`sentinel.drone.bench`) with a read-only command-path probe, acceptance criteria (`docs/drone-bench-testing.md`), and the setup journey with evidence-based levels (Drone tab, AI Guide `get_drone_setup`, `check_drone_camera`).
+- [x] Lite cost-down study (`docs/drone-lite-cost.md`):
+  - F405 boards ruled out (no SIYI driver in their official builds);
+  - the cheapest acceptable Lite is about $1.19–1.56k (S500 V2, MicoAir743, one pack);
+  - the prototype stays on the X500 V2 dev kit (about $1.41–1.85k at today's prices);
+  - Lite endurance estimate lowered to 13 min.
+
 ### Phase 5.1 onwards: physical prototype (owner approval needed for each purchase)
-- [ ] **Sentinel Lite bench, stage 1 (smallest purchase, about $760–920):** X500 V2 PX4 dev kit (motors not fitted) and an A8 mini. Prove on a real Pixhawk 6C: the `MAV_OPTIONS` lockout, passive audit, `MAV2_*` stream rates, the gimbal angle via `MNT1_TYPE 8`, and A8 mini RTSP into the Hub with measured latency. Stage 2: HM30 (shared radio, range around a house). Stage 3: assemble and fly pilot-flown with a qualified pilot.
+- [ ] **Sentinel Lite bench, stage 1 (smallest purchase, about $830–1,030 at 2026-10-14 prices):** X500 V2 PX4 dev kit (propellers off) and an A8 mini, with a pack and charger; run `sentinel.drone.bench` against the acceptance criteria in `docs/drone-bench-testing.md`. Prove on a real Pixhawk 6C: the `MAV_OPTIONS` lockout, passive audit, `MAV2_*` stream rates, the gimbal angle via `MNT1_TYPE 8`, and A8 mini RTSP into the Hub with measured latency. Stage 2: HM30 (shared radio, range around a house). Stage 3: assemble and fly pilot-flown with a qualified pilot.
 - [ ] Bench rig for Pro/Thermal (Pixhawk 6X + CM4 baseboard, M10, A8 mini; about $1.0–1.4k): bench steps 8.1–8.4 and 8.10 of the hardware doc; companion pairing on a real Pi; record results here.
 - [ ] Video on real hardware: latency (target under 400 ms), the gimbal attitude source, `drone.video.camera` from the datasheet.
 - [ ] Full V1 airframe, props off: assembly, weighing, every FC failsafe on the bench, companion power-loss, EMI, lidar check.
-- [ ] SITL: fence-breach and EKF-failure injection; SF45/B proximity and BendyRuler configuration tested in SITL before hardware.
+- [x] SITL: fence-breach and GPS/EKF-failure injection (Phase 5.0c fault scenarios).
+- [ ] SITL: SF45/B proximity and BendyRuler configuration tested before hardware.
 - [ ] MAVLink 2 signing between the companion and the FC (key derived from the pairing secret); mavlink-router with the same relay policy for the product.
 - [ ] Regulatory and business track: aviation-law review, Standard 922 test plan, insurance (manufacturer and operator), operator model (customer pilots or a Sentinel service), privacy notice for drone video.
 - [ ] Tethered, then open-field pilot-flown trials with Sentinel observing and proposing. Measure endurance, wind behaviour, link range around a house, thermal and visible image quality, and ground-position accuracy against surveyed markers.

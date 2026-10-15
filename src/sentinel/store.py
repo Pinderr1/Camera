@@ -490,8 +490,8 @@ class EventStore:
     # Inspections follow incident retention. Flight and maintenance logs are
     # aircraft records (no images, no people) and are kept.
 
-    def upsert_drone_inspection(self, inspection: dict[str, Any]) -> None:
-        self._write(
+    def upsert_drone_inspection(self, inspection: dict[str, Any]) -> bool:
+        return self._write(
             "INSERT OR REPLACE INTO drone_inspections VALUES (?,?,?,?,?,?)",
             (inspection["request_id"], inspection.get("drone_id", ""), inspection.get("incident_id") or None, int(inspection["created_ms"]),
              inspection["status"], json.dumps(inspection)),
@@ -512,8 +512,8 @@ class EventStore:
             rows = self._db.execute(f"SELECT body FROM drone_inspections {where} ORDER BY created_ms DESC LIMIT ?", (*params, limit)).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
-    def upsert_drone_flight(self, flight: dict[str, Any]) -> None:
-        self._write("INSERT OR REPLACE INTO drone_flights VALUES (?,?,?,?,?)",
+    def upsert_drone_flight(self, flight: dict[str, Any]) -> bool:
+        return self._write("INSERT OR REPLACE INTO drone_flights VALUES (?,?,?,?,?)",
                     (flight["flight_id"], flight["drone_id"], int(flight["started_ms"]), flight.get("ended_ms"), json.dumps(flight)))
 
     def list_drone_flights(self, *, drone_id: str | None = None, open_only: bool = False, limit: int = 100) -> list[dict[str, Any]]:
@@ -528,8 +528,8 @@ class EventStore:
             rows = self._db.execute(f"SELECT body FROM drone_flights {where} ORDER BY started_ms DESC LIMIT ?", (*params, limit)).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
-    def add_drone_maintenance(self, record: dict[str, Any]) -> None:
-        self._write("INSERT OR REPLACE INTO drone_maintenance VALUES (?,?,?,?,?)",
+    def add_drone_maintenance(self, record: dict[str, Any]) -> bool:
+        return self._write("INSERT OR REPLACE INTO drone_maintenance VALUES (?,?,?,?,?)",
                     (record["record_id"], record["drone_id"], int(record["recorded_ms"]), record["kind"], json.dumps(record)))
 
     def list_drone_maintenance(self, *, drone_id: str | None = None, kind: str | None = None, limit: int = 200) -> list[dict[str, Any]]:

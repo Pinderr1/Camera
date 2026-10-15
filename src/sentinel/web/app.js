@@ -357,7 +357,10 @@ function droneComparisonHtml(table, current) {
 }
 
 function droneDiagnosisHtml(report) {
+  const next = report.next_step;
   return `<div class="card inner drone-diagnosis"><p><strong>${esc(report.summary)}</strong></p>
+    ${next ? `<div class="notice" data-next-step="${esc(next.check)}"><strong>Try this first:</strong> ${esc(next.step)}
+      <div class="small muted">${esc(next.label)}${next.cause ? ` · likely cause: ${esc(next.cause)}` : ""}${next.remaining_steps ? ` · ${next.remaining_steps} more step(s) below if this does not fix it` : ""}</div></div>` : ""}
     ${report.findings.map((f) => `<details ${f.blocks_approval ? "open" : ""} data-finding="${esc(f.check)}"><summary>${f.blocks_approval ? "✗" : "!"} ${esc(f.label)} <span class="small muted">${esc(f.detail)}</span></summary>
       ${f.causes.length ? `<div class="small">Likely cause: ${f.causes.map(esc).join(" ")}</div>` : ""}
       ${f.steps.length ? `<ol class="small">${f.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}</details>`).join("")}
@@ -380,6 +383,10 @@ function droneLayout() {
         <div class="card"><h3>Flight log</h3><div class="scroll"><table class="table" id="drone-flights"></table></div></div>
       </div>
       <div>
+        <div class="card" id="drone-setup-card" hidden><h3>Setup progress</h3><div id="drone-setup"></div></div>
+        <div class="card" id="drone-health-card" hidden><h3>Flight health</h3>
+          <p class="muted small">What Sentinel can and cannot vouch for in the telemetry right now. The flight controller's own failsafes act regardless.</p>
+          <ul class="list compact" id="drone-health"></ul></div>
         <div class="card" id="drone-aircraft"><h3>Aircraft</h3><div id="drone-model"></div>
           <div class="button-row"><button type="button" id="drone-diagnose">Troubleshoot</button><button type="button" id="drone-compare">Compare drone models</button></div>
           <div id="drone-diagnosis"></div></div>
@@ -406,8 +413,12 @@ function droneLayout() {
           <form id="drone-maintenance-form" class="form-grid">
             <label>Record <select name="kind"><option value="inspection">Pre-flight inspection</option><option value="propellers">Propellers replaced</option>
               <option value="battery">Battery service</option><option value="repair">Repair</option><option value="firmware">Firmware update</option>
-              <option value="calibration">Calibration</option><option value="commissioning">Commissioning (save FC settings as reference)</option><option value="note">Note</option></select></label>
-            <label>Note <input name="note" maxlength="1000"></label><button type="submit">Add record</button></form></div>
+              <option value="calibration">Calibration</option><option value="commissioning">Commissioning (save FC settings as reference)</option>
+              <option value="bench_test">Bench test (propellers off)</option><option value="flight_test">Flight test (by the pilot)</option>
+              <option value="authorization">Operational authorization (by the owner)</option><option value="note">Note</option></select></label>
+            <label>Result <select name="verdict"><option value="">–</option><option value="pass">Passed</option><option value="fail">Failed</option></select></label>
+            <label>Note <input name="note" maxlength="1000"></label><button type="submit">Add record</button></form>
+          <p class="small muted">Bench, flight-test and authorization records are what a person attests; Sentinel shows who recorded them and never treats them as a reason to fly a real aircraft itself.</p></div>
         <div class="card"><h3>Inspection locations</h3>
           <p class="muted small">Places a drone may be asked to look at. Each request still needs an operator's approval.</p><ul class="list compact" id="drone-points"></ul></div>
       </div>
@@ -425,8 +436,13 @@ function droneLayout() {
   $("#drone-maintenance-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
+    const body = { kind: form.get("kind"), note: form.get("note") };
+    if (["bench_test", "flight_test", "authorization"].includes(body.kind)) {
+      if (!form.get("verdict") && body.kind !== "authorization") { toast("Choose a result", "A bench or flight test record needs passed or failed."); return; }
+      body.verdict = form.get("verdict") || "pass";
+    }
     try {
-      await api("/drone/maintenance", { method: "POST", body: JSON.stringify({ kind: form.get("kind"), note: form.get("note") }) });
+      await api("/drone/maintenance", { method: "POST", body: JSON.stringify(body) });
       event.target.reset();
       toast("Maintenance recorded", "", "low");
       renderDrone(await api("/drone"));
@@ -496,6 +512,27 @@ function renderDrone(status) {
     ${model.status === "reference_design" ? '<p class="small muted">Reference design: no Sentinel drone has been built or flown. Physical aircraft are telemetry-only.</p>' : ""}
     <div class="chips small">${offered.map((key) => `<span class="chip">${esc((DRONE_CAPABILITY_LABELS[key] || key))}</span>`).join("")}</div>
     ${(model.limitations || []).length ? `<details class="small"><summary>Limits of this model</summary><ul>${model.limitations.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}`;
+  const journey = status.journey;
+  $("#drone-setup-card").hidden = !journey;
+  if (journey) {
+    const stepIcon = { done: "✓", attention: "!", todo: "○" };
+    $("#drone-setup").innerHTML = `<div data-level="${esc(journey.level)}"><strong>${esc(journey.level_text)}</strong>
+        <span class="small muted">(${journey.level_index + 1} of 9 levels)</span></div>
+      ${journey.next ? `<div class="notice small" data-next="${esc(journey.next.id)}"><strong>Next:</strong> ${esc(journey.next.title)}: ${esc(journey.next.action || journey.next.detail)}</div>` : ""}
+      <ol class="list compact small">${journey.steps.map((s) => `<li data-step="${esc(s.id)}" data-state="${esc(s.state)}">${stepIcon[s.state] || ""} ${esc(s.title)}
+        <span class="muted">${esc(s.detail)}</span></li>`).join("")}</ol>
+      ${(journey.notes || []).map((n) => `<p class="small muted">${esc(n)}</p>`).join("")}`;
+  }
+  const health = status.health;
+  const healthConditions = (health && health.conditions) || [];
+  $("#drone-health-card").hidden = !health;
+  if (health) {
+    const mark = { critical: "✗", warn: "!", info: "i" };
+    $("#drone-health").innerHTML = (healthConditions.length ? healthConditions.map((c) => `<li data-condition="${esc(c.id)}" data-severity="${esc(c.severity)}">${mark[c.severity] || ""} ${esc(c.text)}</li>`).join("")
+      : '<li class="muted">No problems seen in the telemetry.</li>') +
+      `<li class="small muted">Return to home: ${health.return_home_possible ? "navigation healthy" : `<strong>may not be possible</strong> (${esc(health.return_home_detail)})`}</li>` +
+      (health.drain && health.drain.observed_pct_per_min != null ? `<li class="small muted">Battery use this flight: ${health.drain.observed_pct_per_min} %/min (estimate ${health.drain.expected_pct_per_min ?? "?"} %/min)</li>` : "");
+  }
   const icon = { pass: "✓", fail: "✗", warn: "!", na: "–" };
   $("#drone-readiness").innerHTML = status.readiness.checks.map((c) => `<li class="row-between" data-check="${esc(c.id)}" data-state="${esc(c.state)}"><span>${icon[c.state]} ${esc(c.label)}</span>
     <span class="small muted wrap">${esc(c.detail)}</span></li>`).join("") +

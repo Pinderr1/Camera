@@ -470,6 +470,38 @@ class Toolbox:
             turn.open("drone", "Open the Drone tab")
             return diagnose(manager.status(), manager.model)
 
+        @add("get_drone_setup", "read", "Where a drone installation stands, from evidence only: the ten setup steps (model, equipment, radio, "
+             "discovery, telemetry, camera, safety settings, commissioning, propeller-free bench diagnostic, ready), the readiness level "
+             "(simulated, detected, connected, partially configured, configured, bench verified, flight-test verified, operationally "
+             "authorized) and the ONE next thing to do. Simulation never counts as physical readiness; flight tests and authorizations "
+             "are records a named person made.",
+             {"drone_id": string("Drone device id (default: the primary drone)")})
+        def get_drone_setup(args, turn):
+            manager = self.service.drone_manager(args.get("drone_id"))
+            if manager is None:
+                raise ToolError("no operable drone with that id (planned hardware has no connection)")
+            turn.open("drone", "Open the Drone tab")
+            journey = manager.status().get("journey") or {}
+            return {"level": journey.get("level"), "level_text": journey.get("level_text"), "simulated": journey.get("simulated"),
+                    "next": journey.get("next"), "steps": [{k: s[k] for k in ("id", "title", "state", "detail")} for s in journey.get("steps", [])],
+                    "notes": journey.get("notes", [])}
+
+        @add("check_drone_camera", "read", "Check right now whether the drone camera delivers a live picture: opens the stream for a few "
+             "seconds and judges the frames (frozen, blank, none). The frames are discarded, never analysed or recorded. Use it to retest "
+             "after the customer changed something about the camera.",
+             {"drone_id": string("Drone device id (default: the primary drone)")})
+        def check_drone_camera(args, turn):
+            manager = self.service.drone_manager(args.get("drone_id"))
+            if manager is None:
+                raise ToolError("no operable drone with that id (planned hardware has no connection)")
+            worker = self.service.drone_video.get(manager.drone_id)
+            if worker is None:
+                return {"configured": False, "ok": False, "detail": "no camera stream is configured for this drone: set its address in the drone's settings"}
+            if manager.active_inspection() is not None:
+                return {"configured": True, "ok": None, "detail": "an inspection is in progress: the camera is being analysed now, see the Drone tab"}
+            result = worker.check_stream()
+            return {"configured": True, "ok": result["ok"], "detail": result["detail"]}
+
         @add("get_notification_settings", "read", "Push notification channels (ntfy, MQTT), whether a topic is set (never the topic itself), "
              "push levels per arm mode, and the last test notification result.")
         def get_notification_settings(args, turn):

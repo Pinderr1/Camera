@@ -59,7 +59,10 @@ class Guide:
             if _has(lower, "drone"):
                 return self.drone(turn, lower)
             if state.get("drone_retest") and _has(lower, "retest", "test again", "try again", "check again", "done", "i did", "fixed", "changed"):
-                return self.drone_diagnosis(turn)
+                return self.drone_diagnosis(turn, state.get("drone_topic", ""))
+            if self.tools.service.drone is not None and _has(lower, "gps", "approve an inspection", "approve the inspection", "approve inspection",
+                                                             "battery keeps", "battery disconnect", "finish setup", "finish the setup"):
+                return self.drone_diagnosis(turn, lower)  # drone-only concepts, asked without the word "drone"
             if _has(lower, "not connect", "aren't connect", "arent connect", "not showing", "aren't showing", "can't find", "cannot find", "not working",
                     "offline", "no picture", "troubleshoot", "won't connect", "doesn't connect", "not found", "connection problem"):
                 return self.troubleshoot(turn)
@@ -277,8 +280,8 @@ class Guide:
             return text + " First set the property's location (it places the drone geofence; it stays on this hub)."
         primary = status.get("primary") or {}
         if _has(lower, "troubleshoot", "not ready", "problem", "why", "fix", "can't", "cannot", "won't", "isn't", "not working", "no telemetry",
-                "no link", "help"):
-            return self.drone_diagnosis(turn)
+                "no link", "help", "camera", "gps", "battery", "approve", "finish"):
+            return self.drone_diagnosis(turn, lower)
         lines = []
         for drone in drones:
             kind = "simulated" if drone.get("simulated") else "physical, telemetry only"
@@ -312,16 +315,50 @@ class Guide:
         self.tools.call("show_screen", {"target": "install:hardware", "label": "Register a drone"}, turn)
         return "\n\n".join(lines)
 
-    def drone_diagnosis(self, turn: Turn) -> str:
+    # What a customer asks about -> the findings that answer it (check ids, prefix match).
+    DRONE_TOPICS = {
+        "camera": ("video", "video:", "health:gimbal"), "video": ("video", "video:"), "picture": ("video", "video:"),
+        "gps": ("gps", "ekf", "health:gps", "health:position", "health:ekf", "telemetry"),
+        "battery": ("battery", "health:battery"), "connect": ("link", "health:link", "companion", "lockout"),
+        "telemetry": ("link", "telemetry", "health:link"), "approve": ("",), "approval": ("",),
+    }
+
+    def drone_diagnosis(self, turn: Turn, lower: str = "") -> str:
+        """One practical step at a time, then a retest (the AI Guide rule for troubleshooting)."""
+        if _has(lower, "finish setup", "finish the setup", "what do i need", "what's left", "what is left", "setup progress"):
+            return self.drone_setup(turn)
         report = self._call("diagnose_drone", turn)
+        findings = report["findings"]
+        topic = next((prefixes for word, prefixes in self.DRONE_TOPICS.items() if word in lower), None)
+        turn.conversation["guide"]["drone_topic"] = lower if topic else ""  # a retest looks at the same thing again
+        focused = [f for f in findings if topic and any(f["check"].startswith(p) for p in topic)] if topic and topic != ("",) else []
+        if topic == ("",):  # "why can't I approve": only what blocks approval matters
+            focused = [f for f in findings if f["blocks_approval"]]
+        chosen = (focused or findings)[:1]
         lines = [f"{report['model_name']}: {report['summary']}"]
-        for finding in report["findings"][:4]:
-            first = finding["steps"][:2]
-            lines.append(f"**{finding['label']}** ({'blocks approval' if finding['blocks_approval'] else 'warning'}): {finding['detail']}"
-                         + (f"\n- " + "\n- ".join(first) if first else ""))
-        if len(report["findings"]) > 4:
-            lines.append(f"{len(report['findings']) - 4} more item(s) are listed under Troubleshoot on the Drone tab.")
-        lines.append(report["retest"] + " Tell me when you've changed something and I'll check again.")
+        if topic and not focused and topic != ("",):
+            lines.append("I found nothing wrong with that part right now.")
+        if chosen:
+            finding = chosen[0]
+            lines.append(f"**{finding['label']}** ({'blocks approval' if finding['blocks_approval'] else 'warning'}): {finding['detail']}")
+            if finding["causes"]:
+                lines.append(f"Likely cause: {finding['causes'][0]}")
+            if finding["steps"]:
+                lines.append(f"Try this first: {finding['steps'][0]}")
+            others = len(findings) - 1
+            if others > 0:
+                lines.append(f"{others} other item(s) are listed under Troubleshoot on the Drone tab; we'll take them one at a time.")
+        lines.append(report["retest"] + " Tell me when you've done it and I'll check again.")
+        turn.conversation["guide"]["drone_retest"] = True
+        return "\n\n".join(lines)
+
+    def drone_setup(self, turn: Turn) -> str:
+        setup = self._call("get_drone_setup", turn)
+        done = sum(1 for step in setup["steps"] if step["state"] == "done")
+        lines = [f"Your drone is at **{setup['level_text']}** ({done} of {len(setup['steps'])} setup steps done)."]
+        if setup.get("next"):
+            lines.append(f"Next: **{setup['next']['title']}**: {setup['next'].get('action') or setup['next']['detail']}")
+        lines.extend(setup.get("notes", [])[:2])
         turn.conversation["guide"]["drone_retest"] = True
         return "\n\n".join(lines)
 

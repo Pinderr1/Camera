@@ -151,6 +151,7 @@ class RelayStats:
     hub_frames_forwarded: int = 0
     hub_frames_dropped: int = 0
     gcs_frames: int = 0
+    foreign_frames: int = 0  # datagrams from anyone but the configured Hub or ground stations (dropped)
     last_drop_reason: str = ""
     fc_connected: bool = False
     fc_reconnects: int = 0
@@ -169,6 +170,9 @@ class MavlinkRelay:
         self.fc_endpoint = fc
         self.hub_address = _address(hub)
         self.gcs_addresses = [_address(item) for item in (gcs or [])]
+        for address in [self.hub_address, *self.gcs_addresses]:
+            if address[0] in ("0.0.0.0", "255.255.255.255"):
+                raise ValueError(f"{address[0]} is not a peer address: name the Hub and each ground station by its own IP address")
         self.policy = policy
         self.stats = RelayStats()
         self.hub_link_up = True
@@ -214,7 +218,7 @@ class MavlinkRelay:
         return {"policy": self.policy, "fc_connected": stats.fc_connected, "fc_reconnects": stats.fc_reconnects,
                 "fc_frames": stats.fc_frames, "hub_frames_in": stats.hub_frames_in, "hub_frames_forwarded": stats.hub_frames_forwarded,
                 "hub_frames_dropped": stats.hub_frames_dropped, "dropped_by_reason": dict(list(stats.dropped_by_reason.items())[:10]),
-                "gcs_frames": stats.gcs_frames, "hub_link_up": self.hub_link_up, "gcs_link_up": self.gcs_link_up,
+                "gcs_frames": stats.gcs_frames, "foreign_frames": stats.foreign_frames, "hub_link_up": self.hub_link_up, "gcs_link_up": self.gcs_link_up,
                 "last_fc_age_s": round((now - stats.last_fc_ms) / 1000, 1) if stats.last_fc_ms else None,
                 "last_hub_age_s": round((now - stats.last_hub_ms) / 1000, 1) if stats.last_hub_ms else None}
 
@@ -306,8 +310,21 @@ class MavlinkRelay:
             for gcs_sock, address in self._gcs_socks:
                 gcs_sock.sendto(data, address)
 
+    def _unexpected(self, peer: tuple[str, int], expected: tuple[str, int], data: bytes) -> bool:
+        """Only the configured Hub and ground stations may talk to the relay.
+        The pilot's socket is forwarded unfiltered, so a stranger on the network
+        who found its port would otherwise reach the flight controller."""
+        if (peer[0], peer[1]) == expected:
+            return False
+        self.stats.foreign_frames += 1
+        self.stats.dropped_by_reason["unexpected sender"] = self.stats.dropped_by_reason.get("unexpected sender", 0) + 1
+        self.stats.last_drop_reason = f"datagram from {peer[0]}:{peer[1]} (expected {expected[0]}:{expected[1]})"
+        return True
+
     def _from_hub(self, sock: socket.socket) -> None:
-        data, _ = sock.recvfrom(65536)
+        data, peer = sock.recvfrom(65536)
+        if self._unexpected(peer, self.hub_address, data):
+            return
         if not self.hub_link_up:
             return
         self.stats.last_hub_ms = int(time.time() * 1000)
@@ -324,7 +341,10 @@ class MavlinkRelay:
                 self.stats.dropped_by_reason[key] = self.stats.dropped_by_reason.get(key, 0) + 1
 
     def _from_gcs(self, sock: socket.socket) -> None:
-        data, _ = sock.recvfrom(65536)
+        data, peer = sock.recvfrom(65536)
+        expected = next(address for gcs_sock, address in self._gcs_socks if gcs_sock is sock)
+        if self._unexpected(peer, expected, data):
+            return
         if not self.gcs_link_up:
             return
         self.stats.gcs_frames += 1
@@ -339,7 +359,12 @@ def _parse(endpoint: str) -> tuple[str, str, int]:
 
 
 def _address(endpoint: str) -> tuple[str, int]:
+    """(IP address, port): resolved once, because replies are matched against it."""
     scheme, host, port = _parse(endpoint)
     if scheme != "udp":
         raise ValueError(f"Hub and ground-station endpoints are udp:HOST:PORT, got {endpoint!r}")
+    try:
+        host = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)[0][4][0]
+    except OSError:
+        pass  # unresolvable now: datagrams can only match a literal address
     return host, port

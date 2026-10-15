@@ -18,7 +18,10 @@ from typing import Any
 
 
 def companion_config(*, fc: str, hub_host: str, hub_port: int = 14551, gcs: list[str] | None = None, video_url: str = "") -> dict[str, Any]:
-    return {"fc": fc, "hub": f"udp:{hub_host}:{hub_port}", "gcs": gcs or ["udp:0.0.0.0:14550"], "policy": "telemetry",
+    """`gcs`: the pilot's ground station(s) as udp:IP:PORT, the address it listens
+    and sends on. None by default: the relay forwards a ground station's traffic
+    to the flight controller unfiltered, so it must be named, never guessed."""
+    return {"fc": fc, "hub": f"udp:{hub_host}:{hub_port}", "gcs": list(gcs or []), "policy": "telemetry",
             "video_url": video_url, "identity": "/var/lib/sentinel/identity.json"}
 
 

@@ -56,6 +56,12 @@ CAPABILITIES: dict[str, dict[str, str]] = {
     "companion_computer": {"label": "Companion computer", "detail": "On-aircraft relay with a command filter, paired identity and health reports."},
 }
 
+# Found in SITL: with voltage thresholds only, the flight controller kept flying while its capacity count (what
+# Sentinel shows as %) was nearly empty. A capacity threshold makes the FC's failsafe and Sentinel's figure agree.
+BATT_CAPACITY_RULE = {"param": "BATT_LOW_MAH", "test": "min", "value": 1, "expected": "a remaining-capacity threshold (about 30% of the pack)",
+                      "blocking": False, "why": "With voltage thresholds alone the flight controller can keep flying while the remaining "
+                                                "capacity Sentinel shows is nearly gone; a capacity threshold makes both agree."}
+
 SUPPORT_NOTE = ("Reference design: no hardware has been bought and nothing has flown. Sentinel's software for it is tested with "
                 "its built-in simulator and ArduPilot SITL. Physical aircraft are telemetry-only in this build.")
 
@@ -90,15 +96,17 @@ MODELS: list[dict[str, Any]] = [
         "camera": {"name": "SIYI A8 mini", "hfov_deg": 81.0, "vfov_deg": 51.0, "default_pitch_deg": -90.0, "gimbal_axes": 3, "reports_attitude": True,
                    "zoom": "6x digital", "low_light": False, "thermal": None, "default_stream": "rtsp://192.168.144.25:8554/main.264",
                    "source": "HFOV from the manufacturer listing; VFOV derived for 16:9; stream address from the camera manual (confirm on the bench)"},
-        "flight": {"endurance_min_est": 15.0, "cruise_mps": 5.0, "climb_mps": 2.0, "max_wind_mps": 6.0, "min_temperature_c": 0.0,
-                   "max_temperature_c": 40.0, "precipitation": False, "night_operations": False, "takeoff_mass_kg_est": 1.8,
-                   "source": "Estimates: X500 V2 hover time with about 250 g of payload, scaled from the kit figure; no flight measured"},
+        "flight": {"endurance_min_est": 13.0, "cruise_mps": 5.0, "climb_mps": 2.0, "max_wind_mps": 6.0, "min_temperature_c": 0.0,
+                   "max_temperature_c": 40.0, "precipitation": False, "night_operations": False, "takeoff_mass_kg_est": 1.9,
+                   "source": "Estimates: Holybro's 18 min no-payload X500 V2 hover (5000 mAh) scaled by (1.55/1.9 kg)^1.5 for about 350 g "
+                             "of camera, radio and mounts (docs/drone-lite-cost.md); no flight measured"},
         "requires": {"companion": "none", "video": True, "lockout": True, "lights_at_night": True},
         "options": {"companion": "Raspberry Pi companion running Sentinel's relay (adds pairing, health and a second command filter)",
                     "strobe": "Anti-collision strobe"},
         "parameters": [
             {"param": "BATT_MONITOR", "test": "not", "value": 0, "expected": "a battery monitor (not 0)", "blocking": True,
              "why": "Battery failsafes and readiness need voltage and current from the power module."},
+            BATT_CAPACITY_RULE,
             {"param": "MNT1_TYPE", "test": "eq", "value": 8, "expected": "8 (SIYI gimbal)", "blocking": False,
              "why": "ArduPilot's SIYI driver reports the gimbal angle, which makes ground positions more precise."},
         ],
@@ -107,12 +115,12 @@ MODELS: list[dict[str, Any]] = [
         "limitations": [
             "Daylight and dusk only: the camera shows little of a dark yard, and Sentinel will not approve a night inspection with it.",
             "Wind limit 6 m/s (estimate) until flight tests establish one; a 500 mm aircraft is pushed around more than the larger models.",
-            "About 15 minutes of hover (estimate), so a 30% reserve leaves roughly 10 minutes of flying.",
+            "About 13 minutes of hover (estimate), so a 30% reserve leaves roughly 9 minutes of flying.",
             "One GPS: a GPS glitch near buildings means a failsafe (land or return) rather than a switch-over.",
             "No obstacle sensing: safety comes from the surveyed transit altitude above roofs, trees and wires.",
             "No companion computer: the flight controller itself refuses the Hub's commands; Sentinel reads its settings when the pilot's "
             "ground station downloads them over the shared link.",
-            "Not rain-proof; LiPo packs lose capacity below 0 °C.",
+            "Not rain-proof; LiPo packs lose capacity below 0 Â°C.",
         ],
     },
     {
@@ -146,6 +154,7 @@ MODELS: list[dict[str, Any]] = [
         "parameters": [
             {"param": "BATT_MONITOR", "test": "not", "value": 0, "expected": "a battery monitor (not 0)", "blocking": True,
              "why": "Battery failsafes and readiness need voltage and current from the power module."},
+            BATT_CAPACITY_RULE,
             {"param": "MNT1_TYPE", "test": "eq", "value": 8, "expected": "8 (SIYI gimbal)", "blocking": False,
              "why": "ArduPilot's SIYI driver reports the gimbal angle, which makes ground positions more precise."},
             {"param": "GPS_AUTO_SWITCH", "test": "not", "value": 0, "expected": "not 0 (use the better GPS)", "blocking": False,
@@ -197,6 +206,7 @@ MODELS: list[dict[str, Any]] = [
         "parameters": [
             {"param": "BATT_MONITOR", "test": "not", "value": 0, "expected": "a battery monitor (not 0)", "blocking": True,
              "why": "Battery failsafes and readiness need voltage and current from the power module."},
+            BATT_CAPACITY_RULE,
             {"param": "MNT1_TYPE", "test": "eq", "value": 8, "expected": "8 (SIYI gimbal)", "blocking": False,
              "why": "ArduPilot's SIYI driver reports the gimbal angle, which makes ground positions more precise."},
             {"param": "GPS_AUTO_SWITCH", "test": "not", "value": 0, "expected": "not 0 (use the better GPS)", "blocking": False,
@@ -353,26 +363,41 @@ def rule_passes(rule: dict[str, Any], value: float | None) -> bool:
     raise ValueError(f"unknown parameter test {test!r}")
 
 
+LOCKOUT_SPOOFING_NOTE = ("this stops Sentinel's own software from commanding the aircraft, but a compromised device on the same "
+                         "network could imitate the pilot's system id; MAVLink signing on the radio link (key held only by the "
+                         "pilot's ground station) closes that gap")
+
+
 def command_lockout(model: dict[str, Any], parameters: dict[str, float], hub_system_id: int,
-                    companion: dict[str, Any] | None) -> tuple[str, str]:
+                    companion: dict[str, Any] | None, *, signed: bool | None = None) -> tuple[str, str]:
     """(state, detail) for the independent layer that stops the Hub from
-    commanding a real aircraft. Two ways to have one:
-    - a paired companion reporting with the relay's `telemetry` policy, or
-    - the flight controller itself accepting commands only from the pilot's
-      ground station (ArduCopter 4.7 MAV_OPTIONS bit 0, older SYSID_ENFORCE),
-      with that ground station's id different from the Hub's.
-    Verified in ArduPilot SITL: with the lockout on, the Hub's arm, mode and
-    take-off commands are ignored while configured telemetry still flows."""
+    commanding a real aircraft. Three ways to have one, strongest first:
+    - a paired companion reporting with the relay's `telemetry` policy (it
+      filters by the socket traffic arrives on, so a forged system id does
+      not help);
+    - MAVLink 2 signing on the link: the aircraft signs its frames (`signed`)
+      and the Hub holds no key, so the flight controller rejects whatever the
+      Hub sends;
+    - the flight controller accepting commands only from the pilot's ground
+      station (ArduCopter 4.7 MAV_OPTIONS bit 0, older SYSID_ENFORCE), with
+      that ground station's id different from the Hub's. This guards against
+      Hub software errors; it trusts a system id, which anything on the
+      network can claim.
+    Verified in ArduPilot SITL: with the MAV_OPTIONS lockout on, the Hub's arm,
+    mode and take-off commands are ignored while configured telemetry still flows."""
     relay = ((companion or {}).get("report") or {}).get("relay") or {}
     if companion and companion.get("state") == "reporting" and relay.get("policy") == "telemetry":
         return "pass", f"companion relay {companion.get('name', '')} drops Hub flight commands".replace("  ", " ")
+    if signed:
+        return "pass", "the aircraft signs its MAVLink link and the Hub holds no signing key: the flight controller rejects what the Hub sends"
     if not parameters:
         state = "fail" if model["requires"]["lockout"] else "warn"
         return state, "cannot be checked until the flight controller's parameters have been read"
     enforced = rule_passes({"test": "bit", "value": 0}, parameters.get("MAV_OPTIONS")) or int(parameters.get("SYSID_ENFORCE", 0) or 0) == 1
     gcs = parameters.get("MAV_GCS_SYSID", parameters.get("SYSID_MYGCS"))
     if enforced and gcs is not None and int(gcs) != int(hub_system_id):
-        return "pass", f"the flight controller accepts commands only from the pilot's ground station (system id {int(gcs)})"
+        return "pass", (f"the flight controller accepts commands only from the pilot's ground station (system id {int(gcs)}); "
+                        + LOCKOUT_SPOOFING_NOTE)
     if enforced:
         return ("fail" if model["requires"]["lockout"] else "warn",
                 f"the flight controller's command lockout trusts system id {gcs:g}, which is the Hub: set MAV_GCS_SYSID to the pilot's ground station")
@@ -442,7 +467,7 @@ def comparison() -> dict[str, Any]:
         {"label": "Camera", "values": {m["id"]: f"{m['camera']['name']} ({m['camera']['zoom']})" for m in tiers}},
         {"label": "Hover time (estimate)", "values": {m["id"]: f"about {m['flight']['endurance_min_est']:g} min" for m in tiers}},
         {"label": "Wind limit (estimate)", "values": {m["id"]: f"{m['flight']['max_wind_mps']:g} m/s" for m in tiers}},
-        {"label": "Lowest temperature", "values": {m["id"]: f"{m['flight']['min_temperature_c']:g} °C" for m in tiers}},
+        {"label": "Lowest temperature", "values": {m["id"]: f"{m['flight']['min_temperature_c']:g} Â°C" for m in tiers}},
         {"label": "Take-off mass (estimate)", "values": {m["id"]: f"about {m['flight']['takeoff_mass_kg_est']:g} kg" for m in tiers}},
         {"label": "Companion computer", "values": {m["id"]: m["hardware"]["companion"] for m in tiers}},
     ]

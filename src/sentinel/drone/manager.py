@@ -7,14 +7,32 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from . import catalog
-from .ardupilot import RETURN_MODES, audit_parameters, flight_state
+from .ardupilot import LANDING_MODES, RETURN_MODES, audit_parameters, flight_state
 from .base import DroneAdapter, FlightCommandRejected, distance_m, map_point_to_geo
+from .commissioning import RECORD_KINDS, journey
+from .flight_health import FlightHealthMonitor
 from .geofence import Geofence
 from .mission import Route, plan_route, to_qgc_plan, to_waypoints_text
 
 OPEN_REQUEST_STATES = {"pending_approval", "approved", "in_progress"}
 FINAL_STATES = {"denied", "expired", "completed", "aborted", "interrupted", "not_flown"}
-MAINTENANCE_KINDS = ("inspection", "repair", "battery", "propellers", "firmware", "calibration", "commissioning", "note")
+# bench_test / flight_test / authorization carry a verdict a person attests (commissioning.py); equipment_check confirms the parts list.
+MAINTENANCE_KINDS = ("inspection", "repair", "battery", "propellers", "firmware", "calibration", "commissioning", "equipment_check", *RECORD_KINDS, "note")
+VERDICT_KINDS = ("bench_test", "flight_test")
+VIDEO_UNAVAILABLE = ("unreachable", "frozen", "blank", "no_video", "error")
+# Health conditions that make telemetry unfit to base an approval on, and the readiness blocker each one raises.
+STALE_BLOCKERS = {"position_stale": "position_not_current", "position_unknown": "position_not_current", "gps_stale": "gps_reports_stale",
+                  "battery_stale": "battery_reading_stale", "battery_unknown": "battery_below_launch_minimum", "battery_failsafe": "battery_failsafe",
+                  "vehicle_emergency": "vehicle_emergency", "fence_breach": "fence_breach"}
+ADVICE = {  # (if the aircraft is already doing it, if the pilot should): never "returning home" when it is landing or cannot navigate
+    "low_battery": ("Battery low: the aircraft is {doing}", "Battery low: the pilot should return home now"),
+    "critical_battery": ("Battery critical: the aircraft is {doing}", "Battery critical: the pilot should land now"),
+    "geofence_breach": ("Outside the approved area: the aircraft is {doing}", "Outside the approved area: the pilot should return home now"),
+    "battery_failsafe": ("The flight controller's battery failsafe has triggered: the aircraft is {doing}",
+                         "The flight controller reports the battery low: the pilot should return home now"),
+    "navigation_lost": ("Navigation failed ({why}): the aircraft cannot be relied on to return home; it is {doing}. Be ready to fly manually.",
+                        "Navigation failed ({why}): return-to-home may not be possible. The pilot should take manual control and land safely."),
+}
 
 
 @dataclass
@@ -46,6 +64,7 @@ class InspectionRequest:
     evidence_paths: list[str] = field(default_factory=list)
     aircraft: str = ""  # drone model name at request time, e.g. "Sentinel Lite (simulated)"
     flight_estimate: dict[str, Any] = field(default_factory=dict)  # model endurance check at approval
+    hover_s: float = 0.0  # time on station requested (0 = the site's inspection hover time)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +85,8 @@ class DroneSafetyConfig:
     max_hdop: float = 2.0
     min_satellites: int = 6
     inspect_every_flights: int = 20  # maintenance reminder
+    lost_contact_s: float = 900.0  # an inspection with no telemetry this long is closed as interrupted (beyond any endurance)
+    safe_action_retry_s: float = 10.0  # simulators only: repeat a refused safety command at most this often
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "DroneSafetyConfig":
@@ -150,6 +171,18 @@ class DroneManager:
         self.advisories: list[dict[str, Any]] = []
         self.conditions: dict[str, Any] | None = None
         self.flight_state = "offline"
+        flight = self.model["flight"]
+        # What the telemetry supports claiming: staleness, navigation, battery verdicts (flight_health.py).
+        self.health = FlightHealthMonitor(endurance_min_est=float(flight.get("endurance_min_est") or 0), cruise_mps=float(flight.get("cruise_mps") or 5),
+                                          configured_home=self.home, reserve_pct=self.safety.rth_battery_pct, max_wind_mps=self.weather.max_wind_mps)
+        self.persist_failures = 0  # record writes that failed (database outage): monitoring continues, logs may be incomplete
+        self.persist_error = ""
+        # Latest unwritten version of each flight/inspection/maintenance row (full-state upserts), retried by step()
+        # so a transient outage cannot leave a stale "in progress" record behind once the database works again.
+        self._unsaved: dict[tuple[str, str], tuple[Callable[..., Any], tuple[Any, ...]]] = {}
+        self._unsaved_retry_ms = 0
+        self._safe_action_ms: dict[str, int] = {}
+        self._restart_recovery: str = ""  # simulators: an inspection Sentinel was flying when it restarted
         self._flight: dict[str, Any] | None = None
         self._flight_saved_ms = 0
         self._mission: dict[str, Any] | None = None
@@ -173,10 +206,18 @@ class DroneManager:
 
             linked = telemetry.connected and telemetry.link_ok
             add("link", "Telemetry link", "pass" if linked else "fail", "receiving telemetry" if linked else "no telemetry from the aircraft", "no_link")
+            health = {c["id"]: c for c in self.health.update(telemetry, int(time.time() * 1000))}
             battery = telemetry.battery_pct
-            add("battery", "Battery", "pass" if battery is not None and battery >= self.safety.min_launch_battery_pct else "fail",
-                f"{battery:.0f}% (minimum {self.safety.min_launch_battery_pct:g}%)" if battery is not None else "not reported", "battery_below_launch_minimum")
-            if telemetry.gps_fix < 3:
+            if "battery_stale" in health:
+                add("battery", "Battery", "fail", health["battery_stale"]["text"], STALE_BLOCKERS["battery_stale"])
+            elif "battery_failsafe" in health:
+                add("battery", "Battery", "fail", health["battery_failsafe"]["text"], STALE_BLOCKERS["battery_failsafe"])
+            else:
+                add("battery", "Battery", "pass" if battery is not None and battery >= self.safety.min_launch_battery_pct else "fail",
+                    f"{battery:.0f}% (minimum {self.safety.min_launch_battery_pct:g}%)" if battery is not None else "not reported", "battery_below_launch_minimum")
+            if "gps_stale" in health:
+                add("gps", "GPS", "fail", health["gps_stale"]["text"], STALE_BLOCKERS["gps_stale"])
+            elif telemetry.gps_fix < 3:
                 add("gps", "GPS", "fail", "no 3D fix", "no_3d_gps_fix")
             elif (telemetry.hdop is not None and telemetry.hdop > self.safety.max_hdop) or (self.adapter.is_physical and telemetry.satellites < self.safety.min_satellites):
                 add("gps", "GPS", "fail", f"poor accuracy: HDOP {telemetry.hdop}, {telemetry.satellites} satellites", "gps_poor_accuracy")
@@ -191,6 +232,20 @@ class DroneManager:
             else:
                 latest = next((m for m in reversed(telemetry.messages) if m.lower().startswith("prearm")), "")
                 add("prearm", "Pre-arm checks", "pass" if telemetry.prearm_ok else "fail", "passing" if telemetry.prearm_ok else (latest or "failing"), "prearm_checks_failing")
+            if linked:
+                # Telemetry Sentinel cannot vouch for blocks approval; doubtful telemetry is a warning with the reason.
+                failing = [(cid, health[cid]) for cid in ("position_unknown", "position_stale", "vehicle_emergency", "fence_breach") if cid in health]
+                doubtful = [health[cid] for cid in ("link_unstable", "link_delayed", "position_jump", "fc_restarted", "other_vehicle", "ekf_stale",
+                                                    "home_unknown") if cid in health]
+                if failing:
+                    cid, condition = failing[0]
+                    add("telemetry", "Telemetry Sentinel can vouch for", "fail", condition["text"], STALE_BLOCKERS[cid])
+                elif doubtful:
+                    add("telemetry", "Telemetry Sentinel can vouch for", "warn", " ".join(c["text"] for c in doubtful[:2]))
+                else:
+                    add("telemetry", "Telemetry Sentinel can vouch for", "pass", "current position, GPS, battery and navigation reports")
+                if "home_mismatch" in health:
+                    add("home_position", "Flight controller's home", "warn", health["home_mismatch"]["text"])
             flying = telemetry.in_air or self._mission is not None
             add("on_ground", "On the ground, no inspection in progress", "fail" if flying else "pass",
                 "airborne" if telemetry.in_air else "an inspection is approved or in progress" if flying else "ready", "already_flying")
@@ -225,7 +280,8 @@ class DroneManager:
                 add("companion", "Companion computer", "pass" if reporting else "fail",
                     f"{companion.get('name', '')} reporting" if reporting else f"{companion.get('name', '')} silent", "companion_silent")
             if self.adapter.flight_controller == "ardupilot":
-                state, detail = catalog.command_lockout(self.model, self.adapter.parameters(), self.gcs_system_id, companion)
+                state, detail = catalog.command_lockout(self.model, self.adapter.parameters(), self.gcs_system_id, companion,
+                                                        signed=telemetry.link_signed)
                 if state == "fail" and not self.adapter.is_physical:
                     # A verified simulator may be commanded by Sentinel; the real aircraft of this model needs the lockout.
                     state, detail = "warn", f"simulator: {detail}"
@@ -237,6 +293,9 @@ class DroneManager:
                         "no_drone_video")
                 else:
                     add("video", "Drone video", "warn", "no drone video configured: inspections will have telemetry only")
+            elif video.get("state") in VIDEO_UNAVAILABLE and self.model["requires"]["video"] and not telemetry.in_air:
+                # A camera-required model with a camera that is not delivering a live picture: the inspection would show nothing.
+                add("video", "Drone video", "fail", video.get("detail", video.get("state", "")), "drone_video_unavailable")
             else:
                 add("video", "Drone video", "pass" if video.get("state") in ("ready", "streaming", "idle") else "warn", video.get("detail", video.get("state", "")))
             version = telemetry.autopilot_version
@@ -248,6 +307,10 @@ class DroneManager:
             due = maintenance["inspection_due"]
             add("maintenance", "Maintenance", "warn" if due else "pass",
                 f"{maintenance['flights_since_inspection']} flight(s) since the last recorded inspection" + (" (inspection due)" if due else ""))
+            if self.persist_failures:
+                waiting = f"; {len(self._unsaved)} record(s) waiting to be written" if self._unsaved else ""
+                add("records", "Flight records", "warn", f"{self.persist_failures} record write(s) failed ({self.persist_error}{waiting}): monitoring continues, "
+                    "but flight logs and inspection records may be incomplete")
             blockers = [check["blocker"] for check in checks if check["state"] == "fail"]
             return {"ready": not blockers, "checks": checks, "blockers": blockers, "mode": self.mode()[0], "model": self.model["id"]}
 
@@ -321,6 +384,7 @@ class DroneManager:
         source: str = "operator",
         incident_id: str = "",
         reason: str = "",
+        hover_s: float = 0.0,
     ) -> InspectionRequest:
         with self._lock:
             if map_point is not None:
@@ -338,7 +402,7 @@ class DroneManager:
             request = InspectionRequest(
                 request_id=f"insp_{now}_{self._seq}", created_ms=now, source=source, target_lat=lat, target_lon=lon,
                 target_label=label, requested_by=requested_by, incident_id=incident_id, drone_id=self.drone_id, reason=reason[:300],
-                aircraft=self.aircraft_label(),
+                aircraft=self.aircraft_label(), hover_s=max(0.0, min(float(hover_s), 1800.0)),
             )
             self.requests[request.request_id] = request
             self.audit(requested_by, "drone_inspection_requested", request.as_dict())
@@ -352,7 +416,7 @@ class DroneManager:
     def plan(self, request: InspectionRequest) -> Route:
         route = plan_route(self.current_home(), (request.target_lat, request.target_lon), self.geofence,
                            safe_transit_altitude_m=self.safety.transit_altitude_m, inspection_altitude_m=self.safety.inspection_altitude_m,
-                           hover_s=self.safety.hover_s, label=request.target_label)
+                           hover_s=request.hover_s or self.safety.hover_s, label=request.target_label)
         estimate = self.endurance(route)
         route.notes.append(f"Endurance: {estimate['detail']}.")
         return route
@@ -440,7 +504,7 @@ class DroneManager:
             request = self.requests.get(request_id)
         if request is not None:
             return request.as_dict()
-        rows = [row for row in self.records.list_drone_inspections(drone_id=self.drone_id, limit=500) if row["request_id"] == request_id]
+        rows = [row for row in self._read(self.records.list_drone_inspections, [], drone_id=self.drone_id, limit=500) if row["request_id"] == request_id]
         return rows[0] if rows else None
 
     # ---- manual commands -------------------------------------------------
@@ -485,26 +549,44 @@ class DroneManager:
             now_ms = int(time.time() * 1000)
             previous = self.safety_state
             self.safety_state = "ok"
+            self._retry_unsaved(now_ms)
 
             for request in self.requests.values():
                 if request.status == "pending_approval" and now_ms - request.created_ms > self.safety.request_ttl_s * 1000:
                     request.status = "expired"
                     self._save(request)
 
-            if telemetry.connected and telemetry.in_air:
-                if telemetry.lat is not None and self.geofence.violations(telemetry.lat, telemetry.lon):
+            health = {c["id"]: c for c in self.health.update(telemetry, now_ms)}
+            if telemetry.connected and telemetry.in_air and telemetry.link_ok:
+                nav_ok, nav_why = self.health.return_home_possible(telemetry, now_ms)
+                position_current = "position_stale" not in health and telemetry.lat is not None
+                # Sentinel's own fence check (only on a current position; below the minimum altitude is take-off and landing),
+                # and the flight controller's own verdict, which also sees what Sentinel cannot.
+                outside = [p for p in self.geofence.violations(telemetry.lat, telemetry.lon, telemetry.alt_m) if p != "below_min_altitude"] \
+                    if position_current else []
+                if outside or telemetry.fence_breach:
                     self.safety_state = "geofence_breach"
-                    self._safe_action("return_home", "geofence_breach", telemetry.flight_mode)
-                if telemetry.battery_pct is not None and telemetry.battery_pct <= self.safety.land_battery_pct:
+                    self._safe_action("return_home", "geofence_breach", telemetry.flight_mode, nav_ok)
+                battery_current = "battery_stale" not in health and telemetry.battery_pct is not None
+                if battery_current and telemetry.battery_pct <= self.safety.land_battery_pct:
                     self.safety_state = "critical_battery_land"
-                    self._safe_action("land", "critical_battery", telemetry.flight_mode)
-                elif telemetry.battery_pct is not None and telemetry.battery_pct <= self.safety.rth_battery_pct:
+                    self._safe_action("land", "critical_battery", telemetry.flight_mode, nav_ok)
+                elif battery_current and telemetry.battery_pct <= self.safety.rth_battery_pct:
                     self.safety_state = "low_battery_return"
-                    self._safe_action("return_home", "low_battery", telemetry.flight_mode)
-                if not telemetry.link_ok:
-                    self.safety_state = "link_lost"  # FC failsafe owns the response; we only report it
+                    self._safe_action("return_home", "low_battery", telemetry.flight_mode, nav_ok)
+                elif "battery_failsafe" in health:
+                    self.safety_state = "battery_failsafe"
+                    self._safe_action("return_home", "battery_failsafe", telemetry.flight_mode, nav_ok)
+                if not nav_ok:
+                    # GPS or EKF failure: the flight controller cannot be relied on to navigate home. Its EKF failsafe lands or holds altitude.
+                    self.safety_state = "navigation_lost"
+                    self._safe_action("land", "navigation_lost", telemetry.flight_mode, nav_ok, why=nav_why)
+            elif telemetry.connected and telemetry.in_air:
+                self.safety_state = "link_lost"  # FC failsafe owns the response; we only report it
             elif telemetry.connected and not telemetry.link_ok:
                 self.safety_state = "link_lost"
+            self._recover_after_restart(telemetry)
+            self._close_lost_inspection(telemetry, now_ms)
 
             changed = False
             state = flight_state(telemetry)
@@ -521,7 +603,7 @@ class DroneManager:
             if changed:
                 self._changed()
 
-    def status(self) -> dict[str, Any]:
+    def _status(self) -> dict[str, Any]:
         with self._lock:
             telemetry = self.adapter.telemetry()
             mode, mode_reason = self.mode()
@@ -557,21 +639,44 @@ class DroneManager:
                 },
                 "safe_transit_altitude_m": self.safety.transit_altitude_m,
                 "home": list(self.current_home()),
+                "health": self.health.summary(telemetry, int(time.time() * 1000)),
+                "records_ok": not self.persist_failures,
             }
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            status = self._status()
+            records = self._read(self.records.list_drone_maintenance, [], drone_id=self.drone_id, limit=200)
+            equipment = any(row.get("kind") == "equipment_check" for row in records)
+            status["journey"] = journey(status, records, equipment_confirmed=equipment)
+            return status
 
     # ---- flight and maintenance logs ----------------------------------------
 
     def flights(self, limit: int = 50) -> list[dict[str, Any]]:
-        rows = self.records.list_drone_flights(drone_id=self.drone_id, limit=limit)
+        rows = self._read(self.records.list_drone_flights, [], drone_id=self.drone_id, limit=limit)
         if self._flight and not any(row["flight_id"] == self._flight["flight_id"] for row in rows):
             rows.insert(0, self._flight_view(self._flight))
         return rows
 
-    def add_maintenance(self, kind: str, operator: str, note: str = "") -> dict[str, Any]:
+    def add_maintenance(self, kind: str, operator: str, note: str = "", verdict: str = "") -> dict[str, Any]:
+        """`verdict` (pass | fail) is required for bench and flight tests: a person
+        attests the result; Sentinel records who and when, and for a bench test
+        the settings fingerprint it applies to."""
         if kind not in MAINTENANCE_KINDS:
             raise ValueError(f"kind must be one of {list(MAINTENANCE_KINDS)}")
+        if kind in VERDICT_KINDS and verdict not in ("pass", "fail"):
+            raise ValueError(f"{kind} needs a verdict: pass or fail")
+        if kind in RECORD_KINDS and self.adapter.kind == "simulated":
+            raise ValueError(f"{RECORD_KINDS[kind]} records are for physical aircraft: the built-in simulator cannot be bench- or flight-tested")
         now = int(time.time() * 1000)
-        record = {"record_id": f"mnt_{self.drone_id}_{now}", "drone_id": self.drone_id, "recorded_ms": now, "kind": kind, "by": operator, "note": note[:1000]}
+        self._seq += 1  # two records in the same millisecond must not replace each other
+        record = {"record_id": f"mnt_{self.drone_id}_{now}_{self._seq}", "drone_id": self.drone_id, "recorded_ms": now, "kind": kind, "by": operator,
+                  "note": note[:1000]}
+        if kind in RECORD_KINDS:
+            record["verdict"] = verdict or "pass"
+            record["fingerprint"] = (self.parameter_audit() or {}).get("fingerprint", "")
+            record["physical"] = self.adapter.is_physical
         if kind == "commissioning":
             parameters = self.adapter.parameters()
             if not parameters:
@@ -585,15 +690,16 @@ class DroneManager:
         return {k: v for k, v in record.items() if k != "parameters"}
 
     def maintenance(self, limit: int = 100) -> list[dict[str, Any]]:
-        return [{k: v for k, v in row.items() if k != "parameters"} for row in self.records.list_drone_maintenance(drone_id=self.drone_id, limit=limit)]
+        return [{k: v for k, v in row.items() if k != "parameters"}
+                for row in self._read(self.records.list_drone_maintenance, [], drone_id=self.drone_id, limit=limit)]
 
     def commissioning_baseline(self) -> dict[str, Any] | None:
-        rows = self.records.list_drone_maintenance(drone_id=self.drone_id, kind="commissioning", limit=1)
+        rows = self._read(self.records.list_drone_maintenance, [], drone_id=self.drone_id, kind="commissioning", limit=1)
         return rows[0] if rows else None
 
     def maintenance_summary(self) -> dict[str, Any]:
-        flights = self.records.list_drone_flights(drone_id=self.drone_id, limit=1000)
-        inspections = self.records.list_drone_maintenance(drone_id=self.drone_id, kind="inspection", limit=1)
+        flights = self._read(self.records.list_drone_flights, [], drone_id=self.drone_id, limit=1000)
+        inspections = self._read(self.records.list_drone_maintenance, [], drone_id=self.drone_id, kind="inspection", limit=1)
         last_inspection = inspections[0]["recorded_ms"] if inspections else 0
         since = sum(1 for flight in flights if flight["started_ms"] > last_inspection)
         return {"flights": len(flights), "flight_time_s": round(sum(flight.get("duration_s", 0) for flight in flights)),
@@ -650,7 +756,7 @@ class DroneManager:
     def _save_flight(self, now_ms: int, *, force: bool = False) -> None:
         if self._flight and (force or now_ms - self._flight_saved_ms >= 10_000):
             self._flight_saved_ms = now_ms
-            self.records.upsert_drone_flight(self._flight_view(self._flight))
+            self._persist(self.records.upsert_drone_flight, self._flight_view(self._flight))
 
     def _advance_mission(self, telemetry, now_ms: int) -> None:
         if not self._mission:
@@ -699,17 +805,28 @@ class DroneManager:
                 return
         elif request.phase == "inspecting":
             hovered = now_ms - (self._mission["hover_started"] or now_ms)
-            if command and hovered >= self.safety.hover_s * 1000:
+            hover_s = float(request.route.get("hover_s") or self.safety.hover_s)
+            if command and hovered >= hover_s * 1000:
                 request.phase = "returning"
                 self.adapter.return_to_home()
-            elif not command and (distance > 2 * self.safety.arrival_radius_m + 2 or landed):
+            elif not command and landed:
+                # Landed at the inspection point (a failsafe or the pilot): the aircraft did not come back.
+                self._finish(request, "aborted", f"the aircraft landed at the inspection point after {hovered / 1000:.0f} s "
+                             f"(planned {hover_s:g} s) instead of returning home: check it there", now_ms)
+                return
+            elif not command and distance > 2 * self.safety.arrival_radius_m + 2:
                 request.phase = "returning"
-                if hovered < self.safety.hover_s * 1000:
-                    request.note = f"left the inspection point after {hovered / 1000:.0f} s (planned {self.safety.hover_s:g} s)"
+                if hovered < hover_s * 1000:
+                    request.note = f"left the inspection point after {hovered / 1000:.0f} s (planned {hover_s:g} s)"
             else:
                 return
         elif request.phase in {"returning", "aborting"} and landed:
             status = "completed" if request.phase == "returning" and request.reached_target_ms else "aborted"
+            home = self.current_home()
+            away = distance_m((telemetry.lat, telemetry.lon), home) if telemetry.lat is not None else 0.0
+            if status == "completed" and away > max(10.0, 3 * self.safety.arrival_radius_m):
+                status = "aborted"  # an inspection is complete when the aircraft is back, not when it landed somewhere
+                request.note = (request.note + "; " if request.note else "") + f"the aircraft landed {away:.0f} m from home: check it there"
             self._finish(request, status, request.note, now_ms)
             return
         else:
@@ -739,53 +856,131 @@ class DroneManager:
             request.note = reason
             self._save(request)
 
-    def _safe_action(self, action: str, reason: str, flight_mode: str) -> None:
-        already = (action == "return_home" and flight_mode in RETURN_MODES | {"landing", "LAND"}) or                   (action == "land" and flight_mode in {"landing", "LAND"})
+    def _safe_action(self, action: str, reason: str, flight_mode: str, nav_ok: bool = True, why: str = "") -> None:
+        if action == "return_home" and not nav_ok:
+            action = "land"  # without navigation the aircraft cannot find its way home: land where it is
+        landing = flight_mode in LANDING_MODES
+        returning = flight_mode in RETURN_MODES
+        already = (action == "return_home" and (returning or landing)) or (action == "land" and landing)
+        if self._mission and self.requests[self._mission["request_id"]].phase != "aborting":
+            # A failsafe interrupts the inspection even if the pilot/FC already
+            # took the right action, or the emergency landing is close to home.
+            # This records the outcome only; physical aircraft remain uncommanded.
+            self._abort_mission(reason)
         if self.mode()[0] != "command":
-            # Sentinel may not command this aircraft: tell the operator; the FC failsafe acts on its own.
-            if already:  # the flight controller (failsafe) or the pilot is already doing it: say why
-                text = {"low_battery": "Battery low: the aircraft is returning home",
-                        "critical_battery": "Battery critical: the aircraft is landing",
-                        "geofence_breach": "Outside the approved area: the aircraft is returning home"}.get(reason, reason)
-            else:
-                text = {"low_battery": "Battery low: the pilot should return home now",
-                        "critical_battery": "Battery critical: the pilot should land now",
-                        "geofence_breach": "Outside the approved area: the pilot should return home now"}.get(reason, reason)
-            if not self.advisories or self.advisories[-1]["reason"] != reason:
-                self.advisories.append({"ms": int(time.time() * 1000), "reason": reason, "text": text})
-                self.audit("system", "drone_operator_advisory", {"reason": reason, "drone": self.drone_id})
+            # Sentinel may not command this aircraft: tell the operator what the aircraft is really doing; the FC failsafe acts on its own.
+            doing_text, advice = ADVICE.get(reason, (reason, reason))
+            doing = "landing" if landing else "returning home" if returning and nav_ok else f"in {flight_mode}"
+            text = (doing_text if (already or reason == "navigation_lost") else advice).format(doing=doing, why=why or "no navigation")
+            if not nav_ok and reason != "navigation_lost":
+                text += " Navigation has failed, so return-to-home may not be possible."
+            last = self.advisories[-1] if self.advisories else None
+            if last is None or last["reason"] != reason or last["text"] != text:
+                self.advisories = (self.advisories + [{"ms": int(time.time() * 1000), "reason": reason, "text": text}])[-50:]
+                self.audit("system", "drone_operator_advisory", {"reason": reason, "drone": self.drone_id, "text": text})
                 if self._flight is not None:
                     self._flight["safety_events"].append([int(time.time() * 1000), f"advisory:{reason}"])
             return
         if already:
             return
-        self._abort_mission(reason)
+        now = int(time.time() * 1000)
+        if now - self._safe_action_ms.get(action, 0) < self.safety.safe_action_retry_s * 1000:
+            return  # a refused command is retried at most every few seconds, never on every safety tick
+        self._safe_action_ms[action] = now
         try:
             getattr(self.adapter, "return_to_home" if action == "return_home" else "land")()
             self.audit("system", f"drone_auto_{action}", {"reason": reason, "drone": self.drone_id})
         except FlightCommandRejected as error:
-            self.safety_notes.append(f"{reason}: {error}")
+            self.safety_notes = (self.safety_notes + [f"{reason}: {error}"])[-20:]
+
+    def _recover_after_restart(self, telemetry: Any) -> None:
+        """Simulators only: Sentinel restarted while it was flying an inspection
+        (command mode). The aircraft may still be holding over the target in
+        GUIDED, where no failsafe will bring it back. Once the link is back,
+        send it home once; the inspection itself stays interrupted."""
+        if not self._restart_recovery or not telemetry.link_ok:
+            return
+        request_id, self._restart_recovery = self._restart_recovery, ""
+        if self.mode()[0] != "command" or not telemetry.in_air or telemetry.flight_mode != "GUIDED":
+            return
+        try:
+            self.adapter.return_to_home()
+            self.audit("system", "drone_auto_return_home", {"reason": "restart_recovery", "request_id": request_id, "drone": self.drone_id})
+        except FlightCommandRejected as error:
+            self.safety_notes = (self.safety_notes + [f"restart_recovery: {error}"])[-20:]
+
+    def _close_lost_inspection(self, telemetry: Any, now_ms: int) -> None:
+        """An inspection whose aircraft has not been heard for longer than any
+        flight can last ends as interrupted, instead of blocking every later
+        approval forever. The person is told to check the aircraft."""
+        if not self._mission or telemetry.link_ok:
+            return
+        request = self.requests[self._mission["request_id"]]
+        last_heard = telemetry.last_heartbeat_ms or request.started_ms or request.decided_ms or now_ms
+        if request.status == "in_progress" and now_ms - last_heard > self.safety.lost_contact_s * 1000:
+            self._finish(request, "interrupted", f"no telemetry for {self.safety.lost_contact_s / 60:.0f} min: the outcome of this flight is unknown. "
+                         "Check the aircraft and the pilot's ground station.", now_ms)
 
     def _pending(self, request_id: str) -> InspectionRequest:
         request = self.requests.get(request_id)
         if request is None:
             raise KeyError(request_id)
+        if request.status == "pending_approval" and int(time.time() * 1000) - request.created_ms > self.safety.request_ttl_s * 1000:
+            request.status = "expired"  # expiry is applied here too, not only by the next safety tick
+            self._save(request)
         if request.status != "pending_approval":
             raise FlightCommandRejected(f"request is {request.status}")
         return request
 
+    def _persist(self, write: Callable[..., Any], *args: Any) -> None:
+        """Record writes never stop the safety monitor: a database outage is counted and shown, flight following continues."""
+        row = args[0] if args and isinstance(args[0], dict) else {}
+        key = (getattr(write, "__name__", ""), str(row.get("flight_id") or row.get("request_id") or row.get("record_id") or ""))
+        try:
+            if write(*args) is False:  # EventStore reports a failed write instead of raising
+                raise OSError(f"database write failed: {getattr(self.records, 'last_error', '')}")
+            self._unsaved.pop(key, None)  # a newer version replaced anything still waiting
+        except Exception as error:
+            self.persist_failures += 1
+            self.persist_error = f"{type(error).__name__}: {error}"[:200]
+            if key[1] and (key in self._unsaved or len(self._unsaved) < 200):
+                self._unsaved[key] = (write, args)
+
+    def _retry_unsaved(self, now_ms: int) -> None:
+        """Write the latest version of rows a database outage left unwritten (at most every 5 s; not counted again)."""
+        if not self._unsaved or now_ms - self._unsaved_retry_ms < 5000:
+            return
+        self._unsaved_retry_ms = now_ms
+        for key, (write, args) in list(self._unsaved.items()):
+            try:
+                if write(*args) is False:
+                    return  # still down: keep everything for the next attempt
+            except Exception:
+                return
+            self._unsaved.pop(key, None)
+
+    def _read(self, read: Callable[..., Any], default: Any, **kwargs: Any) -> Any:
+        try:
+            return read(**kwargs)
+        except Exception as error:
+            self.persist_failures += 1
+            self.persist_error = f"{type(error).__name__}: {error}"[:200]
+            return default
+
     def _save(self, request: InspectionRequest) -> None:
-        self.records.upsert_drone_inspection(request.as_dict())
+        self._persist(self.records.upsert_drone_inspection, request.as_dict())
 
     def _restore(self) -> None:
         """After a restart: requests come back; an inspection that was flying is
         marked interrupted (never resumed), and open flight logs are closed."""
         now = int(time.time() * 1000)
-        for row in self.records.list_drone_inspections(drone_id=self.drone_id, statuses=tuple(OPEN_REQUEST_STATES), limit=50):
+        for row in self._read(self.records.list_drone_inspections, [], drone_id=self.drone_id, statuses=tuple(OPEN_REQUEST_STATES), limit=50):
             request = InspectionRequest(**{key: row[key] for key in InspectionRequest.__dataclass_fields__ if key in row})
             if request.status == "in_progress":
                 request.status, request.phase, request.ended_ms = "interrupted", "done", now
                 request.note = "Sentinel restarted during this inspection; it was not resumed. Check the aircraft and the pilot's ground station."
+                if request.mode == "command":
+                    self._restart_recovery = request.request_id  # a simulator Sentinel was flying: bring it home once the link is back
                 self.audit("system", "drone_inspection_interrupted", {"request_id": request.request_id, "drone": self.drone_id})
             elif request.status == "approved" and request.approved_until_ms and now > request.approved_until_ms:
                 request.status, request.phase, request.ended_ms = "not_flown", "done", now
@@ -795,11 +990,11 @@ class DroneManager:
                 request.status = "expired"
             self.requests[request.request_id] = request
             self._save(request)
-        for flight in self.records.list_drone_flights(drone_id=self.drone_id, open_only=True, limit=10):
+        for flight in self._read(self.records.list_drone_flights, [], drone_id=self.drone_id, open_only=True, limit=10):
             flight["ended_ms"] = flight.get("ended_ms") or now
             flight["interrupted"] = True
             flight["duration_s"] = round((flight["ended_ms"] - flight["started_ms"]) / 1000, 1)
-            self.records.upsert_drone_flight(flight)
+            self._persist(self.records.upsert_drone_flight, flight)
 
     def _changed(self) -> None:
         self.on_change(self.status())

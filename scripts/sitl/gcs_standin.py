@@ -97,6 +97,11 @@ class SitlGroundStation:
         self.link.mav.mission_ack_send(*self.target, 0, FENCE)
         return int(message.count)
 
+    def clear_fence(self) -> None:
+        """Remove the fence polygon (a commissioning mistake to simulate)."""
+        self.link.mav.mission_clear_all_send(*self.target, FENCE)
+        self.link.recv_match(type="MISSION_ACK", blocking=True, timeout=3)
+
     # ---- parameters (simulator fault injection only) --------------------------
 
     def get_param(self, name: str, timeout: float = 3.0) -> float | None:
@@ -119,7 +124,25 @@ class SitlGroundStation:
 
     # ---- mission protocol upload ----------------------------------------------
 
-    def upload(self, items: list[dict[str, Any]], mission_type: int) -> None:
+    def upload(self, items: list[dict[str, Any]], mission_type: int, attempts: int = 3) -> None:
+        """Mission protocol upload. A slow round trip (WSL, a reboot, SIM_SPEEDUP)
+        can make the flight controller re-request an item we already answered; the
+        duplicate then arrives out of order and is refused with
+        MAV_MISSION_INVALID_SEQUENCE (13). Like a ground station, start the upload
+        again (bounded); any other refusal is final. Success still needs the FC's
+        own MAV_MISSION_ACCEPTED."""
+        requested: list[int] = []
+        for attempt in range(attempts):
+            while self.link.recv_match(type=["MISSION_REQUEST_INT", "MISSION_REQUEST", "MISSION_ACK"], blocking=False):
+                pass  # stale replies from an earlier exchange would be answered out of order
+            result = self._upload_once(items, mission_type, requested)
+            if result == 0:
+                return
+            if result != 13:
+                raise RuntimeError(f"upload rejected (MAV_MISSION_RESULT {result}; item requests {requested[-12:]})")
+        raise RuntimeError(f"upload rejected (MAV_MISSION_RESULT 13 after {attempts} attempts; item requests {requested[-12:]})")
+
+    def _upload_once(self, items: list[dict[str, Any]], mission_type: int, requested: list[int]) -> int:
         self.link.mav.mission_count_send(*self.target, len(items), mission_type)
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -127,9 +150,8 @@ class SitlGroundStation:
             if message is None or getattr(message, "mission_type", 0) != mission_type:
                 continue
             if message.get_type() == "MISSION_ACK":
-                if message.type != 0:
-                    raise RuntimeError(f"upload rejected (MAV_MISSION_RESULT {message.type})")
-                return
+                return int(message.type)
+            requested.append(int(message.seq))
             item = items[message.seq]
             p = [0.0 if v is None or (isinstance(v, float) and math.isnan(v)) else float(v) for v in item["params"]]
             self.link.mav.mission_item_int_send(*self.target, message.seq, item["frame"], item["command"], 0, 1,
@@ -175,6 +197,62 @@ class SitlGroundStation:
             time.sleep(2)
         if self.command(300, 0, 0) not in (0, 5):  # MAV_CMD_MISSION_START
             raise RuntimeError("mission start refused")
+
+    # ---- what a pilot does by hand (fault scenarios) -------------------------
+
+    def set_mode(self, name: str) -> int:
+        from sentinel.drone.ardupilot import COPTER_MODE_IDS
+
+        return self.command(176, 1, COPTER_MODE_IDS[name])
+
+    def guided_takeoff(self, altitude_m: float, ready_timeout: float = 90.0) -> None:
+        if self.set_mode("GUIDED") != 0:
+            raise RuntimeError("GUIDED refused")
+        deadline = time.time() + ready_timeout
+        while self.command(400, 1) != 0:
+            if time.time() > deadline:
+                raise RuntimeError("arming refused (pre-arm checks)")
+            time.sleep(2)
+        if self.command(22, 0, 0, 0, 0, 0, 0, altitude_m) not in (0, 5):
+            raise RuntimeError("take-off refused")
+
+    def goto(self, lat: float, lon: float, altitude_m: float) -> None:
+        """Fly in GUIDED to a point (relative altitude), as a pilot clicking on the map."""
+        self.link.mav.set_position_target_global_int_send(0, *self.target, 6, 0b110111111000, int(lat * 1e7), int(lon * 1e7), altitude_m,
+                                                         0, 0, 0, 0, 0, 0, 0, 0)
+
+    def sticks(self, roll: int = 0, pitch: int = 0, throttle: int = 0, seconds: float = 1.0) -> None:
+        """The pilot's sticks (RC_CHANNELS_OVERRIDE, PWM; 0 = release to the radio). Sent at 10 Hz for
+        `seconds`, as ArduPilot drops an override that is not refreshed."""
+        deadline = time.time() + seconds
+        while True:
+            self.link.mav.rc_channels_override_send(*self.target, roll, pitch, throttle, 0, 0, 0, 0, 0)
+            if time.time() >= deadline:
+                return
+            time.sleep(0.1)
+
+    def set_home(self, lat: float, lon: float, altitude_amsl_m: float) -> int:
+        return self.command(179, 0, 0, 0, 0, lat, lon, altitude_amsl_m)  # MAV_CMD_DO_SET_HOME
+
+    def reboot(self) -> int:
+        """MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN. SITL restarts its process with the same arguments (-w wipes stored settings)."""
+        return self.command(246, 1)
+
+    def request_message(self, message_id: int) -> int:
+        return self.command(512, message_id)
+
+    def setup_signing(self, key: bytes | None) -> None:
+        """MAVLink 2 signing, as the pilot's ground station sets it up (disarmed only). None removes it:
+        an all-zero key AND timestamp, sent signed with the current key."""
+        secret = key or bytes(32)
+        # ArduPilot disables signing only when both stored fields are zero.
+        stamp = int((time.time() - 1420070400) * 1e5) if key else 0
+        self.link.mav.setup_signing_send(*self.target, secret, stamp)
+        time.sleep(1.0)
+        if key:
+            self.link.setup_signing(key, sign_outgoing=True)
+        else:
+            self.link.disable_signing()
 
     def swap_battery(self) -> None:
         """A charged battery: MAV_CMD_BATTERY_RESET (all instances, 100%), as after a manual swap."""

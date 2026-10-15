@@ -19,11 +19,15 @@ from typing import Any
 from ..incidents import DISCLAIMER
 from ..models import Detection
 from ..tracker import IoUTracker, TrackerConfig
-from .base import distance_m, geo_to_offset, offset_to_geo
+from .base import distance_m, geo_to_offset, offset_to_geo, valid_coordinates
 
 MAX_POSE_AGE_S = 1.0
+MAX_GIMBAL_AGE_S = 2.0  # an older gimbal report is not the camera's angle now
+MAX_GIMBAL_RATE_DEG_S = 20.0  # faster than this the reported angle and the frame may not match
 MIN_DEPRESSION_DEG = 12.0  # rays flatter than this hit the ground too far away to estimate
 MAX_RANGE_FACTOR = 5.0  # no estimate beyond 5x the height above ground
+MIN_STATION_S = 3.0  # live video over the inspection point needed before "nothing detected" means anything
+MAX_FRAME_GAP_S = 2.0  # a longer gap between usable frames is not continuous coverage
 
 
 @dataclass
@@ -67,9 +71,15 @@ class GroundEstimate:
 
 
 def pose_from_telemetry(telemetry: Any, camera: CameraModel, now_ms: int) -> CameraPose | None:
-    if telemetry.lat is None or telemetry.lon is None:
+    """The camera's pose for a frame taken at `now_ms`, or None when the
+    aircraft's position is unknown or not a GPS position (no 3D fix)."""
+    if not valid_coordinates(telemetry.lat, telemetry.lon):
         return None
-    reported = telemetry.gimbal_pitch_deg is not None
+    if getattr(telemetry, "gps_fix", 3) < 3:
+        return None  # a dead-reckoned or stale position is no basis for placing what the camera sees
+    gimbal_ms = getattr(telemetry, "gimbal_ms", 0)
+    # A gimbal report counts while it is fresh. Simulators report an angle without a time (gimbal_ms 0).
+    reported = telemetry.gimbal_pitch_deg is not None and (not gimbal_ms or (now_ms - gimbal_ms) / 1000 <= MAX_GIMBAL_AGE_S)
     sample_ms = telemetry.telemetry_ms or now_ms
     error = 2.5 if telemetry.hdop is None else max(1.0, 2.5 * float(telemetry.hdop))
     return CameraPose(
@@ -191,12 +201,54 @@ class InspectionObserver:
         self.first_ms = 0
         self.last_ms = 0
         self.pose_sources: set[str] = set()
+        # Video coverage: what the summary may claim about the inspection point.
+        self.frames_on_station = 0
+        self.station_ms = 0  # live, continuous video while over the inspection point
+        self.longest_gap_ms = 0
+        self.rejected: dict[str, int] = {}  # frames not analysed, by reason (frozen, blank, no frame)
+        self.evidence_failures = 0
+        self.quality_notes: dict[str, int] = {}  # analysed but degraded (dark, low frame rate)
+        self.station_known = False
+        self._last_usable_ms = 0
+        self._last_pitch: tuple[int, float] | None = None
 
-    def update(self, detections: list[Detection], frame_ms: int, pose: CameraPose | None) -> list[Observation]:
-        """Returns observations confirmed in this frame (the caller saves a snapshot for each)."""
+    def reject(self, frame_ms: int, reason: str) -> None:
+        """A frame that was not analysed (frozen, blank, corrupt): it is not coverage."""
+        self.rejected[reason] = self.rejected.get(reason, 0) + 1
+        if self._last_usable_ms:
+            self.longest_gap_ms = max(self.longest_gap_ms, frame_ms - self._last_usable_ms)
+
+    def note_quality(self, note: str) -> None:
+        self.quality_notes[note] = self.quality_notes.get(note, 0) + 1
+
+    def update(self, detections: list[Detection], frame_ms: int, pose: CameraPose | None, *, on_station: bool | None = None,
+               live: bool = True) -> list[Observation]:
+        """Returns observations confirmed in this frame (the caller saves a snapshot for each).
+        `on_station`: the aircraft is at the inspection point (only then does the frame count as covering it);
+        None when the caller does not know, and then the summary makes no coverage statement.
+        `live`: the picture is proven to be changing; an unproven frame is analysed but adds no coverage time."""
+        if on_station is not None:
+            self.station_known = True
         self.frames += 1
         self.first_ms = self.first_ms or frame_ms
         self.last_ms = frame_ms
+        if live:
+            gap = frame_ms - self._last_usable_ms if self._last_usable_ms else 0
+            self.longest_gap_ms = max(self.longest_gap_ms, gap)
+            if on_station and 0 < gap <= MAX_FRAME_GAP_S * 1000:
+                self.station_ms += gap
+            self._last_usable_ms = frame_ms
+        if on_station:
+            self.frames_on_station += 1
+        missing = "no camera position"
+        if pose is not None and self._last_pitch is not None and pose.attitude_source == "gimbal_reported":
+            then, pitch = self._last_pitch
+            if frame_ms > then and abs(pose.pitch_deg - pitch) / ((frame_ms - then) / 1000) > MAX_GIMBAL_RATE_DEG_S:
+                self._last_pitch = (frame_ms, pose.pitch_deg)
+                pose, missing = None, "camera angle changing"  # the gimbal is slewing: the reported angle may not be this frame's
+                self.note_quality("gimbal moving")
+        if pose is not None:
+            self._last_pitch = (frame_ms, pose.pitch_deg)
         if pose is not None and pose.age_s <= MAX_POSE_AGE_S:
             self.frames_with_pose += 1
             self.pose_sources.add(pose.attitude_source)
@@ -219,7 +271,7 @@ class InspectionObserver:
                 observation.max_confidence = round(track.confidence, 3)
                 observation.best_frame_ms = frame_ms
             if pose is None:
-                observation.no_estimate_reasons["no camera position"] = observation.no_estimate_reasons.get("no camera position", 0) + 1
+                observation.no_estimate_reasons[missing] = observation.no_estimate_reasons.get(missing, 0) + 1
                 continue
             x, y, w, h = track.bbox
             nadir = pose.pitch_deg <= -70
@@ -245,24 +297,71 @@ class InspectionObserver:
             rows.append({"observation_id": observation.observation_id, "label": observation.label, "kind": observation.kind,
                          "first_ms": observation.first_ms, "last_ms": observation.last_ms, "frames": observation.frames,
                          "max_confidence": observation.max_confidence, "position": position, "snapshot_path": observation.snapshot_path})
+        video = self.video_summary()
         return {
             "request_id": self.request_id, "target_label": self.target_label, "frames": self.frames, "frames_with_pose": self.frames_with_pose,
             "first_ms": self.first_ms, "last_ms": self.last_ms, "max_visible": dict(self.max_visible), "tracks": len(rows),
-            "observations": rows, "pose_sources": sorted(self.pose_sources), "text": describe(self.target_label, rows, dict(self.max_visible), self.frames, self.pose_sources),
+            "observations": rows, "pose_sources": sorted(self.pose_sources), "video": video,
+            "text": describe(self.target_label, rows, dict(self.max_visible), self.frames, self.pose_sources, video),
         }
+
+    def video_summary(self) -> dict[str, Any]:
+        """How much of the inspection the camera really covered. `coverage` is
+        none / partial / full only when the caller reported the aircraft's phase."""
+        on_station_s = round(self.station_ms / 1000, 1) if self.station_known else None
+        if on_station_s is None:
+            coverage = "unknown"
+        elif on_station_s < 1.0:
+            coverage = "none"
+        else:
+            coverage = "partial" if self.rejected or self.longest_gap_ms > MAX_FRAME_GAP_S * 1000 else "full"
+        return {"frames_analysed": self.frames, "frames_on_station": self.frames_on_station, "on_station_s": on_station_s,
+                "frames_rejected": dict(self.rejected), "longest_gap_s": round(self.longest_gap_ms / 1000, 1), "coverage": coverage,
+                "quality_notes": dict(self.quality_notes), "evidence_failures": self.evidence_failures}
 
 
 LABEL_NAMES = {"person": "Person", "vehicle": "Vehicle", "animal": "Animal", "bicycle": "Bicycle"}
 
 
-def describe(target_label: str, rows: list[dict[str, Any]], max_visible: dict[str, int], frames: int, pose_sources: set[str]) -> list[str]:
-    """Plain sentences: what was visible, how sure, and what cannot be concluded."""
+REJECT_NAMES = {"frozen": "frozen picture", "blank": "blank or corrupted picture", "no_frame": "no frame from the camera"}
+
+
+def _video_notes(video: dict[str, Any]) -> list[str]:
+    notes = []
+    rejected = video.get("frames_rejected") or {}
+    if rejected:
+        parts = ", ".join(f"{REJECT_NAMES.get(reason, reason)}: {count}" for reason, count in sorted(rejected.items()))
+        notes.append(f"{sum(rejected.values())} frame(s) were not analysed ({parts}); what happened then was not observed.")
+    if video.get("coverage") == "partial" and (video.get("longest_gap_s") or 0) > MAX_FRAME_GAP_S:
+        notes.append(f"The video had gaps of up to {video['longest_gap_s']:g} s.")
+    quality = video.get("quality_notes") or {}
+    if quality:
+        notes.append("Video quality: " + ", ".join(f"{note} ({count} frame(s))" for note, count in sorted(quality.items())) + ".")
+    if video.get("evidence_failures"):
+        notes.append(f"{video['evidence_failures']} snapshot(s) could not be saved as evidence.")
+    return notes
+
+
+def describe(target_label: str, rows: list[dict[str, Any]], max_visible: dict[str, int], frames: int, pose_sources: set[str],
+             video: dict[str, Any] | None = None) -> list[str]:
+    """Plain sentences: what was visible, how sure, and what cannot be concluded.
+    Never claims to have looked at the inspection point without live video of it."""
     place = target_label or "the inspection point"
+    video = video or {}
+    notes = _video_notes(video)
     if not frames:
-        return [f"No drone video was analysed for the inspection of {place}.", DISCLAIMER]
+        return [f"No drone video was analysed for the inspection of {place}.", *notes, DISCLAIMER]
     if not rows:
-        return [f"The drone camera analysed {frames} frame(s) over {place} and did not detect any person, vehicle or animal. "
-                "This does not prove the area was empty: small, hidden or poorly lit objects can be missed.", DISCLAIMER]
+        on_station = video.get("on_station_s")
+        if video.get("coverage") == "none":
+            return [f"The drone camera delivered no usable live video while the aircraft was at {place} ({on_station:g} s), so nothing "
+                    f"can be said about the area. It analysed {frames} frame(s) elsewhere on the flight and detected no person, vehicle or animal.",
+                    *notes, DISCLAIMER]
+        seconds = f" ({on_station:g} s of live video at {place})" if on_station is not None else ""
+        brief = (f" The camera was over {place} only briefly, so this says little about it."
+                 if on_station is not None and on_station < MIN_STATION_S else "")
+        return [f"The drone camera analysed {frames} frame(s) over {place}{seconds} and did not detect any person, vehicle or animal. "
+                "This does not prove the area was empty: small, hidden or poorly lit objects can be missed." + brief, *notes, DISCLAIMER]
     lines = []
     for label, count in sorted(max_visible.items()):
         name = LABEL_NAMES.get(label, label.capitalize())
@@ -281,6 +380,7 @@ def describe(target_label: str, rows: list[dict[str, Any]], max_visible: dict[st
             lines.append(f"  No ground position estimated ({'; '.join(sorted(r for r in reasons if r))}).")
     if "configured" in pose_sources:
         lines.append("Positions use the configured camera angle because the gimbal did not report its own; they assume flat ground.")
+    lines.extend(notes)
     lines.append("Drone observations are not linked to people or vehicles seen by the fixed cameras: they may or may not be the same.")
     lines.append(DISCLAIMER)
     return lines

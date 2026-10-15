@@ -314,7 +314,7 @@ class ModelSimulationTests(unittest.TestCase):
         return simulated_s
 
     def test_every_model_completes_the_same_inspection_workflow(self):
-        durations = {}
+        arrivals = {}  # simulated seconds from approval to the inspection point: kinematics only (the hover runs on the wall clock)
         for model_id in catalog.TIERS:
             with self.subTest(model=model_id):
                 manager, worker, target = self.build(model_id)
@@ -327,7 +327,12 @@ class ModelSimulationTests(unittest.TestCase):
                 self.assertEqual(request.status, "pending_approval", "requests from incidents always wait for a person")
                 self.assertIn("simulated", request.aircraft)
                 manager.approve(request.request_id, "operator")
-                durations[model_id] = self.fly(manager, request)
+
+                def arrived(simulated_s, request=request, model_id=model_id):
+                    if request.phase == "inspecting" and model_id not in arrivals:
+                        arrivals[model_id] = simulated_s
+
+                self.fly(manager, request, on_step=arrived)
                 self.assertEqual(request.status, "completed", request.note)
                 deadline = time.time() + 5
                 while not request.observations.get("final") and time.time() < deadline:
@@ -344,7 +349,7 @@ class ModelSimulationTests(unittest.TestCase):
                 self.assertEqual((stored["status"], stored["aircraft"]), ("completed", request.aircraft))
                 worker.stop()
                 worker.join(5)
-        self.assertGreater(durations["sentinel_lite"], durations["sentinel_pro"], "the Lite flies slower than the Pro")
+        self.assertGreater(arrivals["sentinel_lite"], arrivals["sentinel_pro"], "the Lite flies slower than the Pro")
 
     def test_link_loss_and_low_battery_return_home_for_every_model(self):
         for model_id in catalog.TIERS:
@@ -425,6 +430,9 @@ class LiteServiceTests(unittest.TestCase):
         self.assertEqual(status["model"]["name"], "Sentinel Lite")
         device = next(d for d in client.get("/api/v1/devices").json()["devices"] if d["id"] == "yard_drone")
         self.assertEqual((device["drone_model"], device["model_name"]), ("sentinel_lite", "Sentinel Lite"))
+        deadline = time.time() + 10  # the camera is "unverified" until the first pre-flight stream check has seen a live picture
+        while (client.get("/api/v1/drone").json().get("video") or {}).get("state") != "ready" and time.time() < deadline:
+            time.sleep(0.1)
         self.assertEqual(client.get("/api/v1/drone/diagnosis").json()["summary"],
                          "All readiness checks pass. Every flight still needs an operator's approval.")
 

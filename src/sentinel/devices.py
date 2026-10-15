@@ -400,8 +400,12 @@ def validate_drone_video(video: Any, path: str, errors: list[str]) -> None:
         for key, low, high in (("hfov_deg", 10, 170), ("vfov_deg", 10, 150), ("default_pitch_deg", -90, 0)):
             if key in camera and not (_is_number(camera[key]) and low <= camera[key] <= high):
                 errors.append(f"{path}.camera.{key} must be between {low} and {high}")
+        if _is_number(camera.get("hfov_deg")) and _is_number(camera.get("vfov_deg")) and camera["vfov_deg"] > camera["hfov_deg"]:
+            errors.append(f"{path}.camera.vfov_deg must not exceed hfov_deg (a landscape camera image): check the two are not swapped")
     if "fps" in video and not (_is_number(video["fps"]) and 0.5 <= video["fps"] <= 15):
         errors.append(f"{path}.fps must be between 0.5 and 15")
+    if "check_every_s" in video and not (_is_number(video["check_every_s"]) and (video["check_every_s"] == 0 or 10 <= video["check_every_s"] <= 3600)):
+        errors.append(f"{path}.check_every_s must be 0 (no pre-flight stream checks) or between 10 and 3600")
 
 
 def drone_devices(config: dict[str, Any]) -> list[dict[str, Any]]:

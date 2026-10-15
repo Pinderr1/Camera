@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     prov.add_argument("--out", required=True)
     prov.add_argument("--fc", default="tcp:127.0.0.1:5760", help="flight controller endpoint (serial needs mavlink-router)")
     prov.add_argument("--hub-host", required=True)
+    prov.add_argument("--gcs", action="append", default=[], help="pilot ground station as udp:IP:PORT (repeatable); none by default")
     prov.add_argument("--camera", choices=["rpi", "rtsp"], default="rpi")
     prov.add_argument("--upstream-rtsp", default="")
     args = parser.parse_args(argv)
@@ -38,7 +39,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result))
         return 0
     if args.command == "provision":
-        print(json.dumps(write_bundle(args.out, fc=args.fc, hub_host=args.hub_host, camera=args.camera, upstream_rtsp=args.upstream_rtsp), indent=2))
+        print(json.dumps(write_bundle(args.out, fc=args.fc, hub_host=args.hub_host, gcs=args.gcs, camera=args.camera,
+                                      upstream_rtsp=args.upstream_rtsp), indent=2))
         return 0
 
     config = json.loads(Path(args.config).read_text())

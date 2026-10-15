@@ -272,7 +272,9 @@ class IncidentExplanationTests(AssistantTestBase):
                      storage_dir=config["storage"]["dir"])
 
     def test_why_did_it_alert_separates_observed_from_inferred(self):
-        reply = self.say("Why did Sentinel alert me last night?")
+        # The incident is at 00:40 today; "last night" looks back 18 hours, so after 18:40 ask over the 72-hour "away" window.
+        late = datetime.now() >= datetime.now().replace(hour=18, minute=30, second=0, microsecond=0)
+        reply = self.say("Why did Sentinel alert me while I was away?" if late else "Why did Sentinel alert me last night?")
         text = reply["text"]
         self.assertIn("Observed by the cameras", text)
         self.assertIn("Sentinel reports observed activity, not intent", text)
@@ -648,6 +650,58 @@ class DeepSeekSettingsTests(AssistantTestBase):
         self.assertIsNone(self.service.runtime.secrets.get("assistant.deepseek_api_key"), "an environment key is never copied to disk")
 
 
+
+class DroneTroubleshootingGuideTests(AssistantTestBase):
+    """The customer questions from the drone troubleshooting brief: one step at a time from real diagnostic tools, then a retest."""
+
+    def wait_for_camera(self):
+        deadline = time.time() + 10
+        while (self.service.drone.video_status() or {}).get("state") not in ("ready", None) and time.time() < deadline:
+            time.sleep(0.1)
+
+    def test_why_cant_i_approve_gives_one_step_then_retests(self):
+        self.wait_for_camera()
+        self.service.drone.set_conditions("operator", precipitation=True, visibility_ok=True)
+        reply = self.say("Why can't I approve an inspection?")["text"]
+        self.assertIn("block approval", reply)
+        self.assertEqual(reply.count("Try this first"), 1, "exactly one practical step")
+        self.assertIn("Confirm today's conditions", reply)
+        self.service.drone.set_conditions("operator", precipitation=False, visibility_ok=True)
+        again = self.say("Done, check again")["text"]
+        self.assertIn("Every flight still needs an operator's approval", again)
+        self.assertNotIn("Try this first: Confirm today's conditions", again)
+
+    def test_camera_and_gps_questions_focus_on_that_part(self):
+        self.wait_for_camera()
+        reply = self.say("Why does Sentinel say GPS unavailable?")["text"]
+        self.assertIn("nothing wrong with that part", reply, "the simulator has a GPS fix: say so, do not invent a fault")
+        self.service.drone.video_status = lambda: {"configured": True, "state": "unreachable", "detail": "cannot open the stream: connection refused"}
+        reply = self.say("Why isn't my drone camera working?")["text"]
+        self.assertIn("cannot open the stream", reply)
+        self.assertIn("Try this first", reply)
+
+    def test_what_do_i_need_to_finish_setup(self):
+        reply = self.say("What do I need to finish setup for my drone?")["text"]
+        self.assertIn("Simulated", reply)
+        self.assertIn("not physical readiness", reply)
+
+    def test_setup_and_camera_tools(self):
+        from sentinel.assistant.privacy import Aliases
+        from sentinel.assistant.tools import Turn
+
+        turn = Turn({"pending": {}, "guide": {}}, "operator", Aliases())
+        setup, error = self.assistant.toolbox.call("get_drone_setup", {}, turn)
+        self.assertFalse(error, setup)
+        self.assertEqual((setup["level"], setup["simulated"]), ("simulated", True))
+        self.assertEqual(len(setup["steps"]), 10)
+        camera, error = self.assistant.toolbox.call("check_drone_camera", {}, turn)
+        self.assertFalse(error, camera)
+        self.assertIn("ok", camera)
+        if camera["configured"]:
+            self.assertTrue(camera["ok"], camera)
+            self.assertIn("live picture verified", camera["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -689,6 +743,9 @@ class DroneModelGuideTests(AssistantTestBase):
         self.assertIn("block approval", trouble)
         self.assertIn("Sentinel Thermal", trouble)
         self.service.drone.set_conditions("operator", precipitation=False, visibility_ok=True, daylight=True)
+        deadline = time.time() + 10  # the drone camera is "unverified" until the first pre-flight stream check sees a live picture
+        while (self.service.drone.video_status() or {}).get("state") != "ready" and time.time() < deadline:
+            time.sleep(0.1)
         again = self.say("I changed it, check again")["text"]
         self.assertIn("All readiness checks pass", again)
 

@@ -37,6 +37,11 @@ BATT_FS_LOW_ACT 2
 BATT_FS_CRT_ACT 1
 BATT_LOW_VOLT 10.5
 BATT_CRT_VOLT 10.0
+# Also set remaining-capacity thresholds on the real Lite (found in SITL: with voltage
+# thresholds only, the FC kept flying while its capacity count was nearly empty).
+# For a 4S 5000 mAh pack: BATT_CAPACITY 5000, BATT_LOW_MAH 1500 (30 %), BATT_CRT_MAH 750 (15 %),
+# matching Sentinel's return (30 %) and land (15 %) advisories. Left out here because the
+# SITL tests change the declared capacity to inject battery faults.
 # Fence: altitude + polygon (the polygon is loaded from Sentinel's exported plan)
 FENCE_ENABLE 1
 FENCE_TYPE 5

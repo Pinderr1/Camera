@@ -322,6 +322,7 @@ _DRONE_SAFETY = {  # key: (minimum, maximum)
     "min_launch_battery_pct": (10, 100), "rth_battery_pct": (5, 90), "land_battery_pct": (1, 80), "inspection_altitude_m": (2, 120),
     "safe_transit_altitude_m": (0, 120), "hover_s": (1, 600), "request_ttl_s": (10, 86400), "approval_window_s": (30, 7200),
     "arrival_radius_m": (0.5, 30), "link_lost_s": (0.5, 60), "max_hdop": (0.5, 10), "min_satellites": (4, 40), "inspect_every_flights": (1, 1000),
+    "lost_contact_s": (120, 7200), "safe_action_retry_s": (2, 120),
 }
 _DRONE_WEATHER = {"max_wind_mps": (0, 30), "min_temperature_c": (-40, 30), "max_temperature_c": (0, 60), "conditions_ttl_s": (60, 86400)}
 

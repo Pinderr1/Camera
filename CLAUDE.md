@@ -49,6 +49,10 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Drone video and observations (detection on the Hub, tracking, ground position with uncertainty, evidence on the incident) | Built; tested with a simulated aerial camera posed by SITL. **No real aerial footage** |
 | Drone V1 hardware | Architecture and prototype plan (`docs/drone-hardware-v1.md`): X650 + Pixhawk 6X/CM4 baseboard + ZT6 + HM30 + ExpressLRS + SF45/B (now the Sentinel Thermal reference). **No hardware bought, no physical flight** |
 | Drone models: Sentinel Lite (cheapest: X500 V2 dev kit, Pixhawk 6C, A8 mini, HM30, no companion), Pro, Thermal (`docs/drone-models.md`) | Capability catalog driving registration, model-specific readiness (command lockout, companion, camera stream, daylight, wind/temperature, model FC settings), route endurance check, video settings, simulator performance, troubleshooting, comparison screen and AI Guide. Every model tested in the simulator; **Lite tested in ArduPilot SITL with its own commissioning (FC `MAV_OPTIONS` lockout, passive audit over a shared radio)**; Pro/Thermal profiles in SITL. Reference designs only: **nothing built or flown** |
+| Drone reliability: telemetry validation (rejected (0,0)/out-of-range positions and implausible batteries, position jumps, per-signal ages, FC restart confirmed over three messages, other autopilots, signing detection, added link delay, the FC's battery and fence verdicts), flight-health monitor, nav-loss and stale-data aware readiness and advisories (never "returning home" without navigation), contained record failures, lost-contact timeout, read-only command-path probe, relay accepts only its configured peers | Built and unit-tested; failure scenarios run against ArduPilot SITL 4.7.2 (`scripts/sitl/fault_scenarios.py`, results in `docs/drone-reliability.md`). **No physical aircraft** |
+| Drone video coverage: frozen/blank frames rejected, coverage (`none`/`partial`/`full`) only from proven-live frames over the point, pre-flight stream check (frames discarded), stale or slewing gimbal not used | Built and tested (unit, SITL-posed simulated camera with injected freezes/drops) |
+| Drone hardware bench test (`sentinel.drone.bench`, propellers off, never arms, no flight commands) and setup journey (planned → simulated → detected → connected → configured → bench verified → flight-test verified → operationally authorized, from evidence and named records) | Built; bench run against SITL as a stand-in. **Never run on real hardware** |
+| Sentinel Lite cost-down study (`docs/drone-lite-cost.md`): firmware features verified per board, three BOMs, Canadian landed cost, manufacturing and purchasing sequence | Research only; **nothing bought** |
 | Camera liveness: independent frame, decoder, stream-clock, picture and inference signals; still scenes are `unverified`, never falsely `frozen`; recorder-clock freezes detected | Built and tested on simulated cameras with sensor noise and overlay freezes. **Thresholds not yet checked on real recorders** |
 | Evidence-preserving database recovery (originals moved aside with hashes, salvage from a copy, backup age and loss window reported and notified) | Built and tested |
 | Rule builder (types incl. combinations; modes Home/Away/Night/Vacation; days; cooldowns; notification preference; minimum observations; templates) with mandatory test before enabling (simulated walk, scenarios, recorded activity) | Built; backend and Edge tests. Recorded-activity tests are approximations |
@@ -115,7 +119,10 @@ src/sentinel/            the Sentinel brain (current product)
                          catalog (drone models Lite/Pro/Thermal: capabilities, requirements, estimates; stdlib), troubleshoot (stdlib),
                          mavlink (telemetry-only + SITL-only command adapters), ardupilot (modes, flight state, parameter audit),
                          mission (routes, .plan/.waypoints export), pairing (companion identity), observation (pose, ground
-                         projection, inspection observations; stdlib), video (drone video worker, simulated aerial camera)
+                         projection, inspection observations, video coverage; stdlib), video (drone video worker, quality monitor,
+                         simulated aerial camera), flight_health (what telemetry supports claiming; stdlib), commissioning (setup
+                         journey and levels; stdlib), faults (fault-injection framework: FaultLink, FaultyVideoSource, scenario
+                         runner and report), bench (propeller-free hardware bench test CLI)
   companion/             drone companion computer (stdlib): MAVLink relay with Hub command filter, health agent, pairing CLI, Pi provisioning
   web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors; install.js = Install tab + planner
   bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
@@ -126,6 +133,9 @@ config/scenarios/              scripted scenarios (delivery, prowler, ambiguous 
 config/netsim/                 simulated network conditions for the troubleshooter (regression: Hikvision on another subnet)
 scripts/sitl/                  start_sitl.sh (official ArduCopter SITL in Linux/WSL2), gcs_standin.py (scripted commissioning engineer and pilot; simulators only)
 scripts/drone_sitl_demo.py     end-to-end drone demo: incident -> request -> approval -> SITL flight -> drone video -> evidence
+scripts/sitl/start_sitl_instance.sh  a separate SITL instance (-I N, own directory, never kills other SITLs; several parameter files)
+scripts/sitl/fault_scenarios.py      drone failure scenarios against SITL (GPS, fence, battery, radio, video, operations) -> report.md/results.json
+config/drone/sentinel-lite-gimbal-sitl.parm  overlay: SITL's simulated SIYI gimbal on SERIAL5 through ArduPilot's SIYI driver
 config/drone/sentinel-v1-sitl.parm   commissioning parameters (failsafes, fence, RTL) used with SITL
 config/drone/sentinel-lite-sitl.parm commissioning for Sentinel Lite: FC command lockout (MAV_OPTIONS), MAV2_* stream rates on the radio port
 scripts/reliability_smoke.py   one-minute failure drill on simulated cameras (disconnect, freeze, crash, stall, AI, disk, restart, DB)
@@ -138,6 +148,9 @@ docs/api.md                    API reference for dashboard and mobile clients
 docs/drone-integration.md      drone architecture (Hub / companion / FC), modes, inspection workflow, video, pairing, config, SITL results, gates
 docs/drone-hardware-v1.md      drone V1 hardware: recommended architecture, alternatives, budgets, wiring, bench tests, BOM, product readiness, Canadian rules
 docs/drone-models.md           Sentinel Lite / Pro / Thermal: cheapest-drone research, tiers, shared parts, BOMs, smallest bench purchase, model software
+docs/drone-lite-cost.md        Lite cost-down: verified board firmware features, three BOMs, landed cost, manufacturing, purchasing sequence
+docs/drone-reliability.md      drone failure handling, flight health, lockout findings, video coverage, fault framework and SITL results
+docs/drone-bench-testing.md    propeller-free hardware bench test, supported firmware, acceptance criteria before purchase and on the bench
 docs/benchmarking.md           how to measure Sentinel on real footage, and what each metric means
 docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
 docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
@@ -172,6 +185,10 @@ $env:SENTINEL_SITL='1'; python -m unittest tests.test_sentinel_drone_sitl   # SI
 # Sentinel Lite: start SITL with SITL_PARAMS=config/drone/sentinel-lite-sitl.parm (WSLENV=SITL_PARAMS/u from PowerShell), then:
 $env:SENTINEL_SITL='lite'; python -m unittest tests.test_sentinel_drone_lite_sitl   # Lite lockout, passive audit, failsafes (~70 s)
 python scripts/drone_sitl_demo.py --out bench_runs/drone_demo   # end-to-end drone inspection demo and report
+bash scripts/sitl/start_sitl_instance.sh 2 3 config/drone/sentinel-lite-sitl.parm   # separate SITL (ports 5780-5783)
+python scripts/sitl/fault_scenarios.py --fc tcp:127.0.0.1:5782 --out bench_runs/faults_lite   # drone failure scenarios + report
+$env:SENTINEL_SITL='bench'; python -m unittest tests.test_sentinel_drone_bench_sitl   # bench test against SITL (instance 2)
+python -m sentinel.drone.bench run --connection udpin:0.0.0.0:14551 --model sentinel_lite --interactive   # real bench, propellers off
 python -m unittest tests.test_sentinel_ui                  # browser tests (pip install playwright; uses installed Edge)
 python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
 python -m sentinel.bench run --all --out bench_runs/NAME   # real-footage benchmark -> report.md/html
@@ -231,6 +248,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - New troubleshooter rules go in `netdiag/diagnose.py` with a `SimulatedNetwork` test. State `confirmed` only for faults Sentinel observed; anything inferred is `suspected` and must sit next to the alternatives.
 - Do not modify `src/senior_safety/` or `webapp/` except to keep shared helpers working. Do not delete them without asking.
 - New hardware kinds get a profile in `devices.PROFILES` with an honest support level (only hardware we tested is `verified`); never record prices or unchecked specifications. Device fields are validated in `devices.validate_devices`.
+- Drone telemetry supports a claim only while it is current and plausible: readiness, safety states and advisories use `drone/flight_health.py` (staleness, navigation, the FC's own battery and fence verdicts), and Sentinel never says "returning home" when navigation has failed. New drone failure handling gets a scenario in `scripts/sitl/fault_scenarios.py` with explicit checks (finishing is not a result; what SITL cannot model is reported `not_modelled`), run on a separate SITL instance (`start_sitl_instance.sh`) so other sessions' simulators are untouched. Drone video counts as coverage only from proven-live frames.
 - Drone models live in `drone/catalog.py`. Every figure there says where it came from (`source`) and estimates are labelled as such; prices go only in `docs/drone-models.md`. A new model or capability needs its readiness consequences tested per model (`tests/test_sentinel_drone_models.py`) and, if it changes MAVLink or failsafe expectations, a SITL test.
 - Installation progress and plans live in `installation.json`, not the site config, so planning never restarts cameras. Readiness is computed from live data on every request; never store it as a claim.
 - The assistant only reads through tools and changes things through `propose_*` tools that a person confirms; `Toolbox.apply` calls the same validated backend paths as the dashboard. Never add tools that run commands, read files, return secrets, change network or device settings, or command a drone. Passwords stay in the secure sign-in form, and addresses are aliased before anything reaches an external provider.

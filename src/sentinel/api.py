@@ -168,8 +168,10 @@ class DroneNeedsBody(BaseModel):
 
 
 class MaintenanceBody(BaseModel):
-    kind: Literal["inspection", "repair", "battery", "propellers", "firmware", "calibration", "commissioning", "note"]
+    kind: Literal["inspection", "repair", "battery", "propellers", "firmware", "calibration", "commissioning", "equipment_check", "bench_test",
+                  "flight_test", "authorization", "note"]
     note: str = Field(default="", max_length=1000)
+    verdict: Literal["", "pass", "fail"] = ""  # bench_test / flight_test: the result a person attests
 
 
 class PairingCodeBody(BaseModel):
@@ -661,9 +663,14 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
     @app.post("/api/v1/drone/maintenance")
     def add_drone_maintenance(body: MaintenanceBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
         try:
-            return drone_or_404().add_maintenance(body.kind, actor, body.note)
+            return drone_or_404().add_maintenance(body.kind, actor, body.note, verdict=body.verdict)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.get("/api/v1/drone/journey")
+    def drone_journey(_: str = Depends(require_auth)) -> dict[str, Any]:
+        """Setup steps, the evidence-based readiness level and the next step (also inside GET /drone as `journey`)."""
+        return drone_or_404().status()["journey"]
 
     @app.get("/api/v1/drone/video.mjpg")
     async def drone_video(request: Request, _: str = Depends(require_auth)) -> StreamingResponse:

@@ -158,9 +158,9 @@ Safety monitor (every 0.5 s):
 | `adapter` | `simulated`, `mavlink` (telemetry only) or `sitl`; legacy single-drone sections use `connection` and `allow_flight_commands` too |
 | `gcs_system_id` | The Hub's MAVLink system id (default 245; the pilot's ground station is usually 255) |
 | `firmware_tested` | Version prefixes, for example `["4.6", "4.7"]` (a warning when the FC reports another) |
-| `safety` | Existing keys, plus `safe_transit_altitude_m`, `approval_window_s`, `arrival_radius_m`, `max_hdop`, `min_satellites`, `inspect_every_flights` |
+| `safety` | Existing keys, plus `safe_transit_altitude_m`, `approval_window_s`, `arrival_radius_m`, `max_hdop`, `min_satellites`, `inspect_every_flights`, `lost_contact_s` (default 900, 120-7200: an inspection whose aircraft is not heard for this long ends as `interrupted` instead of blocking every later approval), `safe_action_retry_s` (default 10, 2-120: simulators only, how often a refused safety command may be repeated) |
 | `weather` | `require_attestation` (default: all but the built-in simulator), `max_wind_mps` 8, `min_temperature_c` −5, `max_temperature_c` 40, `conditions_ttl_s` 3600 |
-| `video` | `source` (`rtsp`/`http`/`file`/`simulated_aerial` with `objects`), `camera` (`hfov_deg`, `vfov_deg`, `default_pitch_deg`), `fps`, `detector` |
+| `video` | `source` (`rtsp`/`http`/`file`/`simulated_aerial` with `objects`), `camera` (`hfov_deg`, `vfov_deg` not above `hfov_deg`, `default_pitch_deg`), `fps`, `detector`, `check_every_s` (default 60; 0 or 10-3600: how often the stream is checked for a live picture while the aircraft is powered and no inspection runs; frames are discarded) |
 | `drone_model` | Legacy single-drone sections only; registered drones carry it per device |
 
 Registered drone devices (`devices[]`) accept the same `adapter`, `connection`, `allow_flight_commands` (**rejected unless `adapter` is `sitl`**) and `video`, plus `drone_model` and `drone_options`. Without `video`, a simulated drone gets the simulated aerial camera with its model's field of view (and the site's scripted objects); a physical one gets no video until a stream address is set. Sentinel never guesses a real camera's address. Stream addresses are write-only (`video_url`). The `ardupilot_sitl` profile registers a SITL vehicle.

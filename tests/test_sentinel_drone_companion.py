@@ -501,7 +501,11 @@ class DroneVideoTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "media" / row["snapshot_path"]).is_file())
             self.assertIn(Path(row["snapshot_path"]).name, [p.name for p in (Path(directory) / "media" / "drone").rglob("*.jpg")])
             self.assertIn(row["snapshot_path"], store.evidence_hashes([row["snapshot_path"]]))
-            self.assertEqual(worker.state, "idle", "the drone camera is not analysed outside an inspection")
+            # Outside an inspection the camera is at most checked for a live picture (frames discarded), never analysed.
+            self.assertIn(worker.state, ("idle", "ready", "unverified"), "the drone camera is not analysed outside an inspection")
+            self.assertTrue(worker.stream_check["ok"], "the pre-flight stream check saw a live picture")
+            self.assertEqual(summary["video"]["coverage"], "full")
+            self.assertGreaterEqual(summary["video"]["on_station_s"], 1.0)
             store.close()
 
 
