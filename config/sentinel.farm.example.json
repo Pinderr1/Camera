@@ -1,0 +1,37 @@
+{
+  "site": {
+    "id": "farm_demo",
+    "name": "Farm demo: Flame Mode (simulated)",
+    "map": {
+      "width_m": 600,
+      "height_m": 450,
+      "origin_geo": [49.9, -97.6],
+      "buildings": [{"name": "Farmyard", "polygon": [[260, 395], [340, 395], [340, 440], [260, 440]]}]
+    }
+  },
+  "cameras": [],
+  "devices": [
+    {"id": "farm_drone", "category": "drone", "name": "Farm drone (simulated)", "profile": "simulated_drone", "simulated": true,
+     "adapter": "simulated", "drone_model": "sentinel_thermal", "map": {"x": 300, "y": 400}},
+    {"id": "farm_dock", "category": "dock", "name": "Dock (simulated)", "profile": "simulated_dock", "simulated": true, "drone_id": "farm_drone",
+     "map": {"x": 300, "y": 400}},
+    {"id": "burn_kit", "category": "accessory", "name": "Burn-monitoring kit (simulated)", "profile": "simulated_burn_monitor_kit",
+     "simulated": true, "drone_id": "farm_drone", "serial": "SIM-0001"}
+  ],
+  "rules": [],
+  "detector": {"type": "scripted"},
+  "alerts": {
+    "notify_min_severity": {"disarmed": "none", "home": "high", "away": "medium", "night": "medium", "vacation": "low"},
+    "channels": [{"type": "ntfy", "enabled": false, "server": "https://ntfy.sh", "topic": "${SENTINEL_NTFY_TOPIC}"}]
+  },
+  "storage": {"dir": "data/sentinel-farm"},
+  "api": {"host": "127.0.0.1", "port": 8080},
+  "drone": {
+    "enabled": true,
+    "device": "farm_drone",
+    "geofence": {"map_polygon": [[0, 0], [600, 0], [600, 450], [0, 450]], "min_altitude_m": 5, "max_altitude_m": 60},
+    "inspection_points": [{"id": "farmyard", "name": "Farmyard", "map": [300, 380]}],
+    "safety": {"min_launch_battery_pct": 60, "rth_battery_pct": 30, "land_battery_pct": 15, "inspection_altitude_m": 40, "hover_s": 20,
+               "request_ttl_s": 600}
+  }
+}

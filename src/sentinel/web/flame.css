@@ -1,0 +1,23 @@
+/* Flame Mode tab (agricultural burn monitoring). Uses the dashboard's colour tokens. */
+.flame-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+@media (max-width: 1000px) { .flame-layout { grid-template-columns: 1fr; } }
+#flame-map { width: 100%; height: auto; max-height: 70vh; display: block; background: var(--surface-2); border-radius: 8px; cursor: crosshair; }
+.flame-field { fill: rgba(47, 125, 79, 0.16); stroke: var(--low); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.flame-field.current { fill: rgba(47, 125, 79, 0.28); stroke-width: 3px; }
+.flame-label { fill: var(--text); opacity: 0.75; pointer-events: none; }
+.flame-fence { fill: none; stroke: var(--medium); stroke-dasharray: 6 4; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+.flame-sensitive { fill: var(--accent); }
+.flame-draft { fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.flame-corner { fill: var(--accent); }
+.flame-drone { stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.hot { stroke: var(--surface); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.hot-outside { fill: var(--high); }
+.hot-edge { fill: var(--medium); }
+.hot-inside { fill: #d8b600; opacity: 0.8; }
+.hot.hot-residual { fill: #3f7fd9; }
+.flame-log { max-height: 320px; overflow-y: auto; }
+.flame-log li.sev-warning { color: var(--medium); }
+.flame-log li.sev-critical { color: var(--high); font-weight: 600; }
+#tab-flame a.button { display: inline-block; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; color: inherit; text-decoration: none; }
+#tab-flame .tile .value.small { font-size: 15px; }
+#tab-flame ul.small { margin: 4px 0; padding-left: 18px; }

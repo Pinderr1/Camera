@@ -164,6 +164,20 @@ Runtime settings (arm mode, sensitivity, notifications on/off) are changed throu
 - Under `sentinel run`, a separate supervisor process owns the server process.
 - Uvicorn serves the API on its own event loop. SSE subscribers receive bus messages through `loop.call_soon_threadsafe`.
 
+## Optional accessory and agricultural configuration
+
+`drone/accessories.py` supplies the existing compatibility and payload catalog.
+`flame/` implements field mapping, records, thermal simulation, operation
+monitoring and reports against the same service, store, drone manager, API and
+Guide. See [FLAME Mode](flame.md). Physical accessory profiles are planning-only.
+Fixed-camera processing is independent of the selected drone configuration.
+
+`FlameService` reads the applied `SentinelService.config` snapshot. Site saves
+hold the editor lock while calling `apply_config`, which may acquire fleet and
+manager locks. Readiness and FLAME hooks must not take the editor lock while
+holding those locks. The snapshot is replaced before fleet rebuilds. Damaged
+`flame.json` files are preserved with hashes before defaults can be saved.
+
 ## Known limitations
 
 - The IoU tracker swaps identities when people cross paths closely. Cross-camera linking without appearance evidence is deliberately conservative, so the same person may appear as two site tracks.

@@ -119,6 +119,35 @@ CREATE TABLE IF NOT EXISTS drone_companions (
     drone_id TEXT NOT NULL,
     body TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS accessory_records (
+    record_id TEXT PRIMARY KEY,
+    accessory_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    recorded_ms INTEGER NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ag_records (
+    record_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    recorded_ms INTEGER NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS burn_operations (
+    operation_id TEXT PRIMARY KEY,
+    field_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_ms INTEGER NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS burn_observations (
+    observation_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    recorded_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS burn_observations_operation ON burn_observations (operation_id, recorded_ms);
 """
 VISIT_COLUMNS = ("visit_id", "site_track_id", "label", "kind", "camera_id", "zone_id", "zone_type", "start_ms", "end_ms", "dwell_s", "arrived")
 # Incidents whose media and rows outlive normal retention (until `protected_media` days).
@@ -549,6 +578,53 @@ class EventStore:
     def list_drone_companions(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._db.execute("SELECT body FROM drone_companions").fetchall()
+        return [json.loads(row["body"]) for row in rows]
+
+    # ---- agricultural records ----------------------------------------------------
+    # Accessory, qualification, authorization and burn-operation records are
+    # operational records (no images, no people beyond crew names and roles) and
+    # are kept like flight logs; they are not subject to event retention.
+
+    def add_accessory_record(self, record: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO accessory_records VALUES (?,?,?,?,?)",
+                    (record["record_id"], record["accessory_id"], record["kind"], int(record["recorded_ms"]), json.dumps(record)))
+
+    def list_accessory_records(self, *, accessory_id: str | None = None, kind: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        return self._select("accessory_records", "recorded_ms", (("accessory_id", accessory_id), ("kind", kind)), limit)
+
+    def add_ag_record(self, record: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO ag_records VALUES (?,?,?,?)",
+                    (record["record_id"], record["kind"], int(record["recorded_ms"]), json.dumps(record)))
+
+    def list_ag_records(self, *, kind: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        return self._select("ag_records", "recorded_ms", (("kind", kind),), limit)
+
+    def upsert_burn_operation(self, operation: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO burn_operations VALUES (?,?,?,?,?)",
+                    (operation["operation_id"], operation["field_id"], operation["status"], int(operation["created_ms"]), json.dumps(operation)))
+
+    def list_burn_operations(self, *, field_id: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        return self._select("burn_operations", "created_ms", (("field_id", field_id), ("status", status)), limit)
+
+    def add_burn_observation(self, observation: dict[str, Any]) -> None:
+        self._write("INSERT OR REPLACE INTO burn_observations VALUES (?,?,?,?,?,?)",
+                    (observation["observation_id"], observation["operation_id"], int(observation["recorded_ms"]), observation["kind"],
+                     observation.get("severity", "info"), json.dumps(observation)))
+
+    def list_burn_observations(self, operation_id: str, *, kind: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
+        """Oldest first: an operation's log reads in order."""
+        rows = self._select("burn_observations", "recorded_ms", (("operation_id", operation_id), ("kind", kind)), limit)
+        return list(reversed(rows))
+
+    def _select(self, table: str, order: str, filters: tuple[tuple[str, Any], ...], limit: int) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        for column, value in filters:
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._db.execute(f"SELECT body FROM {table} {where} ORDER BY {order} DESC LIMIT ?", (*params, limit)).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
     def purge(

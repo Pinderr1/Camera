@@ -296,6 +296,12 @@ async function openTarget(action) {
     openTroubleshooter({ host: action.host, template: action.brand, autorun: !!action.host });
   } else if (base === "camera_wizard") {
     openWizard(null);
+  } else if (base === "flame") {
+    const button = document.querySelector('[data-tab="flame"]');
+    button.hidden = false;
+    button.click();
+  } else if (base === "flame_report" && action.operation_id) {
+    window.open(`${API}/flame/operations/${encodeURIComponent(action.operation_id)}/report?format=html`, "_blank", "noopener");
   }
 }
 

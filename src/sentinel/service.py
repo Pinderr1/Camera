@@ -104,6 +104,9 @@ class SentinelService:
         self.site = SiteConfigManager(raw, self.storage_dir, self.runtime.secrets)
         self.network = SystemNetwork()  # onboarding diagnostics; tests and demos swap in a SimulatedNetwork
         self.site.subscribe(self.apply_config)
+        from .flame import FlameService
+
+        self.flame = FlameService(self)  # agricultural configuration of the drone (Flame Mode)
         self.on_fatal: Callable[[str], None] | None = None  # set by `serve --exit-on-fatal`
         self.supervisor = WorkerSupervisor(
             SupervisorSettings.from_dict(config.get("health", {}).get("supervisor")),
@@ -150,6 +153,7 @@ class SentinelService:
                          threading.Thread(target=self._drone_loop, name="sentinel-drone", daemon=True)]
         for thread in self._threads:
             thread.start()
+        self.flame.start()
         for worker in self.drone_video.values():
             if not worker.is_alive():
                 worker.start()
@@ -158,6 +162,7 @@ class SentinelService:
         """Graceful: stop cameras (clips are finalised), close open outages,
         flush the database, and mark the run as cleanly stopped."""
         self._stop.set()
+        self.flame.stop()
         self.supervisor.stop()
         for thread in self._threads:
             thread.join(timeout=5)
@@ -227,6 +232,8 @@ class SentinelService:
                 self._wire_drone(drone_id, manager, config)
             self._drone_key = key
             self._drone_rebuild_pending = None
+            if getattr(self, "flame", None) is not None:
+                self.flame.apply_hooks()  # rebuilt managers get the configuration guard before any request arrives
 
     def _wire_drone(self, drone_id: str, manager: Any, config: dict[str, Any]) -> None:
         """Companion status, drone video, and inspection results for one aircraft."""
@@ -305,6 +312,9 @@ class SentinelService:
                 drone_id = device.get("drone_id") or self.primary_drone
                 if device.get("simulated") and drone_id in drone_status:
                     live = {"drone_telemetry": drone_status[drone_id]["telemetry"]}
+            elif device["category"] == "accessory":
+                view = self.flame.accessory_view(device, now)
+                live = view | {"configuration": self.flame.configuration(device.get("drone_id", ""))} if view["state"] != "not_connected" else None
             elif device.get("simulated"):
                 live = self.sensors.live(device["id"], now)
             entries.append(device_entry(device, live, by_recorder))
@@ -449,6 +459,13 @@ class SentinelService:
                     temporary.replace(target)
                     self.installation = InstallationManager(self.storage_dir)
                     result["applied"].append("installation")
+                if "flame.json" in files:
+                    target = self.storage_dir / "flame.json"
+                    temporary = target.with_suffix(".restoring")
+                    temporary.write_bytes(archive.read("flame.json"))
+                    temporary.replace(target)
+                    self.flame.doc = self.flame._load()
+                    result["applied"].append("flame")
             if "settings" in parts and "settings.json" in files:
                 settings = json.loads(archive.read("settings.json"))
                 self.runtime.update_settings({key: settings[key] for key in ("arm_mode", "sensitivity", "notifications_enabled") if key in settings}, actor)

@@ -169,6 +169,32 @@ Sentinel AI Guide; see [assistant.md](./assistant.md). Conversations live on the
 
 Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unknown id), 409 (drone rejected, for example preflight blocked; camera processing not running), 422 (validation), 507 (backup could not be written).
 
+## Optional accessories and FLAME Mode
+
+All routes below require the same authentication as other data endpoints.
+Accessory registration/removal uses the existing `/api/v1/config/devices` routes
+with category `accessory` and its `drone_id`. See [FLAME Mode](flame.md) for scope,
+simulation labels, persistence and hardware limitations.
+
+| Method | Path under `/api/v1/flame` | Purpose |
+| --- | --- | --- |
+| GET | (root), `/compatibility` | Overview, accessory compatibility profiles and matrix |
+| GET | `/accessories/{id}` | Received/simulated health, attachment, compatibility and records |
+| POST | `/accessories/{id}/records`, `/accessories/{id}/simulate` | Record inspection/maintenance/commissioning; inject a simulated fault only |
+| PUT | `/drones/{id}/configuration` | Ground-only switch after configuration checks |
+| GET | `/drones/{id}/position` | Current usable position for recording a field corner |
+| POST | `/qualifications`, `/authorizations` | Record entered qualifications/authorization information |
+| DELETE | `/records/{id}` | Withdraw a record while retaining history |
+| POST | `/fields` | Save a field and its boundary |
+| GET, PUT, DELETE | `/fields/{id}` | Read, edit or remove a field (operation constraints apply) |
+| GET, POST | `/operations` | List or create operations |
+| GET, PUT | `/operations/{id}` | Operation, checklist, crew, equipment and recorded observations |
+| POST | `/operations/{id}/weather`, `/observations` | Record weather or crew observations |
+| POST | `/operations/{id}/start`, `/watch`, `/post-burn`, `/stand-down`, `/close` | Monitoring workflow; watch creates an inspection request requiring separate approval |
+| POST | `/operations/{id}/ignition` | Record the crew's report; does not control ignition |
+| POST | `/operations/{id}/alert`, `/simulate` | Operator message to configured people; simulated faults only |
+| GET | `/operations/{id}/report?format=json\|html` | Fingerprinted report with observation and simulation limits |
+
 ## Object shapes
 
 `SecurityEvent`: `event_id`, `event_type` (`activity|zone_entry|dwell|repeated_presence|sequence|multi_camera`, plus health events `camera_offline|camera_frozen|camera_ai_failed|camera_stalled|camera_restarting|camera_failed|camera_online|system_health`, which never belong to an incident), `severity`, `camera_id`, `zone_id`, `rule_id`, `timestamp_ms`, `started_ms`, `confidence`, `summary`, `label`, `track_ids`, `site_track_id`, `reason_codes`, `details`, `incident_id`, `snapshot_path`, `clip_path`.

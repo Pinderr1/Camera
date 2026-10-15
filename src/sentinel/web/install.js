@@ -269,6 +269,7 @@ function stepHardware() {
       <button type="button" ${path === "drone_first" ? 'class="primary"' : ""} data-register="drone">Register drone</button>
       <button type="button" data-register="contact_sensor">Register sensor</button>
       <button type="button" data-register="dock">Register dock</button>
+      ${inst.view.devices.some((d) => d.category === "drone" && d.removable) ? '<button type="button" data-register="accessory">Register drone accessory</button>' : ""}
       ${!cameraFirst ? `<button type="button" id="hw-add-camera">Add camera</button>` : ""}
     </div>
     ${inst.form ? registrationForm(inst.form.category) : ""}
@@ -363,6 +364,12 @@ function registrationForm(category) {
   } else if (category === "dock") {
     body = `${common}<label class="field">Dock <select name="profile">${profileOptions("dock", "simulated_dock")}</select></label>
       <label class="field">Drone <select name="drone_id"><option value="">Primary drone</option>${drones.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select></label>`;
+  } else if (category === "accessory") {
+    body = `${common}<label class="field">Accessory <select name="profile">${profileOptions("accessory", "simulated_burn_monitor_kit")}</select></label>
+      <label class="field">Fitted to <select name="drone_id" required>${drones.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select></label>
+      <label class="field">Serial number (optional) <input type="text" name="serial" maxlength="40"></label>
+      <p class="small muted">A removable accessory for the drone's agricultural configuration (Flame tab). Monitoring only: ignition payloads cannot be
+        registered, because Sentinel never controls ignition or release hardware. Planned hardware is registration only until it is built and tested.</p>`;
   } else {
     const kinds = ["contact_sensor", "motion_sensor", "environmental_sensor"];
     body = `${common}<label class="field">Type <select name="category">${kinds.map((k) => `<option value="${k}" ${k === category ? "selected" : ""}>${esc(inst.catalog.categories[k])}</option>`).join("")}</select></label>
@@ -607,7 +614,8 @@ async function submitRegistration(event) {
     if (data.home) { const [x, y] = data.home.split(",").map(Number); body.map = { x, y }; }
     if (!inst.view.site.origin_geo) return toast("Set the property location first", "A drone needs the property's location for its geofence (step 2).");
   }
-  if (category === "dock" && data.drone_id) body.drone_id = data.drone_id;
+  if ((category === "dock" || category === "accessory") && data.drone_id) body.drone_id = data.drone_id;
+  if (category === "accessory" && data.serial) body.serial = data.serial;
   if (data.zone_id) body.zone_id = data.zone_id;
   try {
     const device = await api("/devices", { method: "POST", body: JSON.stringify(body) });
@@ -618,6 +626,10 @@ async function submitRegistration(event) {
     if (category === "dock" && device.profile === "simulated_dock") {
       const dock = inst.plan.items.find((i) => i.kind === "drone_dock" && !i.device_id);
       if (dock && !inst.planDirty) { dock.device_id = device.id; await api("/installation/plan", { method: "PUT", body: JSON.stringify(inst.plan) }); }
+    }
+    if (category === "accessory") {
+      const flameButton = document.querySelector('[data-tab="flame"]');
+      if (flameButton) flameButton.hidden = false;
     }
     toast("Registered", `${device.name}. ${profile?.support === "planned" ? "Planned hardware: Sentinel cannot connect to it yet." : ""}`, "info");
     inst.form = null;

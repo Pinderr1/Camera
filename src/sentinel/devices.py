@@ -27,10 +27,11 @@ DEVICE_CATEGORIES: dict[str, str] = {
     "motion_sensor": "Motion sensor",
     "environmental_sensor": "Environmental sensor",
     "dock": "Charging dock",
+    "accessory": "Drone accessory",
 }
 # Cameras are registered through the camera onboarding flow (cameras[]), and the
 # hub is this computer; neither is stored in devices[].
-REGISTRABLE = ("recorder", "drone", "contact_sensor", "motion_sensor", "environmental_sensor", "dock")
+REGISTRABLE = ("recorder", "drone", "contact_sensor", "motion_sensor", "environmental_sensor", "dock", "accessory")
 SENSOR_CATEGORIES = ("contact_sensor", "motion_sensor", "environmental_sensor")
 
 CAPABILITIES: dict[str, str] = {
@@ -48,6 +49,7 @@ CAPABILITIES: dict[str, str] = {
     "health_monitoring": "Health monitoring",
     "charging": "Charging",
     "ai_processing": "AI processing",
+    "burn_monitoring": "Agricultural burn monitoring",
 }
 
 # How far Sentinel's support for a piece of hardware has been proven.
@@ -239,6 +241,26 @@ PROFILES: list[dict[str, Any]] = [
         "notes": ["Future product. Today the hub is the computer that runs Sentinel."],
     },
 ]
+
+
+def _accessory_profiles() -> list[dict[str, Any]]:
+    """Removable drone accessories, described in drone/accessories.py."""
+    from .drone.accessories import PROFILES as ACCESSORIES
+
+    profiles = []
+    for item in ACCESSORIES:
+        interface = item["interface"]
+        profiles.append({
+            "id": item["id"], "category": "accessory", "name": item["name"], "support": item["support"],
+            "protocols": [f"Mount: {interface['mount']}", f"Data: {interface['data']}"], "codecs": [],
+            "power": [item["power"]["supply"]],
+            "capabilities": (["burn_monitoring", "health_monitoring"] if "agricultural_burn_monitoring" in item["applications"] else []),
+            "notes": [item["summary"], *item["notes"]],
+        })
+    return profiles
+
+
+PROFILES += _accessory_profiles()
 PROFILE_INDEX = {profile["id"]: profile for profile in PROFILES}
 DRONE_ADAPTERS = ("simulated", "mavlink", "sitl")
 _ID = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
@@ -361,6 +383,10 @@ def validate_devices(config: dict[str, Any], camera_ids: set[str], zone_ids: set
             from .drone.catalog import validate_drone_model
 
             validate_drone_model(device, path, errors)
+        if category == "accessory":
+            from .drone.accessories import validate_accessory
+
+            validate_accessory(device, path, devices, errors)
         if category == "dock" and device.get("drone_id") and device["drone_id"] not in {d.get("id") for d in devices}:
             errors.append(f"{path}.drone_id references unknown device {device['drone_id']!r}")
     for index, camera in enumerate(config.get("cameras") or []):
@@ -521,6 +547,16 @@ def device_entry(device: dict[str, Any], live: dict[str, Any] | None, cameras_by
         }
         if not live.get("primary"):
             entry["warnings"].append("Only the primary drone accepts inspection requests in this build")
+        return entry
+    if category == "accessory":
+        attached = live.get("attachment") == "attached"
+        entry |= {"level": "connected" if live.get("reporting") else "registered", "drone_id": device.get("drone_id", ""),
+                  "state": live.get("state", "not_connected"), "attachment": live.get("attachment", "unknown"),
+                  "detail": ("Attached" if attached else live.get("attachment_detail", "No reports")) + (
+                      f"; faults: {', '.join(live['faults'])}" if live.get("faults") else ""),
+                  "configuration": live.get("configuration", "")}
+        if live.get("inspection_due"):
+            entry["warnings"].append("Accessory inspection due")
         return entry
     if category == "dock":
         drone = live.get("drone_telemetry") or {}

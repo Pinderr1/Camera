@@ -97,6 +97,15 @@ This version drops the fixed price target and picks components for capability, r
 
 The take-off mass is a *small* RPAS in Canada (250 g–25 kg). The auxiliary load is small next to hover power, so endurance is set by mass.
 
+**Removable accessories (FLAME Mode).** The same aircraft can carry an optional monitoring accessory. The budgets below are computed by `drone/accessories.py` and are estimates until weighed and flown:
+
+| Configuration | Take-off mass | Share of the 6.3 kg limit (70% throttle) | Hover (est.) |
+| --- | --- | --- | --- |
+| Thermal + burn-monitoring kit (250 g est.) | about 4.15 kg | 66% | about 20 min |
+| Thermal + IGNIS III Mini-class ignition payload (1.87 kg published) | about 5.77 kg | 92%, above the 80% planning limit | about 12 min |
+
+Ignition payloads are out of scope: Sentinel never controls ignition hardware. The full analysis, sources and the engineer's validation list are in [flame-hardware-evaluation.md](flame-hardware-evaluation.md).
+
 ## 5. Wiring and interfaces
 
 ```text

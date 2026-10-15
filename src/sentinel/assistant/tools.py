@@ -32,7 +32,7 @@ SCREENS = {
     "live": "Live cameras", "map": "Property map", "timeline": "Incidents", "insights": "Activity insights", "drone": "Drone",
     "system": "System health", "settings": "Settings", "report": "Installation plan (print)",
     "install": "Installation", "setup": "Setup", "zones": "Zones and privacy masks", "troubleshooter": "Network troubleshooter",
-    "camera_wizard": "Add a camera",
+    "camera_wizard": "Add a camera", "flame": "Flame Mode (agricultural)",
 }
 INSTALL_STEPS = ("type", "property", "plan", "hardware", "verify", "zones", "rules", "alerts", "health", "finish")
 SETUP_SUBS = ("cameras", "zones", "propmap", "links", "categories", "rules")
@@ -730,6 +730,11 @@ class Toolbox:
                                  "Creates a pending request only. Nothing flies until an operator approves it on the Drone tab after preflight checks.",
                                  ["A request appears on the Drone tab", "Audited"])
 
+        # ---- Flame Mode (the drone's agricultural configuration) -----------------------------
+        from ..flame.assistant import register_tools
+
+        register_tools(self, add, string, boolean, number)
+
     # ---- applying confirmed proposals ----------------------------------------------------
 
     def apply(self, proposal: dict[str, Any], actor: str) -> dict[str, Any]:
@@ -787,6 +792,10 @@ class Toolbox:
             if kind == "remove_device":
                 result = service.remove_device(params["device_id"], actor)
                 return {"ok": True, "message": "Removed. " + " ".join(result.get("notes", [])).strip()}
+            if kind.startswith("flame_"):
+                from ..flame.assistant import apply_proposal
+
+                return apply_proposal(service, kind, params, actor)
             if kind == "drone_inspection":
                 config = service.config
                 if params.get("point_id"):

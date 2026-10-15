@@ -1,0 +1,32 @@
+# Sentinel Thermal (X650 + ZT6 + SF45/B) commissioning parameters for ArduPilot SITL.
+# Start with the simulated SF45/B lidar on SERIAL5 (PowerShell):
+#   $env:WSLENV='SITL_PARAMS/u:SITL_EXTRA_ARGS/u'; $env:SITL_PARAMS='config/drone/sentinel-thermal-sitl.parm'
+#   $env:SITL_EXTRA_ARGS='--serial5=sim:sf45b'; wsl -d Ubuntu -- bash scripts/sitl/start_sitl.sh 3
+# Used by tests/test_sentinel_flame_sitl.py (Flame Mode on the Sentinel Thermal reference design).
+# Same failsafes and fence as sentinel-v1-sitl.parm; Sentinel only reads and audits these values.
+
+FS_GCS_ENABLE 1
+FS_GCS_TIMEOUT 5
+SYSID_MYGCS 245
+MAV_GCS_SYSID 245
+FS_THR_ENABLE 1
+FS_EKF_ACTION 1
+BATT_FS_LOW_ACT 2
+BATT_FS_CRT_ACT 1
+BATT_LOW_VOLT 10.5
+BATT_CRT_VOLT 10.0
+FENCE_ENABLE 1
+FENCE_TYPE 5
+FENCE_ACTION 1
+FENCE_ALT_MAX 25
+FENCE_MARGIN 2
+RTL_ALT 2200
+RTL_ALT_M 22
+WPNAV_SPEED 500
+WP_SPD 5
+AUTO_OPTIONS 3
+# The Thermal model carries a LightWare SF45/B for ArduPilot's own proximity avoidance (simulated on SERIAL5).
+SERIAL5_PROTOCOL 11
+PRX1_TYPE 8
+# Second GPS: use the better receiver (the SITL vehicle has one; the audit only warns)
+GPS_AUTO_SWITCH 1

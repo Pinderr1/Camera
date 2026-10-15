@@ -6,6 +6,7 @@
   <title>Sentinel</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/assistant.css">
+  <link rel="stylesheet" href="/static/flame.css">
 </head>
 <body>
   <header class="topbar">
@@ -35,6 +36,7 @@
     <button role="tab" data-tab="timeline">Timeline <span class="badge" id="open-count" hidden></span></button>
     <button role="tab" data-tab="insights">Insights</button>
     <button role="tab" data-tab="drone">Drone</button>
+    <button role="tab" data-tab="flame" hidden title="Agricultural burn monitoring with the drone">Flame</button>
     <button role="tab" data-tab="system">System <span class="badge" id="system-badge" hidden>!</span></button>
     <button role="tab" data-tab="settings">Settings</button>
     <button role="tab" data-tab="install">Install <span class="badge" id="install-badge" hidden title="Installation not finished">!</span></button>
@@ -155,6 +157,63 @@
           <h3>Inspection locations</h3>
           <p class="muted small">Places a drone may be asked to look at. Each request still needs an operator's approval.</p>
           <ul class="list compact" id="drone-points"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-flame" class="tab">
+      <p class="notice" id="flame-disclaimer"></p>
+      <div class="flame-layout">
+        <div>
+          <div class="card">
+            <div class="row-between"><h3>Field map</h3><label class="small"><input type="checkbox" id="flame-enabled"> Flame Mode on</label></div>
+            <svg id="flame-map" role="img" aria-label="Fields, drone and heat observations"></svg>
+            <div class="small muted">Fields (green), sensitive places (squares), drone geofence (dashed), drone, and heat: red outside the boundary, orange at the edge, yellow inside, blue remaining after the burn.</div>
+            <div class="button-row"><button type="button" id="flame-draw">Draw a field</button><button type="button" id="flame-corner-drone">Add corner at drone position</button>
+              <button type="button" id="flame-undo">Undo corner</button></div>
+            <div class="small" id="flame-draw-hint"></div>
+            <form id="flame-field-form" hidden>
+              <div class="grid2">
+                <label class="field">Field name <input type="text" name="name" maxlength="60" required></label>
+                <label class="field">Crop residue <input type="text" name="crop" maxlength="40" placeholder="e.g. wheat stubble"></label>
+                <label class="field">Fireguard inside the boundary, m <input type="number" name="fireguard_m" min="0" max="200" value="0"></label>
+                <label class="field">Watch strip outside the boundary, m <input type="number" name="watch_buffer_m" min="0" max="1000" value="100"></label>
+                <label class="field">Sensitive place <select name="sensitive_kind" id="flame-sensitive-kind"></select></label>
+                <label class="field">Its name <input type="text" name="sensitive_label" maxlength="60" placeholder="e.g. Neighbour's house"></label>
+              </div>
+              <div class="button-row"><button type="button" id="flame-add-sensitive">Place it on the map</button><button type="submit" class="primary">Save field</button></div>
+            </form>
+          </div>
+          <div class="card"><h3>Burn operation</h3><div id="flame-operation"></div></div>
+        </div>
+        <div>
+          <div class="card"><h3>Drone configuration</h3>
+            <p class="muted small">One aircraft, two configurations. Switching happens on the ground; agricultural monitoring needs the accessory attached, commissioned and inspected.</p>
+            <ul class="list" id="flame-drones"></ul></div>
+          <div class="card"><h3>Accessory</h3><div id="flame-accessories"></div></div>
+          <div class="card"><h3>Fields</h3><ul class="list" id="flame-fields"></ul></div>
+          <div class="card"><h3>Crew qualifications</h3>
+            <p class="muted small">Recorded as entered; Sentinel does not verify them with Transport Canada or anyone else.</p>
+            <ul class="list compact" id="flame-quals"></ul>
+            <form id="flame-qual-form"><div class="grid2">
+              <label class="field">Person <input type="text" name="person" maxlength="60" required></label>
+              <label class="field">Qualification <select name="kind" id="flame-qual-kind"></select></label>
+              <label class="field">Reference <input type="text" name="reference" maxlength="60"></label>
+              <label class="field">Expires <input type="date" name="expires"></label></div>
+              <button type="submit">Record qualification</button></form></div>
+          <div class="card"><h3>Permits and authorizations</h3>
+            <p class="muted small">Recorded as entered. Sentinel never decides whether a burn is permitted.</p>
+            <ul class="list compact" id="flame-auths"></ul>
+            <form id="flame-auth-form"><div class="grid2">
+              <label class="field">Kind <select name="kind" id="flame-auth-kind"></select></label>
+              <label class="field">Field <select name="field_id" id="flame-auth-field"></select></label>
+              <label class="field">Reference <input type="text" name="reference" maxlength="80"></label>
+              <label class="field">Issued by <input type="text" name="issued_by" maxlength="80"></label>
+              <label class="field">Valid from <input type="date" name="valid_from"></label>
+              <label class="field">Valid until <input type="date" name="valid_until"></label></div>
+              <label class="field">Conditions <input type="text" name="conditions" maxlength="500"></label>
+              <button type="submit">Record authorization</button></form></div>
+          <div class="card"><h3>Past operations</h3><ul class="list compact" id="flame-history"></ul></div>
         </div>
       </div>
     </section>
@@ -387,5 +446,6 @@
   <script src="/static/intel.js"></script>
   <script src="/static/install.js"></script>
   <script src="/static/assistant.js"></script>
+  <script src="/static/flame.js"></script>
 </body>
 </html>

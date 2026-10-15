@@ -67,6 +67,8 @@ def create_backup(
             files["settings.json"] = storage_dir / "settings.json"
         if (storage_dir / "installation.json").is_file():  # installation progress and property plan
             files["installation.json"] = storage_dir / "installation.json"
+        if (storage_dir / "flame.json").is_file():  # Flame Mode fields, drone configurations and settings
+            files["flame.json"] = storage_dir / "flame.json"
         database = storage_dir / "sentinel.db"
         if store is not None or database.is_file():
             files["sentinel.db"] = work_dir / "sentinel.db"
@@ -197,7 +199,7 @@ def restore_backup(path: str | Path, storage_dir: str | Path, *, parts: tuple[st
                         (assets / Path(member).name).write_bytes(archive.read(member))
                     restored.append(part)
                 continue
-            members = [_PART_FILES[part]] + (["installation.json"] if part == "config" else [])
+            members = [_PART_FILES[part]] + (["installation.json", "flame.json"] if part == "config" else [])
             for member in members:
                 if member not in names:
                     continue

@@ -3,6 +3,7 @@
 #
 #   bash scripts/sitl/start_sitl.sh [SPEEDUP]
 #   SITL_PARAMS=config/drone/sentinel-lite-sitl.parm bash scripts/sitl/start_sitl.sh 3   # Sentinel Lite commissioning
+#   SITL_PARAMS=config/drone/sentinel-thermal-sitl.parm SITL_EXTRA_ARGS=--serial5=sim:sf45b bash scripts/sitl/start_sitl.sh 3   # Thermal (simulated lidar)
 #
 # Uses the official prebuilt SITL binary from firmware.ardupilot.org (GPLv3;
 # run as a separate program, never linked into Sentinel), downloaded once into

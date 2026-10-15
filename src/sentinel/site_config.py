@@ -36,7 +36,7 @@ SOURCE_FIELDS = {
 WRITE_ONLY_FIELDS = {"path", "sub_path", "url", "sub_url"}  # stream addresses: accepted, never returned
 CAMERA_FIELDS = {"name", "enabled", "fps", "zones", "privacy_masks", "map", "categories", "detector", "conditions", "recorder"}
 DEVICE_FIELDS = {"name", "profile", "simulated", "enabled", "map", "zone_id", "host", "http_port", "rtsp_port", "channels", "model",
-                 "adapter", "connection", "indoor", "drone_id", "drone_model", "drone_options", "video_url"}
+                 "adapter", "connection", "indoor", "drone_id", "drone_model", "drone_options", "video_url", "serial"}
 NTFY_TOPIC_CREDENTIAL = "alerts.ntfy_topic"
 MAX_MAP_BYTES = 10 * 1024 * 1024
 
@@ -356,7 +356,7 @@ class SiteConfigManager:
                 value = payload[key]
                 if value in (None, ""):
                     device.pop("video" if key == "video_url" else key, None)
-                elif key in ("name", "model"):
+                elif key in ("name", "model", "serial"):
                     device[key] = str(value).strip()[:60]
                 elif key == "map":
                     device[key] = {axis: round(float(value[axis]), 2) for axis in ("x", "y")}
@@ -399,8 +399,11 @@ class SiteConfigManager:
                 if camera.get("recorder") == device_id:
                     camera.pop("recorder")
                     notes.append(f"camera {camera['id']} kept; it is no longer listed under the removed recorder")
-            for other in devices:
-                if other.get("drone_id") == device_id:
+            for other in list(devices):
+                if other.get("drone_id") == device_id and other["category"] == "accessory":
+                    devices.remove(other)  # an accessory is registered on its aircraft
+                    notes.append(f"accessory {other['id']} removed with its drone (its records are kept)")
+                elif other.get("drone_id") == device_id:
                     other.pop("drone_id")
             drone = config.get("drone", {})
             if drone.get("device") == device_id:

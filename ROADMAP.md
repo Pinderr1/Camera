@@ -1,6 +1,48 @@
 # Sentinel roadmap
 
-Last updated: 2026-10-14. Priority: **a working security brain on real cameras before any drone hardware.** Sentinel runs unattended with honest coverage reporting and self-recovery (Phase 0.9), and its rules are now testable and its incidents explained (Phase 0.10); the next proof is days of continuous operation on real cameras. The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
+Last updated: 2026-10-15. Priority: **a working security brain on real cameras before any drone hardware.** Sentinel runs unattended with honest coverage reporting and self-recovery (Phase 0.9), and its rules are now testable and its incidents explained (Phase 0.10); the next proof is days of continuous operation on real cameras. The detector upgrade raised MOT16-09 person recall from 28% to 74% at 95% precision. The next bottlenecks are crowded and occluded scenes, video decode cost, and the lack of labeled footage from real residential cameras.
+
+## V1 software feature freeze (from 2026-10-15)
+
+V1 software is frozen at the drone-reliability and accessories/FLAME commits of 2026-10-15. The next milestone is a real Sentinel device, not more simulation.
+
+- **Allowed until physical hardware testing is under way:**
+  - essential safety fixes;
+  - hardware-integration changes the bench and prototype need;
+  - fixes for critical bugs.
+- **Not allowed:** new product features or experimental work in the V1 baseline. Experiments stay outside `main` until hardware results justify them.
+- **Configurations kept as they are:** Sentinel Lite, Pro and Thermal (`drone/catalog.py`, `config/drone/*.parm`).
+- **Hardware order:**
+  - **Sentinel Lite** is the first physical prototype (Phase 5.1 below: bench stage 1, propellers off).
+  - **Sentinel Rover**, a ground vehicle, is a possible second hardware platform. It is only an idea: no design, software or purchase exists, and it needs its own safety boundaries recorded in `CLAUDE.md` before any work.
+
+### Verified at the freeze
+- **Full regression, 45 modules run one at a time:**
+  - 606 tests;
+  - 0 failures;
+  - 1 error (the AI Guide browser test below);
+  - 13 skipped (SITL-only tests, which skip without a simulator).
+- **SITL:** 45 of 48 drone failure scenarios pass on ArduCopter 4.7.2 with the Sentinel Lite parameters (`docs/drone-reliability.md` §6).
+- **Evidence:** `bench_runs/recovery_20261015/` and `bench_runs/v1freeze_20261015/` (git-ignored; also in the preservation copies).
+
+### Known issues and validation still required
+- **Hardware-only scenarios.** Not validated in SITL: `companion_power_loss`, `fc_restart_in_flight`, `camera_latency`.
+- **Flaky AI Guide browser test.** `tests/test_sentinel_assistant_ui.py::test_rule_proposal_cancel_resume_and_delete` fails intermittently, at different steps:
+  - the Guide input is hidden;
+  - the proposal card is empty;
+  - "Cancelled" never appears.
+  
+  One cause is confirmed: the page loads before the test adds a camera, so it may open on Live instead of the Guide. Opening the Guide explicitly did not make it pass, so a re-render of the conversation after a site change is suspected. Not yet classified as a product or test defect.
+- **Drone record recovery buffer.** In memory only: lost on a restart before the database recovers. Holds at most 200 records; retried every 5 s; audit entries are not replayed (`docs/drone-reliability.md` §6).
+- **Wind estimate.** A real Lite reports no in-flight wind estimate until drag coefficients (`EK3_DRAG_*`) are measured for its airframe. Until then the operator's attested wind is the only wind check.
+- **Untested on real hardware:**
+  - SADP discovery against a real device;
+  - Windows service installation;
+  - push notifications to a phone;
+  - the companion running on a Raspberry Pi;
+  - live Claude API calls from the AI Guide;
+  - planner geometry against a real site;
+  - any physical aircraft, aerial footage or accessory.
 
 ## Phase 0: Pivot foundation (done, October 2026)
 - [x] Audit the CameraAI codebase. Archive the senior-safety docs and keep that code frozen.
@@ -452,7 +494,41 @@ Exit for each step is listed in the drone doc. Never skip steps. The drone track
   - the prototype stays on the X500 V2 dev kit (about $1.41–1.85k at today's prices);
   - Lite endurance estimate lowered to 13 min.
 
+### Phase 5.0d: optional accessories and FLAME Mode (done in software, 2026-10-15; nothing built, no ignition hardware)
+- [x] Removable accessories on the existing aircraft (`drone/accessories.py`):
+  - registry category `accessory`;
+  - compatibility records (mass, endurance, sensors, interface, CG, heat);
+  - commissioning with measured mass;
+  - inspections and simulated health faults.
+  Ignition payloads are evaluation records only.
+- [x] Security ↔ agricultural monitoring configuration:
+  - switched only on the ground;
+  - each configuration refuses the other's requests;
+  - endurance adjusted for the fitted accessory.
+- [x] FLAME Mode (`flame/`):
+  - fields, watch strips and sensitive places;
+  - checklist, crew, equipment, permits and qualifications (recorded, not verified);
+  - weather against the burn boss's limits, and smoke direction;
+  - simulated fire and thermal watch, with coverage and position uncertainty;
+  - heat outside, at and near the boundary;
+  - drone and accessory faults reported to people;
+  - post-burn inspection and fingerprinted reports;
+  - FLAME tab and AI Guide tools.
+- [x] Validation:
+  - unit, API, Guide and Edge tests;
+  - SITL scenario on ArduCopter 4.7.2 with the Thermal parameters and a simulated SF45/B (`tests/test_sentinel_flame_sitl.py`, passed 2026-10-15). It covers registration, configuration switch, field, approved watch flight, heat outside the boundary, accessory fault, the FC's low-battery RTL, the FC's link-loss failsafe and the report.
+- [x] Hardware and commercial evaluation (`docs/flame-hardware-evaluation.md`):
+  - a monitoring kit fits the X650 Thermal on paper (about 4.15 kg, 66% of the 6.3 kg limit at 70% throttle);
+  - an IGNIS III Mini-class ignition payload does not (about 5.77 kg, 92%, below 10 min usable, proprietary interface) and is out of scope.
+
 ### Phase 5.1 onwards: physical prototype (owner approval needed for each purchase)
+- [ ] FLAME burn-monitoring kit (after the Thermal airframe exists):
+  - build and weigh it;
+  - CM4 report of attachment, latch, identity and temperatures;
+  - CG and AutoTune with the kit, and measured endurance;
+  - ZT6 radiometric interface and thermal accuracy against a controlled heat source;
+  - heat standoff and height limits from tests near a small controlled fire;
+  - ash and smoke maintenance. See `docs/flame-hardware-evaluation.md` §6.
 - [ ] **Sentinel Lite bench, stage 1 (smallest purchase, about $830–1,030 at 2026-10-14 prices):** X500 V2 PX4 dev kit (propellers off) and an A8 mini, with a pack and charger; run `sentinel.drone.bench` against the acceptance criteria in `docs/drone-bench-testing.md`. Prove on a real Pixhawk 6C: the `MAV_OPTIONS` lockout, passive audit, `MAV2_*` stream rates, the gimbal angle via `MNT1_TYPE 8`, and A8 mini RTSP into the Hub with measured latency. Stage 2: HM30 (shared radio, range around a house). Stage 3: assemble and fly pilot-flown with a qualified pilot.
 - [ ] Bench rig for Pro/Thermal (Pixhawk 6X + CM4 baseboard, M10, A8 mini; about $1.0–1.4k): bench steps 8.1–8.4 and 8.10 of the hardware doc; companion pairing on a real Pi; record results here.
 - [ ] Video on real hardware: latency (target under 400 ms), the gimbal attitude source, `drone.video.camera` from the datasheet.

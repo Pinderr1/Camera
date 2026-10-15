@@ -1094,6 +1094,10 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
 
     add_routes(app, service, require_auth)
 
+    from .flame.routes import add_routes as add_flame_routes  # Flame Mode (agricultural configuration): /api/v1/flame
+
+    add_flame_routes(app, service, require_auth)
+
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 

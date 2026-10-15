@@ -56,6 +56,11 @@ class Guide:
                 return self.diagnose(turn, address.group(1), brand=next((b for b in BRAND_WORDS if b in lower), None))
             if state.get("last_host") and _has(lower, "retest", "test again", "try again", "check again", "done", "i did", "fixed", "changed", "plugged"):
                 return self.diagnose(turn, state["last_host"], retest=True)
+            from ..flame.assistant import respond as flame_respond
+
+            flame_reply = flame_respond(self, text, lower, turn)
+            if flame_reply is not None:
+                return flame_reply
             if _has(lower, "drone"):
                 return self.drone(turn, lower)
             if state.get("drone_retest") and _has(lower, "retest", "test again", "try again", "check again", "done", "i did", "fixed", "changed"):

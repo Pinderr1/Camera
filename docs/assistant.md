@@ -95,6 +95,17 @@ API keys in the config are rejected by validation.
 
 See [api.md](./api.md#assistant).
 
+## Optional accessories and FLAME Mode
+
+The existing tool registry also exposes `get_flame_overview`,
+`get_drone_sensor_status`, `get_burn_checklist`, `get_hotspots`, and
+`get_operation_report`. `propose_field` and `propose_drone_configuration` remain
+confirmation-only proposals applied by the existing backend. These tools are
+shared by the built-in guide and external providers, including DeepSeek.
+There are no ignition, release, shell or direct drone-command tools. Registration
+tests and simulated API/Guide tests do not establish a live hardware trial.
+See [accessories and FLAME Mode](flame.md) for capability and simulation limits.
+
 ## Design for voice later
 
 Messages are plain text in and plain text plus structured cards out, so a voice front end can map speech to `POST .../messages` and read the `text`, presenting cards as spoken choices. No voice infrastructure is included.

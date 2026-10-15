@@ -165,6 +165,10 @@ class DroneManager:
         self.companion_status: Callable[[], dict[str, Any] | None] = lambda: None  # set by the service
         self.video_status: Callable[[], dict[str, Any] | None] = lambda: None
         self.on_inspection_finished: Callable[[dict[str, Any]], None] = lambda request: None
+        # Set by the agricultural configuration (sentinel.flame): why a request from `source` is refused ("" = allowed),
+        # and extra readiness checks ({id, label, state, detail, blocker}).
+        self.request_guard: Callable[[str], str] = lambda source: ""
+        self.extra_checks: Callable[[], list[dict[str, Any]]] = lambda: []
         self.requests: dict[str, InspectionRequest] = {}
         self.safety_state = "ok"
         self.safety_notes: list[str] = []
@@ -303,6 +307,13 @@ class DroneManager:
                 tested = any(version.startswith(prefix) for prefix in self.firmware_tested)
                 add("firmware", "Firmware version", "pass" if tested else "warn",
                     f"{version}" + ("" if tested else f" (tested with {', '.join(self.firmware_tested)})"))
+            try:
+                extra = self.extra_checks()
+            except Exception as error:  # a listener must never hide the aircraft's own checks
+                extra = [{"id": "configuration", "label": "Configuration", "state": "fail", "detail": f"configuration check failed: {error}",
+                          "blocker": "configuration_check_failed"}]
+            for check in extra:
+                add(check["id"], check["label"], check["state"], check["detail"], check.get("blocker", ""))
             maintenance = self.maintenance_summary()
             due = maintenance["inspection_due"]
             add("maintenance", "Maintenance", "warn" if due else "pass",
@@ -387,6 +398,9 @@ class DroneManager:
         hover_s: float = 0.0,
     ) -> InspectionRequest:
         with self._lock:
+            refused = self.request_guard(source)
+            if refused:
+                raise FlightCommandRejected(refused)
             if map_point is not None:
                 lat, lon = map_point_to_geo(self.site_origin, *map_point)
             if lat is None or lon is None:
@@ -427,6 +441,9 @@ class DroneManager:
     def approve(self, request_id: str, operator: str) -> InspectionRequest:
         with self._lock:
             request = self._pending(request_id)
+            refused = self.request_guard(request.source)
+            if refused:
+                raise FlightCommandRejected(refused)
             blockers = self.preflight_blockers()
             if blockers:
                 raise FlightCommandRejected(f"preflight blocked: {', '.join(blockers)}")

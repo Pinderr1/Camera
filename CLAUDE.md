@@ -53,6 +53,7 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Drone video coverage: frozen/blank frames rejected, coverage (`none`/`partial`/`full`) only from proven-live frames over the point, pre-flight stream check (frames discarded), stale or slewing gimbal not used | Built and tested (unit, SITL-posed simulated camera with injected freezes/drops) |
 | Drone hardware bench test (`sentinel.drone.bench`, propellers off, never arms, no flight commands) and setup journey (planned → simulated → detected → connected → configured → bench verified → flight-test verified → operationally authorized, from evidence and named records) | Built; bench run against SITL as a stand-in. **Never run on real hardware** |
 | Sentinel Lite cost-down study (`docs/drone-lite-cost.md`): firmware features verified per board, three BOMs, Canadian landed cost, manufacturing and purchasing sequence | Research only; **nothing bought** |
+| Optional drone accessories and FLAME Mode (agricultural burn monitoring on the same aircraft): accessory registry with compatibility records (mass, endurance, sensors, interface), commissioning, inspections, simulated health and faults; ground-only switching between security and agricultural configurations (each refuses the other's requests); fields, watch strips, sensitive places; checklists, crew, equipment, permits/qualifications (recorded, not verified); weather against operator limits and smoke direction; thermal watch with coverage and position uncertainty; notifications; fingerprinted reports; FLAME tab; AI Guide tools (`docs/flame.md`, `docs/flame-hardware-evaluation.md`) | Built; unit, API, Guide and Edge tests; **SITL scenario on ArduCopter 4.7.2 (Thermal parameters + simulated SF45/B)** with simulated fire, thermal camera and kit. **No accessory built; no real thermal ingestion; no ignition hardware (excluded)** |
 | Camera liveness: independent frame, decoder, stream-clock, picture and inference signals; still scenes are `unverified`, never falsely `frozen`; recorder-clock freezes detected | Built and tested on simulated cameras with sensor noise and overlay freezes. **Thresholds not yet checked on real recorders** |
 | Evidence-preserving database recovery (originals moved aside with hashes, salvage from a copy, backup age and loss window reported and notified) | Built and tested |
 | Rule builder (types incl. combinations; modes Home/Away/Night/Vacation; days; cooldowns; notification preference; minimum observations; templates) with mandatory test before enabling (simulated walk, scenarios, recorded activity) | Built; backend and Edge tests. Recorded-activity tests are approximations |
@@ -122,13 +123,19 @@ src/sentinel/            the Sentinel brain (current product)
                          projection, inspection observations, video coverage; stdlib), video (drone video worker, quality monitor,
                          simulated aerial camera), flight_health (what telemetry supports claiming; stdlib), commissioning (setup
                          journey and levels; stdlib), faults (fault-injection framework: FaultLink, FaultyVideoSource, scenario
-                         runner and report), bench (propeller-free hardware bench test CLI)
+                         runner and report), bench (propeller-free hardware bench test CLI), accessories (removable accessory
+                         profiles, compatibility evaluation, configuration-switch rules; stdlib)
+  flame/                 FLAME Mode (stdlib core): fields, operations (checklist, weather, classification, readiness wording),
+                         thermal (simulated fire + thermal observer), service (FlameService: accessories, configurations, monitoring
+                         loop, notifications, <storage>/flame.json), reports, routes (/api/v1/flame), assistant (Guide tools/answers)
   companion/             drone companion computer (stdlib): MAVLink relay with Hub command filter, health agent, pairing CLI, Pi provisioning
   web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors; install.js = Install tab + planner
   bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
                          metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
 config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, rules, drone
 config/sentinel.drone-first.example.json   drone-first demo: no cameras, simulated drone, dock and sensors
+config/sentinel.farm.example.json   FLAME demo: simulated Sentinel Thermal drone, dock and burn-monitoring kit on a farm map
+config/drone/sentinel-thermal-sitl.parm   Thermal commissioning for SITL (V1 failsafes + simulated SF45/B on SERIAL5)
 config/scenarios/              scripted scenarios (delivery, prowler, ambiguous handoff, demo loop)
 config/netsim/                 simulated network conditions for the troubleshooter (regression: Hikvision on another subnet)
 scripts/sitl/                  start_sitl.sh (official ArduCopter SITL in Linux/WSL2), gcs_standin.py (scripted commissioning engineer and pilot; simulators only)
@@ -151,6 +158,8 @@ docs/drone-models.md           Sentinel Lite / Pro / Thermal: cheapest-drone res
 docs/drone-lite-cost.md        Lite cost-down: verified board firmware features, three BOMs, landed cost, manufacturing, purchasing sequence
 docs/drone-reliability.md      drone failure handling, flight health, lockout findings, video coverage, fault framework and SITL results
 docs/drone-bench-testing.md    propeller-free hardware bench test, supported firmware, acceptance criteria before purchase and on the bench
+docs/flame.md                  optional accessories and FLAME Mode: scope, simulation limits, persistence, dashboard/API/Guide, validation
+docs/flame-hardware-evaluation.md  X650 payload/endurance budget, IGNIS III Mini lessons, regulation notes, engineer's validation list, blocked items
 docs/benchmarking.md           how to measure Sentinel on real footage, and what each metric means
 docs/camera-setup.md           onboarding, DVR fallbacks, diagnostics, credentials, editors
 docs/environmental-intelligence.md  category audit, missing classes/datasets/licences, environment analysis
@@ -188,6 +197,9 @@ python scripts/drone_sitl_demo.py --out bench_runs/drone_demo   # end-to-end dro
 bash scripts/sitl/start_sitl_instance.sh 2 3 config/drone/sentinel-lite-sitl.parm   # separate SITL (ports 5780-5783)
 python scripts/sitl/fault_scenarios.py --fc tcp:127.0.0.1:5782 --out bench_runs/faults_lite   # drone failure scenarios + report
 $env:SENTINEL_SITL='bench'; python -m unittest tests.test_sentinel_drone_bench_sitl   # bench test against SITL (instance 2)
+# FLAME: start SITL with SITL_PARAMS=config/drone/sentinel-thermal-sitl.parm SITL_EXTRA_ARGS=--serial5=sim:sf45b (WSLENV both /u), then:
+$env:SENTINEL_SITL='flame'; python -m unittest tests.test_sentinel_flame_sitl   # accessory, configuration switch, field, watch, faults, report (~1 min)
+python -m sentinel serve --config config/sentinel.farm.example.json   # FLAME demo (simulated)
 python -m sentinel.drone.bench run --connection udpin:0.0.0.0:14551 --model sentinel_lite --interactive   # real bench, propellers off
 python -m unittest tests.test_sentinel_ui                  # browser tests (pip install playwright; uses installed Edge)
 python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
@@ -216,6 +228,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 9. **Network diagnostics are read-only and local.** Sentinel never changes router, firewall, computer, or device network settings; it explains what to change. It probes only private/link-local/CGNAT/loopback addresses, searches a network only after the person confirms they manage it (port checks at most the local /24), never collects MAC addresses, serial numbers, Wi-Fi names, or public IPs, and tries a recorder password once per test (accounts lock).
 10. **Never claim coverage that does not exist.** A camera is reported as monitoring only while new frames reach a working detector and nothing shows the picture is frozen; a still picture that cannot be proven live is shown as `unverified`, not as fine and not as frozen. Offline, frozen, AI-failed, stalled, and restarting cameras are shown as not monitoring (Live overlay, coverage badge, System tab, API), recorded as outages, and pushed to people when they last. Health events never open security incidents, and health notifications do not depend on the arm mode.
 11. **Registration is not connection, and nothing is "protected".** Registering a device records what is installed; it is reported as connected, delivering video, or AI-verified only from data Sentinel received. Planned hardware gets no adapter and is never shown as connected. Simulated devices are always labelled. The strongest statement Sentinel makes is "AI monitoring verified on N of M cameras"; it never tells a person their property is protected or secure. Planner coverage is approximate and always carries its assumptions; no prices, purchasing claims or coverage guarantees.
+12. **Accessories are monitoring only; Sentinel never controls ignition.** No ignition, incendiary, fuel-delivery or release command, route, tool or control exists anywhere in Sentinel. Ignition payloads are evaluation records (`unsupported`) and cannot be registered as installed; improvised ignition devices are never designed or described. FLAME text never says or implies that a burn is approved, permitted, legal or safe to light, or that a fire is contained or out (`flame.operations.FORBIDDEN_CLAIMS`, tested on every generated text); permits, qualifications and checklist items are records of what people entered. Thermal observations state their coverage and position uncertainty. Burn notifications go to people only (boundary 8). The aircraft switches configuration only on the ground, and each configuration refuses the other's requests.
 
 ## Technical decisions (and why)
 
@@ -255,5 +268,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - Run the full test suite before committing.
 
 ## Roadmap pointer
+
+**V1 software is feature-frozen (2026-10-15).** Until physical hardware testing is under way, change only what safety, hardware integration or a critical bug requires; no new features. Sentinel Lite is the first physical prototype. Known issues are listed in `ROADMAP.md` (V1 software feature freeze).
 
 Phases and exit criteria are in `ROADMAP.md`. In short: (1) brain on real cameras, (2) pilot hardening (accounts, HTTPS, service install, health), (3) mobile app, (4) evaluation dataset and detector upgrades, (5) drone via SITL then a supervised tethered or bench rig, (6) multi-site and commercial readiness.
