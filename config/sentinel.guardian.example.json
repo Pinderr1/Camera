@@ -23,5 +23,5 @@
     "sensitivity": "normal",
     "cooldown_s": 120
   },
-  "storage": {"dir": "data/sentinel-guardian"}
+  "storage": {"dir": "data/sentinel/guardian-demo"}
 }

@@ -555,11 +555,11 @@ Wildlife and human protection on the same Hub. Full plan, dataset review and lim
 
 | Guardian phase | Status (2026-10-15) |
 | --- | --- |
-| G1 Wildlife recognition | Generic COCO animal labels through the existing detectors (implemented). Species classifier: **planned**, none installed; COCO labels are shown as unconfirmed ("Bear (species not determined)") |
+| G1 Wildlife recognition | Generic COCO animal labels through the existing detectors (implemented). Species classifier: **planned**, none installed; COCO labels are shown as unconfirmed ("Bear (species not determined)"). Dataset licences checked against publisher pages 2026-10-15: CCT, NACTI, ENA24, WCS are CDLA-Permissive; Idaho forbids selling images; Animal Kingdom publishes no licence; MegaDetector weights licences unconfirmed |
 | G2 Movement intelligence | **Implemented, synthetic sequences only**: guardian tracks with unambiguous re-acquisition, approach/retreat/lateral/stationary, relative speed, approach to camera/protected zone/person, turns, sustained approach, calibrated-only distance and time-to-zone, explainable levels, cooldowns, clip evidence, live overlay, `/api/v1/guardian`. Off by default. **Not run on real wildlife footage** |
-| G3 Human threat protection | **Planned**. Owner recognition blocked (boundary 2) |
-| G4 Emergency Guardian drone/rover | **Concept, research only**: no spray, smoke, payload-release, weapon or interception code; simulation at most |
-| G5 Multi-platform Guardian | **Planned**. The G2 monitor is platform-neutral (`moving_camera` caps levels) |
+| G3 Human protection | **Planned**. Owner facial recognition **blocked** (boundary 2); a mistaken identification must never trigger a physical response |
+| G4 Emergency Guardian drone/rover | **Research concept**: no spray, smoke, payload-release, weapon or interception code; simulation at most |
+| G5 Multi-platform Sentinel | **Planned**. The G2 monitor is platform-neutral (`moving_camera` caps levels); a ground rover is a candidate first physical Guardian prototype; Thermal/FLAME reused for agriculture |
 
 ### Decisions (2026-10-15)
 1. Wildlife emergency alerts will eventually be able to push while home security is disarmed, through a separate configurable Guardian setting. Today they follow the arm mode and are not pushed when disarmed.
@@ -568,7 +568,7 @@ Wildlife and human protection on the same Hub. Full plan, dataset review and lim
 4. Next priorities: validate G2 on a real camera (prerecorded wildlife clips, then live footage with labelled tracks via `sentinel.bench`), then species identification (licence-cleared classifier, e.g. an MIT/Apache MegaDetector v6 variant plus a species model, benchmarked before adoption).
 
 ### Next steps
-- [ ] Run G2 on prerecorded wildlife clips and on the owner's camera; record false-alarm counts per day and level.
+- [ ] Run G2 on prerecorded wildlife clips and on the owner's camera (steps: `docs/wilderness-guardian.md#real-camera-validation-plan`); record false-alarm counts per day and level.
 - [ ] Label animal tracks in real footage (approach / retreat / lateral) and measure movement classification against them.
 - [ ] Check a ground calibration against tape-measured distances.
 - [ ] Verify dataset and weight licences (`sources.md`) before any download; evaluate MegaDetector v6 and a species classifier with `sentinel.bench`.
