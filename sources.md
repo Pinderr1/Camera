@@ -54,7 +54,7 @@ ONNX Runtime and `onnxruntime-directml` are MIT. `onnx` (Apache-2.0) is only use
 
 Candidate future detectors with permissive licences: YOLOX (Apache-2.0), RT-DETR (Apache-2.0), RTMDet / MMDetection (Apache-2.0). Verify the licence of the **weights** and the training data, not only the code.
 
-### Guardian wildlife data and models (checked 2026-10-15, `guardian` branch)
+### Guardian wildlife data and models (checked 2026-10-15)
 
 Details, versions and citations are in `docs/guardian-datasets.md`; the machine-readable registry is `config/guardian/datasets.json`. Downloaded images stay in `data/guardian/` (git-ignored).
 

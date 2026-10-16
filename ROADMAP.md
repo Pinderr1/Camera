@@ -549,13 +549,15 @@ Exit for each step is listed in the drone doc. Never skip steps. The drone track
 - [ ] Licence audit of every shipped model and dependency (`sources.md`).
 - [ ] Support tooling: remote diagnostics bundle without media.
 
-## Wilderness Guardian track (`guardian` branch; V1 on `main` stays frozen)
+## Wilderness Guardian track (on `main`, off by default)
+
+Consolidated into `main` on 2026-10-16 at the owner's request. Every Guardian feature is off by default (`guardian.enabled`, `guardian.species_classifier.enabled`), so V1 behaviour is unchanged unless a site turns it on.
 
 Wildlife and human protection on the same Hub. Full plan, dataset review and limits: [docs/wilderness-guardian.md](docs/wilderness-guardian.md). Guardian phases are numbered separately from the phases above.
 
 | Guardian phase | Status (2026-10-15) |
 | --- | --- |
-| G1 Wildlife recognition | Generic COCO animal labels through the existing detectors (implemented). Species classifier: **planned**, none installed; COCO labels are shown as unconfirmed ("Bear (species not determined)"). Dataset licences checked against publisher pages 2026-10-15: CCT, NACTI, ENA24, WCS are CDLA-Permissive; Idaho forbids selling images; Animal Kingdom publishes no licence; MegaDetector weights licences unconfirmed |
+| G1 Wildlife recognition | Generic COCO animal labels through the existing detectors (implemented). **Species classifier implemented (2026-10-16), optional and off by default:** Google SpeciesNet v4.0.3a (Apache-2.0) on Sentinel's YOLOX boxes, with confident-only naming and "species uncertain" otherwise. On 435 real camera-trap images (ENA24, Caltech, NACTI), 160/161 confident calls on Sentinel boxes named the dataset's species. YOLOX found an animal in only 43 % of animal images, so detector recall is the next gap. No grizzly or wolf images yet; not run on owner footage ([docs/guardian-datasets.md](docs/guardian-datasets.md)). Dataset licences: CCT, NACTI, ENA24, WCS, WSU Lynx are CDLA-Permissive; Idaho forbids selling images; Animal Kingdom publishes no licence; MegaDetector V6 has AGPL, MIT and Apache variants |
 | G2 Movement intelligence | **Implemented, synthetic sequences only**: guardian tracks with unambiguous re-acquisition, approach/retreat/lateral/stationary, relative speed, approach to camera/protected zone/person, turns, sustained approach, calibrated-only distance and time-to-zone, explainable levels, cooldowns, clip evidence, live overlay, `/api/v1/guardian`. Off by default. **Not run on real wildlife footage** |
 | G3 Human protection | **Planned**. Owner facial recognition **blocked** (boundary 2); a mistaken identification must never trigger a physical response |
 | G4 Emergency Guardian drone/rover | **Research concept**: no spray, smoke, payload-release, weapon or interception code; simulation at most |

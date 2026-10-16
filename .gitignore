@@ -41,3 +41,10 @@ Thumbs.db
 
 # Guardian wildlife dataset downloads (images, metadata cache, manifests)
 data/guardian/
+
+# Private home-camera recordings (pose keypoints from live cameras): local only, never published
+data/processed/pose/cam01/
+data/processed/pose/*/*_live.jsonl
+
+# Local Claude Code state and settings (per machine)
+.claude/

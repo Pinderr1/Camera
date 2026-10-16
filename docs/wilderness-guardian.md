@@ -4,7 +4,7 @@ Wilderness Guardian extends Sentinel from property security toward protecting pe
 
 The goal: **Sentinel should understand how an animal moves and whether it is coming toward people, not just recognise an animal in one picture.**
 
-Development happens on the `guardian` branch. Sentinel V1 on `main` stays feature-frozen (see `CLAUDE.md`), and the Guardian work never changes flight-critical code.
+Guardian is part of Sentinel on `main` (consolidated 2026-10-16; the `guardian` branch is historical). Every Guardian feature is off by default, so Sentinel V1 behaviour is unchanged unless a site enables it (see `CLAUDE.md`). The Guardian work never changes flight-critical code.
 
 ## Status labels
 
