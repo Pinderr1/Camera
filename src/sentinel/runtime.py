@@ -100,6 +100,8 @@ class SentinelRuntime:
         self.storage_status: dict[str, Any] = {}
         self._recording_error_ms = 0
         self._health_seq = 0
+        self.species = None  # optional Guardian species classifier (guardian/species_service.py)
+        self._configure_species()
 
     def reconfigure(self, config: dict[str, Any]) -> None:
         """Apply an edited site config. Zones, rules, topology, and alert policy
@@ -111,6 +113,7 @@ class SentinelRuntime:
             self.incidents.config = IncidentConfig.from_dict(config.get("incidents"))
             self.policy.config = AlertPolicyConfig.from_dict(config.get("alerts"))
             self.guardian = GuardianMonitor(config, next_id=self.guardian.next_id)  # never reuse a guardian id
+            self._configure_species()
             if not self._fixed_notifiers:  # channels edited in the dashboard apply without a restart
                 self.dispatcher.notifiers = build_notifiers(config, self.media_root, self._mqtt_publish, self.secrets.get)
             self.zones = zone_index(config)
@@ -190,6 +193,44 @@ class SentinelRuntime:
     def guardian_overlays(self, camera_id: str) -> list[dict[str, Any]]:
         with self._lock:
             return self.guardian.overlays(camera_id) if self.guardian.settings.enabled else []
+
+    def _configure_species(self) -> None:
+        """Start, keep, restart or stop the optional species classifier to match the
+        config. It never blocks: a missing model or library only degrades the
+        `guardian_species` component, and Guardian keeps its detector labels."""
+        settings = self.guardian.species_settings
+        wanted = self.guardian.settings.enabled and settings.enabled
+        if self.species is not None and (not wanted or self.species.settings != settings):
+            self.species.stop(wait=False)
+            self.species = None
+        if not wanted:
+            self.health.components.pop("guardian_species", None)
+            return
+        if self.species is not None:
+            self.species.attach()  # same classifier, new monitor
+            return
+        try:
+            from .guardian.species_service import SpeciesService
+
+            self.species = SpeciesService(settings, self._lock, lambda: self.guardian, self._species_health)
+        except Exception as error:  # e.g. numpy/OpenCV/onnxruntime missing
+            log.warning("species classifier not started: %s", error)
+            self._species_health("degraded", f"species classifier not started ({str(error)[:160]}); detector labels are used")
+
+    def _species_health(self, state: str, detail: str) -> None:
+        with self._lock:
+            self.health.set_component("guardian_species", state, detail, int(time.time() * 1000), notify=False)
+
+    def guardian_species_frame(self, camera_id: str, now_ms: int, image: Any) -> None:
+        """Called by camera workers after each processed frame; never raises."""
+        species = self.species
+        if species is None:
+            return
+        try:
+            species.frame(camera_id, now_ms, image)
+        except Exception as error:
+            log.warning("species classification skipped on %s: %s", camera_id, error)
+            self._species_health("degraded", f"species classification failed: {str(error)[:160]}")
 
     def _handle_events(self, events: list[SecurityEvent], now_ms: int, *, image: Any = None, active: list[Track] | None = None) -> None:
         changed: dict[str, tuple[Incident, list[SecurityEvent]]] = {}
@@ -509,10 +550,13 @@ class SentinelRuntime:
                 "site_tracks": [site.summary() for site in self.engine.site_tracks() if site.active_members],
                 "ambiguous_links": self.engine.correlator.ambiguous_count,
                 "coverage": self.health.coverage(self.camera_status),
-                "guardian": {"enabled": self.guardian.settings.enabled, "tracks": self.guardian.snapshot()},
+                "guardian": {"enabled": self.guardian.settings.enabled, "tracks": self.guardian.snapshot(),
+                             "species_classifier": self.species.status() if self.species else {"enabled": False}},
             }
 
     def close(self) -> None:
+        if self.species is not None:
+            self.species.stop()
         for recorder in self.recorders.values():
             recorder.finish()
         self.dispatcher.stop()

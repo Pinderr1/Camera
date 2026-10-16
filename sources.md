@@ -60,11 +60,13 @@ Details, versions and citations are in `docs/guardian-datasets.md`; the machine-
 
 | Source | Licence (as published) | Commercial use | Status |
 | --- | --- | --- | --- |
-| ENA24-detection, Caltech Camera Traps, NACTI, WCS Camera Traps (LILA BC) | CDLA-Permissive-1.0 | Allowed; keep the licence text with any redistributed data, cite the paper named on each page | Sample downloaded for evaluation/fine-tuning preparation |
+| ENA24-detection, Caltech Camera Traps, NACTI, WCS Camera Traps (LILA BC) | CDLA-Permissive-1.0 | Allowed; keep the licence text with any redistributed data, cite the paper named on each page | Samples downloaded (ENA24, Caltech, NACTI) for evaluation/fine-tuning preparation |
+| WSU Lynx (LILA BC, Washington State) | CDLA-Permissive-1.0 | Allowed | Registered candidate (wolf, moose, elk, black bear); not fetched |
 | LILA MegaDetector results files (MDv5a boxes) | No licence stated on the LILA results page | Unclear | Stored as machine-generated, unverified boxes in the manifest; never treated as ground truth |
 | Idaho Camera Traps (LILA) | "Images may not be sold in any format" | No | Registry entry only, not fetched |
 | Animal Kingdom | No licence published; request form | Unknown | Research only, not fetched |
-| SpeciesNet (google/cameratrapai) | Code Apache-2.0; weights Apache 2.0 (Kaggle `licenseName`, every v4.0.0a–v4.0.3b instance) | Code and weights allowed; the ensemble also needs MegaDetector (below) | Not downloaded |
+| SpeciesNet (google/cameratrapai) crop classifier v4.0.3a | Code Apache-2.0; weights Apache 2.0 (Kaggle `licenseName` on every v4.0.0a–v4.0.3b instance, and `license: apache-2.0` in the downloaded archive's README) | Allowed | Downloaded to `models/speciesnet/v4.0.3a/` (git-ignored) and exported to ONNX once; runs on ONNX Runtime behind Sentinel's YOLOX boxes. SpeciesNet's own MegaDetector v5a step is **not used**. Optional Guardian feature, off by default |
+| torch, onnx2torch, onnx (export only) | BSD-3-style (torch), Apache-2.0 (onnx2torch, onnx) | Allowed | Used once in a throwaway environment to export SpeciesNet to ONNX (`scripts/guardian/export_speciesnet_onnx.py`); not Sentinel run-time dependencies |
 | MegaDetector V6 (Pytorch-Wildlife model zoo) | `MDV6-yolov9-c/e`, `MDV6-yolov10-c/e`: AGPL; `MDV6-mit-yolov9-c/e`: MIT; `MDV6-apa-rtdetr-c/e`: Apache 2.0 | Only the MIT and Apache variants are candidates | Not downloaded |
 | MegaDetector v5a/v5b, MDv1000 | Repository MIT; weights licence not stated; v5 is YOLOv5 (Ultralytics AGPL-3.0) based | Not cleared | Do not ship |
 

@@ -316,7 +316,9 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
                 "notify_min_level": monitor.settings.notify_min_level,
                 "calibrated_cameras": sorted(cid for cid, cal in monitor.calibration.items() if cal is not None),
                 "tracks": monitor.snapshot(camera_id),
-                "limits": "Movement is measured in the image; distances and times appear only for calibrated cameras. Levels describe observed movement, not intent.",
+                "species_classifier": runtime.species.status() if runtime.species else {"enabled": False},
+                "limits": "Movement is measured in the image; distances and times appear only for calibrated cameras. Levels describe observed movement, not intent. "
+                          "A species is named only when the optional classifier is confident; otherwise the detector label is shown as unconfirmed.",
             }
 
     @app.get("/api/v1/incidents")

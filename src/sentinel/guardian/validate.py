@@ -8,6 +8,7 @@ from .geometry import GroundCalibration
 from .monitor import GuardianSettings
 from .movement import MovementSettings
 from .risk import CONCERNS, LEVELS, RiskSettings
+from .species import SpeciesSettings
 
 _NUMBERS = ("min_confidence", "min_track_s", "sustained_s", "hold_s", "cooldown_s", "reacquire_s", "reacquire_body_heights", "closing_rate", "closing_rate_m")
 
@@ -67,6 +68,7 @@ def validate_guardian(config: dict[str, Any], camera_ids: set[str], zone_ids: se
         for kind, override in guardian.get("species", {}).items():
             if not isinstance(override, dict) or override.get("concern") not in CONCERNS:
                 errors.append(f"guardian.species.{kind}.concern must be one of {list(CONCERNS)}")
+        _validate_species_classifier(guardian.get("species_classifier", {}), errors)
     for index, camera in enumerate(config.get("cameras", [])):
         options = camera.get("guardian")
         if options is None:
@@ -84,3 +86,32 @@ def validate_guardian(config: dict[str, Any], camera_ids: set[str], zone_ids: se
                 GroundCalibration.fit(image, ground)
             except (KeyError, TypeError, IndexError, ValueError) as error:
                 errors.append(f"{path}.calibration is invalid: {error}")
+
+
+def _validate_species_classifier(block: Any, errors: list[str]) -> None:
+    path = "guardian.species_classifier"
+    if not isinstance(block, dict):
+        errors.append(f"{path} must be an object")
+        return
+    unknown = set(block) - set(SpeciesSettings.__dataclass_fields__)
+    if unknown:
+        errors.append(f"{path} has unknown keys {sorted(unknown)}")
+    if not isinstance(block.get("enabled", False), bool):
+        errors.append(f"{path}.enabled must be true or false")
+    for key in ("min_confidence", "min_margin", "group_confidence"):
+        value = block.get(key, 0.5)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            errors.append(f"{path}.{key} must be between 0 and 1")
+    for key in ("reclassify_s", "pad"):
+        value = block.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            errors.append(f"{path}.{key} must be a non-negative number")
+    for key in ("min_agreeing", "max_crops_per_track", "queue_size", "min_box_px", "cpu_threads"):
+        value = block.get(key, 1)
+        if isinstance(value, bool) or not isinstance(value, int) or value < (0 if key == "cpu_threads" else 1):
+            errors.append(f"{path}.{key} must be a positive whole number")
+    country = block.get("country")
+    if country is not None and not (isinstance(country, str) and len(country) == 3 and country.isalpha()):
+        errors.append(f"{path}.country must be an ISO 3166-1 alpha-3 code such as CAN or USA")
+    if not isinstance(block.get("model_dir", ""), str):
+        errors.append(f"{path}.model_dir must be a path")

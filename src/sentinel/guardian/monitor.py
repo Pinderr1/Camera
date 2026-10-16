@@ -20,7 +20,8 @@ from typing import Any
 from ..models import SecurityEvent, Track
 from .geometry import GroundCalibration, distance_to_polygon, point_in_polygon
 from .movement import MovementEstimate, MovementSettings, Sample, distance_trend, estimate
-from .risk import CONCERNS, LEVEL_NAMES, LEVEL_RANK, LEVEL_SEVERITY, LEVELS, RiskAssessment, RiskSettings, SpeciesProfile, assess, species_profile
+from .risk import CONCERNS, LEVEL_NAMES, LEVEL_RANK, LEVEL_SEVERITY, LEVELS, RiskAssessment, RiskSettings, SpeciesProfile, apply_decision, assess, species_profile
+from .species import SpeciesDecision, SpeciesPolicy, SpeciesSettings, TrackSpecies
 
 TRAIL_POINTS = 30
 HOLD_GAP_MS = 1000  # a level still counts as held across a dropout this short (one missed detection must not reset it)
@@ -48,6 +49,7 @@ class GuardianSettings:
     ignore_kinds: list[str] = field(default_factory=lambda: ["bird"])
     sensitivity: str = "normal"
     species: dict[str, dict[str, Any]] = field(default_factory=dict)
+    species_classifier: dict[str, Any] = field(default_factory=dict)  # optional SpeciesNet, see guardian/species.py
     movement: MovementSettings = field(default_factory=MovementSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
 
@@ -90,6 +92,7 @@ class GuardianTrack:
     inside: list[str] = field(default_factory=list)  # protected zone ids the ground point is in
     kind_weights: dict[str, float] = field(default_factory=dict)  # detector label -> summed confidence over the track
     resets: int = 0
+    species: TrackSpecies = field(default_factory=TrackSpecies)  # classifier results for this animal, if enabled
 
     @property
     def anchor(self) -> tuple[float, float]:
@@ -126,7 +129,12 @@ def track_profile(gtrack: GuardianTrack, overrides: dict | None = None) -> Speci
     """The species wording for a whole track, not one frame. Detectors often flip
     between labels (bear/dog, cat/dog) on the same animal: the majority label
     (weighted by confidence) names it, and when another label is common too the
-    display says so and the higher concern of the two is used."""
+    display says so and the higher concern of the two is used. A species
+    classifier result (optional) is layered on top and never lowers that concern."""
+    return apply_decision(detector_profile(gtrack, overrides), gtrack.species.decision, overrides)
+
+
+def detector_profile(gtrack: GuardianTrack, overrides: dict | None = None) -> SpeciesProfile:
     shares = gtrack.label_shares()
     base = species_profile(gtrack.kind, overrides)
     others = [kind for kind, share in shares.items() if kind != gtrack.kind and share >= MIXED_LABEL_SHARE]
@@ -141,7 +149,25 @@ def track_profile(gtrack: GuardianTrack, overrides: dict | None = None) -> Speci
 def species_view(gtrack: GuardianTrack, overrides: dict | None = None) -> dict[str, Any]:
     profile = track_profile(gtrack, overrides)
     shares = {kind: round(share, 2) for kind, share in gtrack.label_shares().items()}
-    return {"display": profile.display, "concern": profile.concern, "status": profile.status, "note": profile.note, "detector_label": gtrack.kind, "detector_labels": shares}
+    decision = gtrack.species.decision
+    confirmed = decision is not None and decision.status == "confirmed"
+    return {
+        "display": profile.display, "concern": profile.concern, "status": profile.status, "note": profile.note,
+        "detector_label": gtrack.kind, "detector_labels": shares,
+        "species_confidence": round(decision.confidence, 3) if confirmed else None,
+        # Species-specific safety guidance may only ever follow a confirmed species.
+        "species_specific_guidance_allowed": confirmed,
+        "classifier": decision.as_dict() if decision else None,
+    }
+
+
+def overlay_label(profile: SpeciesProfile, decision: SpeciesDecision | None) -> str:
+    if profile.status == "classifier" and decision is not None:
+        name = profile.display.split(" —")[0].split(" (")[0]
+        return f"{name} {decision.confidence:.0%}"
+    if profile.status == "classifier_uncertain":
+        return profile.display.split(" detected")[0] + "?"
+    return profile.display.split(" (")[0]
 
 
 class GuardianMonitor:
@@ -166,6 +192,8 @@ class GuardianMonitor:
         self._camera_motion_until: dict[str, int] = {}
         self._next_id = next_id
         self._seq = 0
+        self.species_settings = SpeciesSettings.from_dict(self.settings.species_classifier)
+        self.species_policy: SpeciesPolicy | None = None  # attached once a classifier is ready
 
     @property
     def next_id(self) -> int:
@@ -173,6 +201,36 @@ class GuardianMonitor:
 
     def watches(self, camera_id: str) -> bool:
         return self.settings.enabled and (not self.settings.cameras or camera_id in self.settings.cameras)
+
+    # ---- species classifier (optional) ------------------------------------
+
+    def attach_species(self, policy: SpeciesPolicy | None) -> None:
+        self.species_policy = policy
+
+    def species_requests(self, camera_id: str, now_ms: int) -> list[tuple[str, tuple[float, float, float, float]]]:
+        """Guardian tracks seen in this frame that are due for a (re)classification.
+        Each animal is classified a few times while visible, never every frame."""
+        if self.species_policy is None or not self.watches(camera_id):
+            return []
+        due = []
+        for gtrack in self.tracks.values():
+            if gtrack.camera_id != camera_id or gtrack.lost or gtrack.last_seen_ms != now_ms:
+                continue
+            if gtrack.species.due(now_ms, self.species_settings):
+                gtrack.species.pending, gtrack.species.last_request_ms = True, now_ms
+                due.append((gtrack.guardian_id, gtrack.bbox))
+        return due
+
+    def species_result(self, guardian_id: str, scores: dict[int, float]) -> SpeciesDecision | None:
+        gtrack = self.tracks.get(guardian_id)
+        if gtrack is None or self.species_policy is None:
+            return None
+        return gtrack.species.add(scores, self.species_policy)
+
+    def species_skipped(self, guardian_id: str) -> None:
+        gtrack = self.tracks.get(guardian_id)
+        if gtrack is not None:
+            gtrack.species.pending = False
 
     # ---- update ----------------------------------------------------------
 
@@ -455,7 +513,7 @@ class GuardianMonitor:
             timestamp_ms=now_ms,
             started_ms=gtrack.first_seen_ms,
             confidence=round(assessment.confidence, 3),
-            summary=describe(profile.display, gtrack, assessment),
+            summary=describe(profile.display, gtrack, assessment, classified=profile.status.startswith("classifier")),
             label="animal",
             zone_id=zone_id,
             track_ids=[track.track_id],
@@ -495,12 +553,14 @@ class GuardianMonitor:
                 "velocity": g.movement.velocity,
                 "movement": g.movement.movement,
                 "level": g.assessment.level if g.assessment else "observed",
-                "label": f"{track_profile(g, self.settings.species).display.split(' (')[0]} {g.guardian_id.rsplit(':', 1)[-1]}",
+                "label": f"{overlay_label(track_profile(g, self.settings.species), g.species.decision)} {g.guardian_id.rsplit(':', 1)[-1]}",
             })
         return out
 
 
-def describe(display: str, gtrack: GuardianTrack, assessment: RiskAssessment) -> str:
+def describe(display: str, gtrack: GuardianTrack, assessment: RiskAssessment, classified: bool = False) -> str:
+    """With a classifier result: 'Black bear — 91% species confidence — moving toward
+    Driveway (...)'. Without: 'Bear (species not determined) moving toward ...'."""
     codes = {f.code for f in assessment.factors}
     approach_s = gtrack.estimates.get("approach_s", 0)
     parts = []
@@ -520,7 +580,8 @@ def describe(display: str, gtrack: GuardianTrack, assessment: RiskAssessment) ->
         parts.append("after a sharp change of direction")
     if gtrack.estimates.get("time_to_zone_s") is not None:
         parts.append(f"about {gtrack.estimates['time_to_zone_s']:.0f} s from a protected area at its current pace (estimate)")
-    return f"{display} {'; '.join(parts) or 'in view'} ({LEVEL_NAMES[assessment.level]})"
+    joiner = " — " if classified else " "
+    return f"{display}{joiner}{'; '.join(parts) or 'in view'} ({LEVEL_NAMES[assessment.level]})"
 
 
 def _safe_ground(calibration: GroundCalibration | None, point: tuple[float, float]) -> tuple[float, float] | None:

@@ -41,7 +41,7 @@ class NtfyNotifier:
 
     def send(self, notification: Notification) -> None:
         headers = {
-            "Title": notification.title.encode("ascii", "replace").decode(),
+            "Title": _ascii(notification.title),
             "Priority": str(notification.priority),
             "Tags": "rotating_light" if notification.severity == "high" else "warning",
         }
@@ -53,7 +53,7 @@ class NtfyNotifier:
         snapshot = self._snapshot_file(notification)
         if snapshot is not None:
             headers["Filename"] = snapshot.name
-            headers["Message"] = notification.message.replace("\n", " / ").encode("ascii", "replace").decode()
+            headers["Message"] = _ascii(notification.message.replace("\n", " / "))
             body = snapshot.read_bytes()
         request = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -140,3 +140,8 @@ def build_notifiers(
         elif channel["type"] == "mqtt" and mqtt_publish:
             notifiers.append(CallbackNotifier("mqtt", lambda n: mqtt_publish("alerts", n.as_dict())))
     return notifiers
+
+
+def _ascii(text: str) -> str:
+    """HTTP headers are ASCII: keep dashes readable instead of turning them into question marks."""
+    return text.replace("\u2014", "-").replace("\u2013", "-").encode("ascii", "replace").decode()

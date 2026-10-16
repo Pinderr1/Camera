@@ -21,7 +21,7 @@ Development happens on the `guardian` branch. Sentinel V1 on `main` stays featur
 | Phase | Area | Status |
 | --- | --- | --- |
 | 1 | Generic animal detection (COCO `bear`, `dog`, `cat`, `horse`, `cow` ...) through the existing detectors | **Implemented** (existing Sentinel `animal` category) |
-| 1 | Species identification (black bear, grizzly bear, cougar, wolf, coyote, moose, elk) | **Planned**. No species model is installed. Detector labels are shown as unconfirmed ("Bear (species not determined)") |
+| 1 | Species identification (black bear, grizzly bear, cougar, wolf, coyote, moose, elk) with Google SpeciesNet v4.0.3a on Sentinel's own detector boxes: per-track caching, periodic reclassification, confidence and taxonomy kept, "species uncertain" fallback, never lowers concern | **Implemented**, optional and off by default (`guardian.species_classifier`). Checked on 435 real camera-trap images (see [guardian-datasets.md](guardian-datasets.md#results-on-real-images)), **not yet on owner camera footage**. No grizzly or wolf images exist to test those species |
 | 2 | Movement intelligence: persistent tracks, movement class, relative speed, approach to camera/zone/person, turns, sustained approach, calibrated-only distance, explainable levels, alert suppression, evidence, overlay, API | **Implemented** and **Simulated**: passes synthetic tests only. **Not yet validated on real wildlife footage** |
 | 2 | Wildlife alerts while security is disarmed (separate setting) | **Planned** (decision 1 below). Today wildlife alerts follow the arm mode |
 | 3 | Human activity recognition beyond today's rules (altercations, following, dangerous areas) | **Planned** |
@@ -35,7 +35,8 @@ Development happens on the `guardian` branch. Sentinel V1 on `main` stays featur
 1. **Disarmed mode.** Wildlife emergency alerts should eventually work whether or not home security is armed, through a separate configurable Guardian setting (proposed name `guardian.notify_when_disarmed`, default off until tested). The existing arm-mode behaviour is unchanged today: wildlife pushes follow the arm mode and are not sent while disarmed.
 2. **Notifications per level.** Observed: record only. Approaching: record only by default. Elevated Concern: notify. Urgent Review: high-priority notification (priority 5). Set by `notify_min_level: elevated_concern`, the default.
 3. **Owner facial recognition stays blocked** until privacy, security, legal and product requirements are settled and the decision is recorded in `CLAUDE.md` (boundary 2). A mistaken identification must never trigger a physical defensive response.
-4. **Next priorities:** validate Phase 2 on the owner's existing camera with real footage (see [Real camera validation](#real-camera-validation-plan)), then species identification. Real footage comes before more synthetic simulation.
+4. **Next priorities:** validate Phase 2 and the species path on the owner's existing camera with real footage (see [Real camera validation](#real-camera-validation-plan)). Then raise animal recall (a permissive camera-trap detector such as MegaDetector V6 Apache/MIT in front of SpeciesNet), and add wolf (WSU Lynx) and grizzly sources. Real footage comes before more synthetic simulation.
+5. **Species wording (2026-10-16).** A species is named only when the classifier is confident, its runner-up is well behind, the geofence allows it and, on live tracks, two crops agree: "Black bear — 91% species confidence — moving toward Driveway". Otherwise "Bear detected — species uncertain" or the detector's unconfirmed label. Only a confirmed species may ever unlock species-specific guidance (`species_specific_guidance_allowed`), and Guardian gives none today. A classifier result never lowers concern below the detector label's.
 
 ---
 
@@ -57,6 +58,16 @@ Sentinel's detectors (YOLOX by default, plus RT-DETRv2/D-FINE and an EfficientDe
 
 Confusing black bears with grizzly bears has real consequences. Agency safety advice for the two species differs, so Sentinel must never give species-specific advice from an unconfirmed species (see Phase 4). The goal of Phase 1 is to name a species only when a model's confidence and validation support it, and to keep "species not determined" otherwise.
 
+### Species identification (implemented, optional)
+
+`guardian.species_classifier.enabled: true` adds Google SpeciesNet v4.0.3a (Apache-2.0) as a crop classifier behind Sentinel's YOLOX animal boxes, on ONNX Runtime (DirectML or CPU). It runs on one background thread and classifies each guardian track every 4 s, at most 6 times. The model loads on the first animal. A missing model only degrades the `guardian_species` health component. Design, licences, settings and measurements are in [guardian-datasets.md](guardian-datasets.md#species-recognition-speciesnet).
+
+What the first real-image checks showed (camera-trap stills, not security cameras):
+
+- With Sentinel's own boxes, 160 of 161 confident calls named the dataset's species. The one error was an elk called domestic cattle at 0.98.
+- YOLOX found an animal in only 43 % of animal images: detector recall, not species, is the main gap.
+- Every confident bear call was American black bear, and no black bear was ever called grizzly. There are no grizzly or wolf images to test the reverse.
+
 ### Datasets and models
 
 Checked on 2026-10-15 against each publisher's own page (LILA BC, GitHub). A first licence-checked sample of individual images has since been downloaded with the Guardian dataset importer; species coverage verified from the metadata, exact licences, versions and what is missing are in [guardian-datasets.md](guardian-datasets.md). Record any new dataset or pre-trained weights in `sources.md`, and check weights licences separately from code licences.
@@ -75,7 +86,7 @@ Other candidates checked:
 | Candidate | What the source says | Note |
 | --- | --- | --- |
 | **Idaho Camera Traps** ([LILA](https://lila.science/datasets/idaho-camera-traps/)) | ~1.5M images, 62 categories (deer, elk and cattle most common), sequence-level labels | "Images may not be sold in any format, but may be used for scientific publications": **not suitable for a commercial product without permission** |
-| **SpeciesNet** ([GitHub](https://github.com/google/cameratrapai)) | MegaDetector plus a Google species classifier with 2,000+ labels | Repository is Apache-2.0; weights licence and North American species list not stated on the page. Verify before use |
+| **SpeciesNet** ([GitHub](https://github.com/google/cameratrapai)) | MegaDetector plus a Google species classifier with 2,498 labels (v4.0.3a), including American black bear, grizzly and brown bear, puma, grey wolf, coyote, moose and elk | Code and weights Apache-2.0 (verified 2026-10-16). **Integrated** as the optional crop classifier, without its MegaDetector step |
 | **Pytorch-Wildlife classifiers** | Amazon, Serengeti, opossum, Deepfaune (Europe), DFNE (Deepfaune fine-tuned for northeastern North America) | DFNE is the only listed North American classifier; licence and species list to check |
 
 ### Missing training data
@@ -204,9 +215,24 @@ Wildlife events go through Sentinel's normal media path: the incident clip **wit
   "notify_min_level": "elevated_concern",
   "ignore_kinds": ["bird"],
   "sensitivity": "normal",
-  "species": {"dog": {"concern": "low"}}
+  "species": {"dog": {"concern": "low"}},
+  "species_classifier": {
+    "enabled": false,
+    "model_dir": "models/speciesnet/v4.0.3a",
+    "providers": "auto",
+    "min_confidence": 0.8,
+    "min_margin": 0.2,
+    "group_confidence": 0.6,
+    "min_agreeing": 2,
+    "reclassify_s": 4,
+    "max_crops_per_track": 6,
+    "min_box_px": 48,
+    "country": "CAN"
+  }
 }
 ```
+
+`species_classifier` needs the SpeciesNet files in `model_dir` (download the v4.0.3a archive from Kaggle, then run `scripts/guardian/export_speciesnet_onnx.py` once in an environment with torch and onnx2torch). `country` (ISO alpha-3) and `admin1_region` apply SpeciesNet's geofence: a species not expected there is never confirmed.
 
 Per camera: `"guardian": {"moving_camera": false, "calibration": {"image_points": [[x, y], ...], "ground_points_m": [[X, Y], ...]}}`. Image points are normalised (0..1). Measure at least five ground marks with a tape so the calibration can check itself.
 

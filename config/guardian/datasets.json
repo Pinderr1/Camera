@@ -69,6 +69,7 @@
       "format": "coco_camera_traps",
       "metadata_url": "https://storage.googleapis.com/public-datasets-lila/nacti/nacti_metadata.1.14.json.zip",
       "image_base_url": "https://storage.googleapis.com/public-datasets-lila/nacti-unzipped",
+      "metadata_csv_url": "https://storage.googleapis.com/public-datasets-lila/nacti/nacti_metadata.csv.zip",
       "_md_results_note": "MDv5a results exist (https://lila.science/public/lila-md-results/nacti_mdv5a.0.0_results.json.zip, 125 MB zipped) but are too large to parse in memory here; NACTI records therefore carry no boxes.",
       "licence": {
         "id": "CDLA-Permissive-1.0",
@@ -147,6 +148,22 @@
         "commercial_use": "not_allowed",
         "conditions": "Images may not be sold in any format, but may be used for scientific publications.",
         "attribution": "Idaho Department of Fish and Game. Data via LILA BC."
+      },
+      "label_map": {}
+    },
+    {
+      "id": "wsu_lynx",
+      "name": "WSU Lynx (Washington State)",
+      "page": "https://lila.science/datasets/wsu-lynx/",
+      "version": "wsu-lynx.26.02.13.1705 (metadata not yet inspected)",
+      "format": null,
+      "_candidate_note": "Candidate for North American wolf, moose, elk and black bear: 1.2M images from 637 camera locations in north-central and northeastern Washington (2016-2017). LILA's taxonomy mapping lists canis lupus, alces alces, cervus canadensis and ursus americanus. Metadata: https://lilawildlife.blob.core.windows.net/lila-wildlife/wsu-lynx/wsu-lynx.26.02.13.1705.zip. Add a format and label map after inspecting it (likely needs the streaming importer).",
+      "licence": {
+        "id": "CDLA-Permissive-1.0",
+        "url": "https://cdla.io/permissive-1-0/",
+        "commercial_use": "allowed",
+        "conditions": "Keep the CDLA-Permissive-1.0 text with redistributed data.",
+        "attribution": "Thornton D, Morris D, King T, Perera-Romero L, Anderson L, Garcia-Anleu R, Fitkin S, Vynne C. Identification of camera trap images by artificial intelligence and human experts. Journal of Applied Ecology, 2026. Data via LILA BC."
       },
       "label_map": {}
     }

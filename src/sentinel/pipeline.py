@@ -251,6 +251,9 @@ class CameraWorker(threading.Thread):
                     stage = time.perf_counter()
                     self.runtime.process_camera_update(camera_id, now_ms, active, ended, image=image)
                     timings["engine"] = (time.perf_counter() - stage) * 1000
+                    stage = time.perf_counter()
+                    self.runtime.guardian_species_frame(camera_id, now_ms, image)  # copies due boxes only; never waits on the model
+                    timings["species"] = (time.perf_counter() - stage) * 1000
                 if self.on_frame is not None:
                     self.on_frame(
                         {

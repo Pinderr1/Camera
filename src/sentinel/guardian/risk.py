@@ -46,8 +46,8 @@ DETECTOR_PROFILES: dict[str, SpeciesProfile] = {
     "giraffe": SpeciesProfile("Animal (detector label: giraffe)", "unknown", "detector_class"),
     "bird": SpeciesProfile("Bird", "low", "detector_class"),
 }
-# Labels a future species classifier (see docs/wilderness-guardian.md, Phase 1) may
-# produce. Nothing in Sentinel produces them yet.
+# Guardian keys the optional species classifier (guardian/species.py, SpeciesNet) can
+# confirm. Other confirmed species keep the classifier's common name.
 CLASSIFIER_PROFILES: dict[str, SpeciesProfile] = {
     "black_bear": SpeciesProfile("Black bear", "high", "classifier"),
     "grizzly_bear": SpeciesProfile("Grizzly bear", "high", "classifier"),
@@ -57,8 +57,37 @@ CLASSIFIER_PROFILES: dict[str, SpeciesProfile] = {
     "moose": SpeciesProfile("Moose", "high", "classifier"),
     "elk": SpeciesProfile("Elk", "moderate", "classifier"),
     "deer": SpeciesProfile("Deer", "low", "classifier"),
+    "brown_bear": SpeciesProfile("Brown bear (grizzly or coastal brown bear)", "high", "classifier"),
+    "domestic_dog": SpeciesProfile("Dog", "low", "classifier"),
 }
 UNKNOWN = SpeciesProfile("Animal (species unknown)", "unknown", "unknown")
+
+
+def classified_profile(kind: str, decision: Any, overrides: dict[str, dict[str, Any]] | None = None) -> SpeciesProfile:
+    """Profile for a detector label plus an optional species decision."""
+    return apply_decision(species_profile(kind, overrides), decision, overrides)
+
+
+def apply_decision(detector: SpeciesProfile, decision: Any, overrides: dict[str, dict[str, Any]] | None = None) -> SpeciesProfile:
+    """Layer a species decision onto the detector's profile.
+
+    Only a `confirmed` decision names a species, and it never lowers concern below
+    what the detector label alone gives: a classifier saying "dog" about a wolf
+    must not quieten Guardian. An `uncertain` decision changes the wording only."""
+    status = getattr(decision, "status", None)
+    if status == "uncertain":
+        return SpeciesProfile(decision.display, detector.concern, "classifier_uncertain",
+                              f"species classifier unsure ({decision.confidence:.0%} for the group)")
+    if status != "confirmed":
+        return detector
+    key = decision.key or ""
+    base = species_profile(key, overrides) if key in CLASSIFIER_PROFILES else None
+    name = base.display if base else decision.display
+    concern = detector.concern
+    if base and CONCERN_POINTS[base.concern] > CONCERN_POINTS[concern]:
+        concern = base.concern
+    return SpeciesProfile(f"{name} — {decision.confidence:.0%} species confidence", concern, "classifier",
+                          "species from a pretrained classifier on camera-trap images; not validated on this camera")
 
 
 def species_profile(kind: str, overrides: dict[str, dict[str, Any]] | None = None) -> SpeciesProfile:
