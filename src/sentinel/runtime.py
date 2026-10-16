@@ -110,7 +110,7 @@ class SentinelRuntime:
             self.engine = TemporalEventEngine(config, arm_mode=self.settings["arm_mode"], sensitivity=self.settings["sensitivity"])
             self.incidents.config = IncidentConfig.from_dict(config.get("incidents"))
             self.policy.config = AlertPolicyConfig.from_dict(config.get("alerts"))
-            self.guardian = GuardianMonitor(config)
+            self.guardian = GuardianMonitor(config, next_id=self.guardian.next_id)  # never reuse a guardian id
             if not self._fixed_notifiers:  # channels edited in the dashboard apply without a restart
                 self.dispatcher.notifiers = build_notifiers(config, self.media_root, self._mqtt_publish, self.secrets.get)
             self.zones = zone_index(config)
@@ -180,8 +180,11 @@ class SentinelRuntime:
             events = self.guardian.process(camera_id, timestamp_ms, active, ended, self.engine.correlator.track_to_site)
         except Exception as error:
             log.exception("guardian failed on %s", camera_id)
-            self.health.set_component("guardian", "degraded", f"wildlife movement analysis failed: {str(error)[:160]}", timestamp_ms, notify=False)
+            # Notified like any outage (after the usual delay), so a persistent failure is not silent coverage loss.
+            self.health.set_component("guardian", "degraded", f"wildlife movement analysis failed: {str(error)[:160]}", timestamp_ms)
             return []
+        if self.health.components.get("guardian", {}).get("state", "ok") != "ok":
+            self.health.set_component("guardian", "ok", "", timestamp_ms)
         return events
 
     def guardian_overlays(self, camera_id: str) -> list[dict[str, Any]]:

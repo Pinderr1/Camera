@@ -133,12 +133,14 @@ Integration points (small, additive):
 | Lateral / stationary | Image speed in **body heights per second** below 0.15 counts as stationary | Relative only: a fast-moving distant animal and a slow nearby one can look the same |
 | Relative speed and direction | Reported as body heights/s and an image heading (left/right/up/down) | No compass directions or m/s without calibration |
 | Toward a protected zone | Image distance from the ground point (box bottom-centre) to the zone polygon, divided by body height, shrinking by at least 0.15 body heights/s | Perspective distorts image distances; wording says "moving toward", not a distance |
-| Toward a person | Distance to the nearest person track on the same camera, shrinking | Same perspective limits. Both must be visible |
+| Toward a person | Distance to the nearest person track on the same camera, shrinking, **and** the animal's own image velocity points at that person. When the gap shrinks because the person is walking up to the animal, it is reported as `person_nearing` ("in view while a person gets closer to it"), never as the animal moving | Same perspective limits. Both must be visible |
 | Sudden direction change | Heading in the latest window vs the previous window, at least 100° apart, both moving | Needs ~5 s of history |
 | Sustained approach | Approach (or presence in a protected zone) for at least `sustained_s` (3 s), allowing a 1 s gap | |
-| Distance and time-to-zone | **Only for calibrated cameras**: a homography from at least 4 image points to measured ground points in metres. Reported as "approximate, flat ground" with calibration status (`unverified` with exactly 4 points, `verified` with more than 4 points and RMS error ≤ 0.5 m) | Wrong on slopes, and when the box bottom is not the feet (occlusion) |
+| Distance and time-to-zone | **Only for calibrated cameras**: a homography from at least 4 image points to measured ground points in metres. Reported as "approximate, flat ground" with calibration status (`unverified` with exactly 4 points; `verified` with more than 4 points when both the fit error and the leave-one-out check, each mark predicted from the others, are ≤ 0.5 m) | Wrong on slopes, and when the box bottom is not the feet (occlusion) |
 | Camera movement | `moving_camera: true` (PTZ, vehicle, drone) caps every level at Observed. All objects sliding together is also treated as camera motion for 3 s | A single animal on a shaking camera cannot be told from real movement |
 | Tracking glitches | A jump of more than 2.5 body heights in under 1 s resets the movement history instead of being reported as a dash | |
+| Species label | Confidence-weighted vote over the whole track (detectors flip between `bear` and `dog` on one animal). When a second label has at least 25 % of the votes the display says so ("Animal (species not determined; detector labels: bear 64 %, dog 36 %)") and the higher concern of the labels is used | |
+| Worker restarts | Track ids of a restarted camera worker carry the run (`cam:r2-1`), and a stopping worker ends its tracks, so a new animal never continues an old one. A guardian track nothing has mentioned for `reacquire_s` + 5 s is dropped | |
 
 ### Risk levels
 
@@ -158,21 +160,25 @@ The score is additive, and **each point is a named factor shown in the event** (
 | Sustained approach | +1 |
 | Sustained approach toward a protected zone or person | +1 |
 | Inside a protected zone | +2 |
-| Distance to a person shrinking | +2 (or +1 if a person is simply in view) |
+| Moving toward a person in view (`closing_on_person`) | +2 |
+| A person in view getting closer to the animal (`person_nearing`) | +2 |
+| A person simply in view | +1 |
 | Sharp turn followed by approach | +1 |
 | Speed increase while approaching | +1 |
 | In view ≥ 60 s | +1 |
+| High-concern animal staying in view ≥ `risk.linger_s` (60 s) (`lingering`), even without approaching (bins, feeders) | +1 |
 | Calibrated time to zone ≤ 10 s, distance ≤ 15 m | +1 each (estimate) |
 
-Thresholds: Approaching ≥ 2, Elevated Concern ≥ 4, Urgent Review ≥ 6, and every level above Observed needs an actual approach, zone presence or closing distance. `sensitivity` shifts all thresholds by one point. Low confidence (track younger than `min_track_s` or mean detector confidence below `min_confidence`) and camera motion **cap** the level at Observed, and the event says why (`held_back`).
+Thresholds: Approaching ≥ 2, Elevated Concern ≥ 4, Urgent Review ≥ 6, and every level above Observed needs an actual approach, zone presence, closing distance (either way) or a lingering high-concern animal. A bear staying 60 s by the house therefore reaches Elevated Concern (2 + 1 + 1). `sensitivity` shifts all thresholds by one point. Low confidence (track younger than `min_track_s` or mean detector confidence below `min_confidence`) and camera motion **cap** the level at Observed, and the event says why (`held_back`).
 
 Language rules (tested): event text describes movement ("moving toward Back door for 6 s"). It never says attack, charging, aggressive, hunting, stalking, predatory, intends or safe. Notifications end with Sentinel's observed-activity disclaimer.
 
 ### Avoiding repeated false alarms
 
-- A level must hold for `hold_s` (1 s) before it is emitted.
+- A level must hold for `hold_s` (1 s) before it is emitted. It counts as held while the track is at that level *or above*, across dropouts of up to 1 s, so one missed detection or a score moving between two levels does not restart the clock (before 2026-10-16 it silenced every alert).
 - Each guardian track emits each level once. A new alert for the same track needs the level to stay lower for `cooldown_s` (120 s) and then rise again.
-- Events join the animal's incident. The existing alert policy notifies once per incident and again only when severity rises, under the global rate limit.
+- Events join the animal's incident (same site track, or a wildlife incident on the same camera). They never join a security incident by camera, and one animal's level steps count as one behaviour for corroboration, so a wildlife push carries its own level's severity. The existing alert policy notifies once per incident and again only when severity rises, under the global rate limit; an Urgent Review is never held back by that limit (it still counts toward it).
+- A failure in the Guardian monitor is a `guardian` health component ("Wildlife movement analysis"): notified like other outages if it lasts, and back to normal on the next successful frame.
 - Approaching is recorded without a push by default.
 - Birds are ignored (`ignore_kinds`).
 
@@ -325,15 +331,17 @@ Phase 2 has passed synthetic tests only. These steps validate it on real footage
 
 | Test | How | Expected (if detection works) |
 | --- | --- | --- |
-| Approaching | Bear clip toward the camera, or walk a dog toward it | Movement `approaching`, target "the camera"; Approaching, then Elevated Concern for a bear or dog-like animal after about 3 s |
+| Approaching | Bear clip toward the camera, or walk a dog toward it | Movement `approaching`, target "the camera"; Approaching, then Elevated Concern for a bear after about 3 s. A dog-like animal stays at Approaching (3 points) unless it also heads for a protected zone or a person |
 | Retreating | Clip of an animal walking away | `retreating`; no event above Observed |
+| Lingering | Bear clip that stays in view for over a minute without approaching | Elevated Concern with factor `lingering` after about 60 s |
+| Person walks up to an animal | Walk toward a still dog or deer | Factor `person_nearing`; the text says a person is getting closer, never that the animal moves |
 | Dog across the yard | Walk a dog left to right at a steady distance | `lateral`, image heading `right`; no alert |
 | Approaching a person | Stand still in view while the dog walks to you | Factor `closing_on_person`; Elevated Concern (dog) |
 | Multiple detections | Two animals, or an animal plus people | Separate `guardian_track_id`s; only the approaching animal escalates |
 | Protected-zone entry | Dog walks into the drawn zone | Target is the zone name, then `in_protected_zone` |
 | Perspective change | Pan or zoom a PTZ camera, or a handheld clip | `held_back: camera_motion_suspected`, no alert; set `"guardian": {"moving_camera": true}` on PTZ cameras |
 | Occlusion | Animal passes behind a bush or car for 3–8 s | Same guardian ID with `reacquired: 1`, or a new ID with `ambiguous_with` if two candidates exist |
-| Ground-marker calibration | Five tape-measured marks on flat ground; read their image positions from a frame (normalised 0..1); add `cameras[].guardian.calibration` | `estimates.distance_to_zone_m` within about a metre of the tape at short range; `calibration: verified` only with more than 4 points and RMS ≤ 0.5 m |
+| Ground-marker calibration | Five tape-measured marks on flat ground; read their image positions from a frame (normalised 0..1); add `cameras[].guardian.calibration` | `estimates.distance_to_zone_m` within about a metre of the tape at short range; `calibration: verified` only with more than 4 points and fit and leave-one-out errors ≤ 0.5 m (otherwise the status names the check error: re-measure) |
 
 A teddy bear is COCO `teddy bear`, not `bear`, so it will not trigger the bear profile.
 

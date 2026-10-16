@@ -309,10 +309,23 @@ def select(candidates: Iterable[Candidate], quotas: dict[str, int], seed: int = 
 Fetcher = Callable[[str], bytes]
 
 
-def http_fetch(url: str, timeout: float = 60.0) -> bytes:
+def http_fetch(url: str, timeout: float = 60.0, max_bytes: int = MAX_METADATA_BYTES) -> bytes:
+    """HTTPS only, and stops reading at `max_bytes` instead of loading an
+    oversized file into memory first."""
+    if not url.startswith("https://"):
+        raise DatasetError(f"only https downloads are allowed: {url!r}")
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (https registry URLs)
-        return response.read()
+        declared = response.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > max_bytes:
+            raise DatasetError(f"{url} is {int(declared)} bytes, over the {max_bytes} byte limit")
+        chunks, total = [], 0
+        while chunk := response.read(1 << 20):
+            total += len(chunk)
+            if total > max_bytes:
+                raise DatasetError(f"{url} is larger than {max_bytes} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
 
 def safe_relative(file_name: str) -> PurePosixPath:
@@ -326,8 +339,11 @@ def image_url(source: Source, image: SourceImage) -> str:
     return f"{source.image_base_url.rstrip('/')}/{safe_relative(image.file_name).as_posix()}"
 
 
-def load_json_resource(url: str, cache: Path, fetch: Fetcher = http_fetch) -> dict[str, Any]:
-    """Fetch (or reuse from cache) a JSON or zipped-JSON metadata file."""
+def load_json_resource(url: str, cache: Path, fetch: Fetcher = http_fetch,
+                       record: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Fetch (or reuse from cache) a JSON or zipped-JSON metadata file. `record`
+    collects the file's SHA-256, so a run states exactly which metadata it used
+    (a cached file may be older than the publisher's current one)."""
     cache.mkdir(parents=True, exist_ok=True)
     target = cache / PurePosixPath(url.split("?")[0]).name
     if not target.exists():
@@ -336,6 +352,9 @@ def load_json_resource(url: str, cache: Path, fetch: Fetcher = http_fetch) -> di
             raise DatasetError(f"metadata {url} is larger than {MAX_METADATA_BYTES} bytes")
         target.write_bytes(payload)
     raw = target.read_bytes()
+    if record is not None:
+        record[url] = {"file": target.name, "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
+                       "cached_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(target.stat().st_mtime))}
     if target.suffix == ".zip":
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             infos = [i for i in archive.infolist() if i.filename.endswith(".json")]
@@ -347,10 +366,11 @@ def load_json_resource(url: str, cache: Path, fetch: Fetcher = http_fetch) -> di
     return json.loads(raw)
 
 
-def load_source_images(source: Source, cache_root: Path, fetch: Fetcher = http_fetch) -> Iterable[SourceImage]:
+def load_source_images(source: Source, cache_root: Path, fetch: Fetcher = http_fetch,
+                       record: dict[str, dict[str, Any]] | None = None) -> Iterable[SourceImage]:
     cache = cache_root / source.id
-    data = load_json_resource(source.metadata_url, cache, fetch)
-    bboxes = load_json_resource(source.bbox_url, cache, fetch) if source.bbox_url else None
+    data = load_json_resource(source.metadata_url, cache, fetch, record)
+    bboxes = load_json_resource(source.bbox_url, cache, fetch, record) if source.bbox_url else None
     return FORMATS[source.format](source.id, data, bboxes)
 
 
@@ -361,6 +381,7 @@ class Plan:
     unmapped_labels: dict[str, dict[str, int]]
     skipped_sources: dict[str, str]
     available: dict[str, dict[str, int]] = field(default_factory=dict)  # every eligible image
+    metadata_files: dict[str, dict[str, Any]] = field(default_factory=dict)  # url -> file, sha256, bytes
 
 
 def build_plan(registry: Registry, quotas: dict[str, int], cache_root: Path = DEFAULT_CACHE,
@@ -373,6 +394,7 @@ def build_plan(registry: Registry, quotas: dict[str, int], cache_root: Path = DE
     rng = random.Random(seed)
     unmapped: dict[str, Counter] = {}
     skipped: dict[str, str] = {}
+    metadata_files: dict[str, dict[str, Any]] = {}
     for source in registry.sources:
         if only and source.id not in only:
             continue
@@ -383,7 +405,7 @@ def build_plan(registry: Registry, quotas: dict[str, int], cache_root: Path = DE
             skipped[source.id] = f"licence commercial_use={source.licence.get('commercial_use')}"
             continue
         counts: Counter = Counter()
-        for image in load_source_images(source, cache_root, fetch):
+        for image in load_source_images(source, cache_root, fetch, metadata_files):
             counts.update(label for label in image.labels if label not in source.label_map)
             cand = classify(image, source)
             if cand is None:
@@ -404,7 +426,7 @@ def build_plan(registry: Registry, quotas: dict[str, int], cache_root: Path = DE
         available[bucket][dataset] += count
     chosen = select(candidates, quotas, seed=seed)
     return Plan(candidates, chosen, unmapped, skipped,
-                {b: dict(c) for b, c in sorted(available.items())})
+                {b: dict(c) for b, c in sorted(available.items())}, metadata_files)
 
 
 def fetch_images(plan: Plan, registry: Registry, out: Path, max_bytes: int,
@@ -521,6 +543,7 @@ def summarise(records: Iterable[dict[str, Any]], plan: Plan, registry: Registry)
         "available_in_metadata": plan.available,
         "unmapped_labels": plan.unmapped_labels,
         "skipped_sources": plan.skipped_sources,
+        "metadata_files": plan.metadata_files,
     }
 
 

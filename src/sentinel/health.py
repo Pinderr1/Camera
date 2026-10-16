@@ -52,6 +52,7 @@ COMPONENT_LABELS = {
     "notifications": "Notification delivery",
     "process": "Sentinel process",
     "drone_link": "Drone telemetry link",
+    "guardian": "Wildlife movement analysis",
 }
 
 

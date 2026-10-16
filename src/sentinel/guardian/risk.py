@@ -76,6 +76,7 @@ class RiskSettings:
     elevated_score: int = 4
     urgent_score: int = 6
     persist_s: float = 60.0
+    linger_s: float = 60.0  # a high-concern animal staying this long counts even without approaching (bins, feeders)
     urgent_time_to_zone_s: float = 10.0
     near_distance_m: float = 15.0
 
@@ -130,6 +131,7 @@ def assess(
     person_closing: bool,
     person_present: bool,
     turned_toward: bool,
+    person_nearing: bool = False,
     sped_up: bool,
     present_s: float,
     time_to_zone_s: float | None,
@@ -152,7 +154,9 @@ def assess(
     if inside_zones:
         factors.append(Factor("in_protected_zone", 2, "inside " + ", ".join(inside_zones), "observed"))
     if person_closing:
-        factors.append(Factor("closing_on_person", 2, "distance to a person in view is shrinking", "observed"))
+        factors.append(Factor("closing_on_person", 2, "moving toward a person in view; the distance is shrinking", "observed"))
+    elif person_nearing:  # the person is doing the closing; still worth a look, but not the animal's movement
+        factors.append(Factor("person_nearing", 2, "a person in view is getting closer to the animal", "observed"))
     elif person_present:
         factors.append(Factor("person_in_view", 1, "a person is in view at the same time", "observed"))
     if turned_toward:
@@ -161,13 +165,16 @@ def assess(
         factors.append(Factor("sped_up", 1, "speed increased while approaching", "observed"))
     if present_s >= settings.persist_s:
         factors.append(Factor("persistent", 1, f"in view for {int(present_s)} s", "observed"))
+    lingering = species.concern == "high" and present_s >= settings.linger_s
+    if lingering:
+        factors.append(Factor("lingering", 1, f"stayed in view for {int(present_s)} s", "observed"))
     if time_to_zone_s is not None and time_to_zone_s <= settings.urgent_time_to_zone_s:
         factors.append(Factor("short_time_to_zone", 1, f"about {time_to_zone_s:.0f} s from a protected area at its current pace", "estimate"))
     if distance_m is not None and distance_m <= settings.near_distance_m:
         factors.append(Factor("near_protected", 1, f"about {distance_m:.0f} m from a protected area", "estimate"))
 
     score = sum(f.points for f in factors)
-    engaged = bool(approach_targets or inside_zones or person_closing)
+    engaged = bool(approach_targets or inside_zones or person_closing or person_nearing or lingering)
     if score >= settings.urgent_score and engaged:
         level = "urgent_review"
     elif score >= settings.elevated_score and engaged:

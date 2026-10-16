@@ -43,9 +43,9 @@ def box(x, y, h, label="bear", aspect=1.3, confidence=0.85):
     return Detection(label, confidence, (x - w / 2, y - h, w, h))
 
 
-def drive(monitor, script, seconds, camera="cam_a", start=NOON_MS):
+def drive(monitor, script, seconds, camera="cam_a", start=NOON_MS, tracker=None):
     """script(t) -> detections. Returns all guardian events."""
-    tracker = IoUTracker(camera)
+    tracker = tracker or IoUTracker(camera)
     events = []
     for step in range(int(seconds * FPS)):
         now = start + step * 1000 // FPS
@@ -257,6 +257,121 @@ class ConfigTests(unittest.TestCase):
         text = str(caught.exception)
         for fragment in ("nowhere", "notify_min_level", "concern", "bogus", "calibration"):
             self.assertIn(fragment, text)
+
+
+class AuditRegressionTests(unittest.TestCase):
+    """Failures found by driving the monitor with messier input than the first tests."""
+
+    PERSON = staticmethod(lambda: box(0.75, 0.8, 0.25, label="person", aspect=0.35))
+
+    def no_zones(self, **extra):
+        return GuardianMonitor(guardian_config(protected_zones=[], protected_zone_types=[], approach_camera=False, **extra))
+
+    def test_detection_dropouts_do_not_silence_alerts(self):
+        for keep in (lambda step: True, lambda step: step % 5 != 4, lambda step: step % 2 == 0):
+            monitor = self.no_zones()
+            events, tracker = [], IoUTracker("cam_a")
+            for step in range(8 * FPS):
+                now = NOON_MS + step * 1000 // FPS
+                detections = [box(0.1 + 0.07 * step / FPS, 0.8, 0.15)] + ([self.PERSON()] if keep(step) else [])
+                active, ended = tracker.update(detections, now)
+                events += monitor.process("cam_a", now, active, ended)
+            self.assertEqual(levels(events), ["elevated_concern", "urgent_review"])
+
+    def test_person_walking_up_to_a_still_animal_is_not_reported_as_the_animal_moving(self):
+        monitor = self.no_zones()
+        events = drive(monitor, lambda t: [box(0.25, 0.8, 0.2, label="horse"), box(0.9 - 0.07 * t, 0.8, 0.25, label="person", aspect=0.35)], 7)
+        self.assertTrue(events)
+        for event in events:
+            self.assertNotIn("moving toward", event.summary)
+            self.assertIn("person_nearing", event.reason_codes)
+            self.assertNotIn("closing_on_person", event.reason_codes)
+
+    def test_species_wording_follows_the_track_not_one_frame(self):
+        monitor = self.no_zones()
+        events, tracker = [], IoUTracker("cam_a")
+        for step in range(8 * FPS):
+            now = NOON_MS + step * 1000 // FPS
+            label = "dog" if step % 3 == 0 else "bear"
+            active, ended = tracker.update([box(0.1 + 0.07 * step / FPS, 0.8, 0.15, label=label), self.PERSON()], now)
+            events += monitor.process("cam_a", now, active, ended)
+        self.assertEqual(levels(events)[-1], "urgent_review")
+        for event in events:
+            self.assertIn("detector labels: bear", event.summary)
+            self.assertEqual(event.details["species"]["concern"], "high")  # the higher concern of the two labels
+        self.assertEqual(monitor.snapshot()[0]["kind"], "bear")
+
+    def test_high_concern_animal_staying_in_view_reaches_elevated_concern(self):
+        monitor = self.no_zones()
+        events = drive(monitor, lambda t: [box(0.3, 0.7, 0.18)], 70)
+        self.assertEqual(levels(events), ["elevated_concern"])
+        self.assertIn("lingering", events[0].reason_codes)
+        self.assertIn("stayed in view", events[0].summary)
+        cat = self.no_zones()
+        self.assertEqual(drive(cat, lambda t: [box(0.3, 0.7, 0.08, label="cat")], 70), [])  # only high-concern animals
+
+    def test_event_inside_a_protected_zone_names_the_zone(self):
+        monitor = GuardianMonitor(guardian_config(approach_camera=False))
+        events = drive(monitor, lambda t: [box(min(0.8, 0.4 + 0.1 * t), 0.8, 0.06, label="cat")], 65)
+        inside = [e for e in events if "in_protected_zone" in e.reason_codes]
+        self.assertTrue(inside)
+        self.assertTrue(all(e.zone_id == "back_door" for e in inside))
+
+    def test_restarted_worker_never_continues_an_old_animal(self):
+        monitor = self.no_zones()
+        first = IoUTracker("cam_a")
+        drive(monitor, lambda t: [box(0.4, 0.5 + 0.03 * t, 0.08 * (1.2 ** t))], 6, tracker=first)
+        bear_id = monitor.snapshot()[0]["guardian_track_id"]
+        second = IoUTracker("cam_a", run=2)
+        drive(monitor, lambda t: [box(0.8, 0.4, 0.06, label="cat")], 3, start=NOON_MS + 7000, tracker=second)
+        cat = [g for g in monitor.snapshot() if g["kind"] == "cat"]
+        self.assertEqual(len(cat), 1)
+        self.assertNotEqual(cat[0]["guardian_track_id"], bear_id)
+        self.assertTrue(cat[0]["track_id"].startswith("cam_a:r2-"))
+        # The old run's track was never reported as ended; it is dropped once stale.
+        drive(monitor, lambda t: [box(0.8, 0.4, 0.06, label="cat")], 12, start=NOON_MS + 10_000, tracker=second)
+        self.assertNotIn(bear_id, {g["guardian_track_id"] for g in monitor.snapshot()})
+
+    def test_replacement_monitor_continues_guardian_numbering(self):
+        monitor = self.no_zones()
+        drive(monitor, lambda t: [box(0.4, 0.5, 0.1)], 2)
+        replacement = GuardianMonitor(guardian_config(), next_id=monitor.next_id)
+        drive(replacement, lambda t: [box(0.4, 0.5, 0.1)], 2)
+        self.assertNotEqual(monitor.snapshot()[0]["guardian_track_id"], replacement.snapshot()[0]["guardian_track_id"])
+
+    def test_calibration_is_verified_only_when_held_out_marks_agree(self):
+        exact = GroundCalibration.fit(CalibrationTests.IMAGE, CalibrationTests.GROUND)
+        extra_image = [0.5, 0.7]
+        extra_ground = list(exact.to_ground(tuple(extra_image)))
+        good = GroundCalibration.fit(CalibrationTests.IMAGE + [extra_image], CalibrationTests.GROUND + [extra_ground])
+        self.assertTrue(good.verified)
+        self.assertEqual(good.status, "verified")
+        bad = GroundCalibration.fit(CalibrationTests.IMAGE + [extra_image], CalibrationTests.GROUND + [[extra_ground[0] + 3, extra_ground[1]]])
+        self.assertFalse(bad.verified)  # a mis-measured mark the least-squares fit absorbs
+        self.assertIn("leave-one-out", bad.status)
+
+    def test_config_type_errors_are_reported(self):
+        config = guardian_config(ignore_kinds="bird", movement={"window_s": "long", "bogus": 1}, risk={"elevated_score": 7})
+        with self.assertRaises(ConfigValidationError) as caught:
+            validate_config(config)
+        text = str(caught.exception)
+        for fragment in ("ignore_kinds", "movement.window_s", "movement has unknown keys", "scores must rise"):
+            self.assertIn(fragment, text)
+
+    def test_guardian_health_component_recovers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = SentinelRuntime(guardian_config(), storage_dir=folder, notifiers=[CallbackNotifier("capture", lambda n: None)])
+            try:
+                process = runtime.guardian.process
+                runtime.guardian.process = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+                runtime.process_camera_update("cam_a", NOON_MS, [], [])
+                self.assertEqual(runtime.health.components["guardian"]["state"], "degraded")
+                runtime.guardian.process = process
+                runtime.process_camera_update("cam_a", NOON_MS + 200, [], [])
+                self.assertEqual(runtime.health.components["guardian"]["state"], "ok")
+            finally:
+                runtime.dispatcher.stop()
+                runtime.close()
 
 
 class FakeRecorder:

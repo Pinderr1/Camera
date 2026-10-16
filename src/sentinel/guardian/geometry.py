@@ -71,9 +71,12 @@ class GroundCalibration:
     h: list[float]
     rms_error_m: float
     points: int
+    # Leave-one-out check: each point predicted by a fit on the others. Unlike the
+    # fit residual, it catches a mis-measured mark the least-squares fit absorbed.
+    check_error_m: float | None = None
 
     @classmethod
-    def fit(cls, image_points: Sequence[Sequence[float]], ground_points: Sequence[Sequence[float]]) -> "GroundCalibration":
+    def fit(cls, image_points: Sequence[Sequence[float]], ground_points: Sequence[Sequence[float]], *, check: bool = True) -> "GroundCalibration":
         if len(image_points) != len(ground_points) or len(image_points) < 4:
             raise ValueError("calibration needs at least four matching image and ground points")
         normal = [[0.0] * 8 for _ in range(8)]
@@ -87,6 +90,16 @@ class GroundCalibration:
         calibration = cls(_solve(normal, rhs) + [1.0], 0.0, len(image_points))
         errors = [math.dist(calibration.to_ground((x, y)), (gx, gy)) for (x, y), (gx, gy) in zip(image_points, ground_points)]
         calibration.rms_error_m = math.sqrt(sum(e * e for e in errors) / len(errors))
+        if check and len(image_points) > 4:
+            held_out = []
+            for index in range(len(image_points)):
+                rest = [i for i in range(len(image_points)) if i != index]
+                try:
+                    partial = cls.fit([image_points[i] for i in rest], [ground_points[i] for i in rest], check=False)
+                    held_out.append(math.dist(partial.to_ground(tuple(image_points[index])), tuple(ground_points[index])))
+                except ValueError:
+                    held_out.append(math.inf)
+            calibration.check_error_m = math.sqrt(sum(e * e for e in held_out) / len(held_out))
         return calibration
 
     @classmethod
@@ -105,4 +118,13 @@ class GroundCalibration:
 
     @property
     def verified(self) -> bool:
-        return self.points > 4 and self.rms_error_m <= 0.5
+        return self.points > 4 and self.rms_error_m <= 0.5 and self.check_error_m is not None and self.check_error_m <= 0.5
+
+    @property
+    def status(self) -> str:
+        if self.verified:
+            return "verified"
+        if self.check_error_m is None:
+            return "unverified (four points, no check)"
+        error = "a degenerate point set" if math.isinf(self.check_error_m) else f"{self.check_error_m:.1f} m"
+        return f"unverified (leave-one-out check error {error}; re-measure the marks)"

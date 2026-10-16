@@ -47,11 +47,15 @@ class IoUTracker:
     tracks alive without ever creating new ones. Dependency-free; the idea, not
     the code, comes from ByteTrack (Zhang et al., 2022)."""
 
-    def __init__(self, camera_id: str, config: TrackerConfig | None = None) -> None:
+    def __init__(self, camera_id: str, config: TrackerConfig | None = None, run: int = 1) -> None:
+        """`run` numbers the camera worker's restarts. Track ids of a later run carry
+        it ("cam:r2-1"), so a restarted worker never reuses an id the engine,
+        correlator or Guardian still associate with an earlier, different object."""
         self.camera_id = camera_id
         self.config = config or TrackerConfig()
         self.tracks: dict[str, Track] = {}
         self._next_id = 1
+        self._prefix = f"{camera_id}:" if run <= 1 else f"{camera_id}:r{run}-"
 
     def update(self, detections: Iterable[Detection], timestamp_ms: int) -> tuple[list[Track], list[Track]]:
         """Returns (confirmed active tracks, tracks that ended this update)."""
@@ -159,7 +163,7 @@ class IoUTracker:
         track.history.append((timestamp_ms, anchor))
 
     def _spawn(self, det: Detection, timestamp_ms: int) -> None:
-        track_id = f"{self.camera_id}:{self._next_id}"
+        track_id = f"{self._prefix}{self._next_id}"
         self._next_id += 1
         track = Track(
             track_id=track_id,

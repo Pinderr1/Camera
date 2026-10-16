@@ -11,6 +11,7 @@ until ego-motion is compensated)."""
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import deque
 from dataclasses import dataclass, field
@@ -19,9 +20,12 @@ from typing import Any
 from ..models import SecurityEvent, Track
 from .geometry import GroundCalibration, distance_to_polygon, point_in_polygon
 from .movement import MovementEstimate, MovementSettings, Sample, distance_trend, estimate
-from .risk import LEVEL_NAMES, LEVEL_RANK, LEVEL_SEVERITY, LEVELS, RiskAssessment, RiskSettings, assess, species_profile
+from .risk import CONCERNS, LEVEL_NAMES, LEVEL_RANK, LEVEL_SEVERITY, LEVELS, RiskAssessment, RiskSettings, SpeciesProfile, assess, species_profile
 
 TRAIL_POINTS = 30
+HOLD_GAP_MS = 1000  # a level still counts as held across a dropout this short (one missed detection must not reset it)
+MIXED_LABEL_SHARE = 0.25  # another detector label with at least this share of the track makes the species "mixed"
+STALE_MS = 5000  # beyond reacquire_s: a track no frame has mentioned for this long is gone (e.g. its worker restarted)
 
 
 @dataclass
@@ -75,14 +79,16 @@ class GuardianTrack:
     ambiguous_with: list[str] = field(default_factory=list)
     approach_since_ms: int | None = None
     last_approach_ms: int = 0
-    candidate: str = "observed"
-    candidate_since_ms: int = 0
+    held_since: dict[str, int] = field(default_factory=dict)  # level -> since when the track has been at or above it
+    held_last: dict[str, int] = field(default_factory=dict)  # level -> last time it was at or above it
     emitted: str = ""
     below_since_ms: int | None = None
     movement: MovementEstimate = field(default_factory=MovementEstimate)
     assessment: RiskAssessment | None = None
     estimates: dict[str, Any] = field(default_factory=dict)
     targets: list[str] = field(default_factory=list)
+    inside: list[str] = field(default_factory=list)  # protected zone ids the ground point is in
+    kind_weights: dict[str, float] = field(default_factory=dict)  # detector label -> summed confidence over the track
     resets: int = 0
 
     @property
@@ -90,14 +96,18 @@ class GuardianTrack:
         x, y, w, h = self.bbox
         return (x + w / 2, y + h)
 
-    def view(self) -> dict[str, Any]:
+    def label_shares(self) -> dict[str, float]:
+        total = sum(self.kind_weights.values())
+        return {kind: weight / total for kind, weight in self.kind_weights.items()} if total > 0 else {}
+
+    def view(self, overrides: dict | None = None) -> dict[str, Any]:
         assessment = self.assessment.as_dict() if self.assessment else None
         return {
             "guardian_track_id": self.guardian_id,
             "camera_id": self.camera_id,
             "track_id": self.track_id,
             "kind": self.kind,
-            "species": species_view(self.kind),
+            "species": species_view(self, overrides),
             "bbox": [round(v, 4) for v in self.bbox],
             "trail": [[round(s[1], 4), round(s[2], 4)] for s in list(self.samples)[-TRAIL_POINTS:]],
             "lost": self.lost,
@@ -112,13 +122,32 @@ class GuardianTrack:
         }
 
 
-def species_view(kind: str, overrides: dict | None = None) -> dict[str, Any]:
-    profile = species_profile(kind, overrides)
-    return {"display": profile.display, "concern": profile.concern, "status": profile.status, "note": profile.note, "detector_label": kind}
+def track_profile(gtrack: GuardianTrack, overrides: dict | None = None) -> SpeciesProfile:
+    """The species wording for a whole track, not one frame. Detectors often flip
+    between labels (bear/dog, cat/dog) on the same animal: the majority label
+    (weighted by confidence) names it, and when another label is common too the
+    display says so and the higher concern of the two is used."""
+    shares = gtrack.label_shares()
+    base = species_profile(gtrack.kind, overrides)
+    others = [kind for kind, share in shares.items() if kind != gtrack.kind and share >= MIXED_LABEL_SHARE]
+    if not others:
+        return base
+    profiles = [base] + [species_profile(kind, overrides) for kind in others]
+    concern = max((p.concern for p in profiles), key=CONCERNS.index)
+    labels = ", ".join(f"{kind} {shares[kind] * 100:.0f} %" for kind in sorted(shares, key=shares.get, reverse=True) if shares[kind] >= MIXED_LABEL_SHARE)
+    return SpeciesProfile(f"Animal (species not determined; detector labels: {labels})", concern, "detector_class", "the detector gave this animal more than one label")
+
+
+def species_view(gtrack: GuardianTrack, overrides: dict | None = None) -> dict[str, Any]:
+    profile = track_profile(gtrack, overrides)
+    shares = {kind: round(share, 2) for kind, share in gtrack.label_shares().items()}
+    return {"display": profile.display, "concern": profile.concern, "status": profile.status, "note": profile.note, "detector_label": gtrack.kind, "detector_labels": shares}
 
 
 class GuardianMonitor:
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], next_id: int = 1) -> None:
+        """`next_id` continues the numbering of a monitor this one replaces (a
+        config edit), so two different animals never share a guardian id."""
         self.settings = GuardianSettings.from_dict(config.get("guardian"))
         self.zones: dict[str, list[dict[str, Any]]] = {}
         self.calibration: dict[str, GroundCalibration | None] = {}
@@ -135,8 +164,12 @@ class GuardianMonitor:
         self.tracks: dict[str, GuardianTrack] = {}
         self._by_track: dict[str, str] = {}
         self._camera_motion_until: dict[str, int] = {}
-        self._next_id = 1
+        self._next_id = next_id
         self._seq = 0
+
+    @property
+    def next_id(self) -> int:
+        return self._next_id
 
     def watches(self, camera_id: str) -> bool:
         return self.settings.enabled and (not self.settings.cameras or camera_id in self.settings.cameras)
@@ -169,9 +202,16 @@ class GuardianMonitor:
         return events
 
     def _expire(self, camera_id: str, now_ms: int) -> None:
+        limit = self.settings.reacquire_s * 1000
         for gid, gtrack in list(self.tracks.items()):
-            if gtrack.camera_id == camera_id and gtrack.lost and now_ms - gtrack.last_seen_ms > self.settings.reacquire_s * 1000:
+            if gtrack.camera_id != camera_id:
+                continue
+            age = now_ms - gtrack.last_seen_ms
+            # A track that was never reported as ended (its camera worker restarted) is dropped too.
+            if (gtrack.lost and age > limit) or age > limit + STALE_MS:
                 del self.tracks[gid]
+                if self._by_track.get(gtrack.track_id) == gid:
+                    del self._by_track[gtrack.track_id]
 
     def _link_new(self, camera_id: str, animals: list[Track], now_ms: int) -> None:
         """A new camera track continues a recently lost guardian track only when it
@@ -207,8 +247,8 @@ class GuardianMonitor:
             self._by_track[track.track_id] = gid
 
     def _plausible(self, gtrack: GuardianTrack, track: Track, now_ms: int) -> bool:
-        if gtrack.kind and track.kind and gtrack.kind != track.kind:
-            return False
+        if gtrack.kind and track.kind and gtrack.label_shares().get(track.kind, 0.0) < MIXED_LABEL_SHARE:
+            return False  # a label this animal was rarely or never given
         dt = min((now_ms - gtrack.last_seen_ms) / 1000, self.settings.reacquire_s)
         vx, vy = gtrack.movement.velocity
         predicted = (gtrack.anchor[0] + vx * dt, gtrack.anchor[1] + vy * dt)
@@ -246,7 +286,9 @@ class GuardianMonitor:
         edge = x <= 0.005 or y <= 0.005 or x + w >= 0.995 or y + h >= 0.995
         gtrack.samples.append((now_ms, anchor[0], anchor[1], w, h, track.confidence, edge))
         gtrack.bbox, gtrack.last_seen_ms, gtrack.track_id = track.bbox, now_ms, track.track_id
-        gtrack.kind = track.kind or gtrack.kind
+        if track.kind:
+            gtrack.kind_weights[track.kind] = gtrack.kind_weights.get(track.kind, 0.0) + max(track.confidence, 0.01)
+            gtrack.kind = max(gtrack.kind_weights, key=gtrack.kind_weights.get)
 
     def _assess(self, gtrack: GuardianTrack, track: Track, people: list[Track], now_ms: int, camera_motion: bool) -> RiskAssessment:
         settings = self.settings
@@ -259,6 +301,7 @@ class GuardianMonitor:
         ground = _safe_ground(calibration, anchor)
         targets: list[str] = []
         inside: list[str] = []
+        inside_ids: list[str] = []
         estimates: dict[str, Any] = {"calibrated": calibration is not None and ground is not None}
         time_to_zone: float | None = None
         nearest_m: float | None = None
@@ -268,6 +311,7 @@ class GuardianMonitor:
             name = zone.get("name", zone["id"])
             if point_in_polygon(anchor[0], anchor[1], zone["polygon"]):
                 inside.append(name)
+                inside_ids.append(zone["id"])
                 continue
             if ground is not None:
                 polygon = [p for p in (_safe_ground(calibration, tuple(pt)) for pt in zone["polygon"]) if p is not None]
@@ -288,19 +332,28 @@ class GuardianMonitor:
             if ground is not None:
                 nearest_m = distance if nearest_m is None else min(nearest_m, distance)
 
-        person_closing = False
+        person_closing = person_nearing = False
         if people:
+            nearest: Track | None = None
             if ground is not None:
-                points = [p for p in (_safe_ground(calibration, person.anchor) for person in people) if p is not None]
-                gap = min((math.dist(ground, p) for p in points), default=None)
+                pairs = [(math.dist(ground, p), person) for person in people if (p := _safe_ground(calibration, person.anchor)) is not None]
+                gap, nearest = min(pairs, key=lambda pair: pair[0], default=(None, None))
                 rate = settings.closing_rate_m
             else:
-                gap = min(math.dist(anchor, person.anchor) / max(body, person.bbox[3]) for person in people)
+                gap, nearest = min(((math.dist(anchor, person.anchor) / max(body, person.bbox[3]), person) for person in people), key=lambda pair: pair[0])
                 rate = settings.closing_rate
-            if gap is not None:
+            if gap is not None and nearest is not None:
                 gtrack.person_distance.append((now_ms, gap))
                 fitted = distance_trend(gtrack.person_distance, now_ms, window)
-                person_closing = bool(fitted and fitted[0] <= -rate)
+                if fitted and fitted[0] <= -rate:
+                    # Who is closing the gap? Only the animal's own movement toward the person counts as
+                    # "moving toward a person"; a person walking up to a still animal is reported as that.
+                    dx, dy = nearest.anchor[0] - anchor[0], nearest.anchor[1] - anchor[1]
+                    toward = (movement.velocity[0] * dx + movement.velocity[1] * dy) / (math.hypot(dx, dy) or 1e-6) / body
+                    if toward >= settings.closing_rate:
+                        person_closing = True
+                    else:
+                        person_nearing = True
                 if ground is not None:
                     estimates["distance_to_person_m"] = round(gap, 1)
         if person_closing:
@@ -319,10 +372,11 @@ class GuardianMonitor:
                 estimates["distance_to_zone_m"] = round(nearest_m, 1)
             if time_to_zone is not None:
                 estimates["time_to_zone_s"] = round(time_to_zone, 1)
-            estimates["calibration"] = "verified" if calibration.verified else "unverified (four points, no check)"
+            estimates["calibration"] = calibration.status
             estimates["assumptions"] = "flat ground; box bottom is where the animal stands; approximate"
         gtrack.estimates = estimates
         gtrack.targets = targets
+        gtrack.inside = inside_ids
 
         window_samples = [s for s in gtrack.samples if s[0] >= now_ms - window * 1000]
         mean_conf = sum(s[5] for s in window_samples) / len(window_samples) if window_samples else track.confidence
@@ -334,13 +388,14 @@ class GuardianMonitor:
             caps.append("camera_moves")
         if camera_motion:
             caps.append("camera_motion_suspected")
-        profile = species_profile(gtrack.kind, settings.species)
+        profile = track_profile(gtrack, settings.species)
         assessment = assess(
             species=profile,
             approach_targets=targets,
             approach_sustained=approach_s >= settings.sustained_s,
             inside_zones=inside,
             person_closing=person_closing,
+            person_nearing=person_nearing,
             person_present=bool(people),
             turned_toward=movement.turned and bool(targets),
             sped_up=movement.sped_up,
@@ -356,27 +411,42 @@ class GuardianMonitor:
         return assessment
 
     def _maybe_emit(self, gtrack: GuardianTrack, track: Track, assessment: RiskAssessment, now_ms: int, site_track_id: str) -> SecurityEvent | None:
-        level = assessment.level
-        if level != gtrack.candidate:
-            gtrack.candidate, gtrack.candidate_since_ms = level, now_ms
+        """Emit the highest level held for `hold_s`. A level counts as held while the
+        track stays at it *or above*, across dropouts up to HOLD_GAP_MS: a missed
+        person detection or a score oscillating between two levels must not keep
+        restarting the clock (it used to suppress every alert)."""
+        rank = LEVEL_RANK[assessment.level]
+        for name in LEVELS[1:]:
+            if LEVEL_RANK[name] <= rank:
+                if name not in gtrack.held_since or now_ms - gtrack.held_last[name] > HOLD_GAP_MS:
+                    gtrack.held_since[name] = now_ms
+                gtrack.held_last[name] = now_ms
+            elif name in gtrack.held_last and now_ms - gtrack.held_last[name] > HOLD_GAP_MS:
+                del gtrack.held_since[name], gtrack.held_last[name]
         emitted_rank = LEVEL_RANK.get(gtrack.emitted, -1)
-        if LEVEL_RANK[level] < emitted_rank:
+        if rank < emitted_rank:
             gtrack.below_since_ms = gtrack.below_since_ms or now_ms
             if now_ms - gtrack.below_since_ms >= self.settings.cooldown_s * 1000:
-                gtrack.emitted, gtrack.below_since_ms = level, None  # calmed down long enough: a new rise may alert again
+                gtrack.emitted, gtrack.below_since_ms = assessment.level, None  # calmed down long enough: a new rise may alert again
             return None
         gtrack.below_since_ms = None
-        if level == "observed" or LEVEL_RANK[level] <= emitted_rank or now_ms - gtrack.candidate_since_ms < self.settings.hold_s * 1000:
+        held = [name for name in LEVELS[1:] if LEVEL_RANK[name] <= rank and now_ms - gtrack.held_since[name] >= self.settings.hold_s * 1000]
+        if not held or LEVEL_RANK[held[-1]] <= emitted_rank:
             return None
-        gtrack.emitted = level
+        gtrack.emitted = held[-1]
+        if held[-1] != assessment.level:  # the higher level has not held long enough yet
+            assessment = dataclasses.replace(assessment, level=held[-1])
         return self._event(gtrack, track, assessment, now_ms, site_track_id)
 
     def _event(self, gtrack: GuardianTrack, track: Track, assessment: RiskAssessment, now_ms: int, site_track_id: str) -> SecurityEvent:
         self._seq += 1
-        profile = species_profile(gtrack.kind, self.settings.species)
+        profile = track_profile(gtrack, self.settings.species)
         level = assessment.level
         notify = "always" if LEVEL_RANK[level] >= LEVEL_RANK.get(self.settings.notify_min_level, 2) else "never"
-        zone_id = next((z["id"] for z in self.zones.get(gtrack.camera_id, []) if z.get("name", z["id"]) in gtrack.targets), "")
+        zones = self.zones.get(gtrack.camera_id, [])
+        zone_id = next((z["id"] for z in zones if z["id"] in gtrack.inside), "") or next(
+            (z["id"] for z in zones if z.get("name", z["id"]) in gtrack.targets), ""
+        )
         return SecurityEvent(
             event_id=f"evt_{now_ms}_wild_{gtrack.guardian_id.replace(':', '_')}_{self._seq}",
             event_type=f"wildlife_{level}",
@@ -399,7 +469,7 @@ class GuardianMonitor:
                 "level_name": LEVEL_NAMES[level],
                 "assessment": assessment.as_dict(),
                 "movement": gtrack.movement.as_dict(),
-                "species": species_view(gtrack.kind, self.settings.species),
+                "species": species_view(gtrack, self.settings.species),
                 "targets": list(gtrack.targets),
                 "estimates": dict(gtrack.estimates),
                 "reacquired": gtrack.reacquired,
@@ -410,7 +480,7 @@ class GuardianMonitor:
     # ---- views -----------------------------------------------------------
 
     def snapshot(self, camera_id: str | None = None) -> list[dict[str, Any]]:
-        return [g.view() for g in self.tracks.values() if camera_id is None or g.camera_id == camera_id]
+        return [g.view(self.settings.species) for g in self.tracks.values() if camera_id is None or g.camera_id == camera_id]
 
     def overlays(self, camera_id: str) -> list[dict[str, Any]]:
         """Compact drawing data for the live view: box, trail, heading, level."""
@@ -425,7 +495,7 @@ class GuardianMonitor:
                 "velocity": g.movement.velocity,
                 "movement": g.movement.movement,
                 "level": g.assessment.level if g.assessment else "observed",
-                "label": f"{species_profile(g.kind, self.settings.species).display.split(' (')[0]} {g.guardian_id.rsplit(':', 1)[-1]}",
+                "label": f"{track_profile(g, self.settings.species).display.split(' (')[0]} {g.guardian_id.rsplit(':', 1)[-1]}",
             })
         return out
 
@@ -442,6 +512,10 @@ def describe(display: str, gtrack: GuardianTrack, assessment: RiskAssessment) ->
         if approach_s >= 1:
             phrase += f" for {approach_s:.0f} s"
         parts.append(phrase)
+    if "person_nearing" in codes:
+        parts.append("in view while a person gets closer to it")
+    if "lingering" in codes:
+        parts.append(next(f.text for f in assessment.factors if f.code == "lingering"))
     if "turned_toward" in codes:
         parts.append("after a sharp change of direction")
     if gtrack.estimates.get("time_to_zone_s") is not None:

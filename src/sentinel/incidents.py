@@ -111,16 +111,23 @@ class IncidentManager:
         if not severity_at_least(event.severity, "low"):
             return None
         for incident in candidates:
-            if event.camera_id in incident.cameras:
+            # Same camera only joins same-kind incidents: a bear's alert must not disappear into
+            # (or inflate) an unrelated person incident that happens to be open on that camera.
+            if event.camera_id in incident.cameras and _is_wildlife(incident.event_types) == bool(event.details.get("guardian")):
                 return incident
         return None
 
     def _severity(self, incident: Incident, event: SecurityEvent) -> str:
         severity = max_severity(incident.severity, event.severity)
-        behaviours = [kind for kind in incident.event_types if kind != "activity"]
+        # One animal's level steps (approaching -> elevated -> urgent) are one behaviour, not corroboration.
+        behaviours = {"wildlife" if kind.startswith("wildlife_") else kind for kind in incident.event_types if kind != "activity"}
         if len(behaviours) >= self.config.corroboration_behaviors and severity != SEVERITIES[-1]:
             severity = SEVERITIES[SEVERITY_RANK[severity] + 1]
         return severity
+
+
+def _is_wildlife(event_types: list[str]) -> bool:
+    return any(kind.startswith("wildlife_") for kind in event_types)
 
 
 @dataclass
@@ -168,9 +175,14 @@ class AlertPolicy:
             SEVERITY_RANK[incident.severity] > SEVERITY_RANK[incident.notified_severity]
         ):
             return None
+        # A wildlife Urgent Review (an animal closing on a person or inside a protected area with people
+        # in view) is never held back by a busy evening's global rate limit; it still counts toward it.
+        urgent_wildlife = any(event.details.get("guardian") and event.details.get("level") == "urgent_review" for event in relevant)
         if not self._allow(now_ms):
-            self.suppressed += 1
-            return None
+            if not urgent_wildlife:
+                self.suppressed += 1
+                return None
+            self._sent.append(now_ms)
         incident.notified_severity = incident.severity
         lines = [event.summary for event in events if event.event_type != "activity"][-3:]
         suppressed_note = ""

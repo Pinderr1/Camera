@@ -20,6 +20,15 @@ from .vision import ContentMonitor, MotionGate, annotate, appearance_vector, app
 
 log = logging.getLogger("sentinel.pipeline")
 
+_runs: dict[str, int] = {}  # camera id -> worker runs started in this process (unique track ids per run)
+_runs_lock = threading.Lock()
+
+
+def _next_run(camera_id: str) -> int:
+    with _runs_lock:
+        _runs[camera_id] = _runs.get(camera_id, 0) + 1
+        return _runs[camera_id]
+
 
 def filter_detections(
     detections: list[Detection], camera_id: str, zones: ZoneMap, min_area: float, categories: set[str] | None = None
@@ -141,7 +150,7 @@ class CameraWorker(threading.Thread):
             detector.close()
             raise
 
-        tracker = IoUTracker(camera_id, TrackerConfig.from_dict((self.config.get("tracker") or {}) | {"high_score": high_score}))
+        tracker = IoUTracker(camera_id, TrackerConfig.from_dict((self.config.get("tracker") or {}) | {"high_score": high_score}), run=_next_run(camera_id))
         recorder = ClipRecorder(camera_id, self.runtime.media_root, self.config.get("recording", {}))
         recorder.enabled = recorder.enabled and self.config.get("privacy", {}).get("store_clips", True)
         recorder.on_finalized = self.runtime.record_evidence
@@ -303,6 +312,14 @@ class CameraWorker(threading.Thread):
                 if remaining > 0:
                     self._stop.wait(remaining)
         finally:
+            # End this run's tracks so the engine, correlator and Guardian close them
+            # instead of holding them open forever after a restart.
+            ended = tracker.flush()
+            if ended:
+                try:
+                    self.runtime.process_camera_update(camera_id, last_detect_ms or int(time.time() * 1000), [], ended)
+                except Exception:
+                    log.exception("camera %s: ending tracks on stop failed", camera_id)
             recorder.finish()
             source.close()
             detector.close()
