@@ -242,6 +242,9 @@ def validate_config(config: dict[str, Any]) -> None:
     from .assistant.settings import validate_assistant
 
     validate_assistant(config, errors)
+    from .guardian.validate import validate_guardian
+
+    validate_guardian(config, camera_ids, zone_ids, errors)
     _validate_drone_and_channels(config, errors)
 
     defaults = config.get("settings_defaults", {})

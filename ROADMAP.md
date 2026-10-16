@@ -549,8 +549,34 @@ Exit for each step is listed in the drone doc. Never skip steps. The drone track
 - [ ] Licence audit of every shipped model and dependency (`sources.md`).
 - [ ] Support tooling: remote diagnostics bundle without media.
 
+## Wilderness Guardian track (`guardian` branch; V1 on `main` stays frozen)
+
+Wildlife and human protection on the same Hub. Full plan, dataset review and limits: [docs/wilderness-guardian.md](docs/wilderness-guardian.md). Guardian phases are numbered separately from the phases above.
+
+| Guardian phase | Status (2026-10-15) |
+| --- | --- |
+| G1 Wildlife recognition | Generic COCO animal labels through the existing detectors (implemented). Species classifier: **planned**, none installed; COCO labels are shown as unconfirmed ("Bear (species not determined)") |
+| G2 Movement intelligence | **Implemented, synthetic sequences only**: guardian tracks with unambiguous re-acquisition, approach/retreat/lateral/stationary, relative speed, approach to camera/protected zone/person, turns, sustained approach, calibrated-only distance and time-to-zone, explainable levels, cooldowns, clip evidence, live overlay, `/api/v1/guardian`. Off by default. **Not run on real wildlife footage** |
+| G3 Human threat protection | **Planned**. Owner recognition blocked (boundary 2) |
+| G4 Emergency Guardian drone/rover | **Concept, research only**: no spray, smoke, payload-release, weapon or interception code; simulation at most |
+| G5 Multi-platform Guardian | **Planned**. The G2 monitor is platform-neutral (`moving_camera` caps levels) |
+
+### Decisions (2026-10-15)
+1. Wildlife emergency alerts will eventually be able to push while home security is disarmed, through a separate configurable Guardian setting. Today they follow the arm mode and are not pushed when disarmed.
+2. Approaching stays a recorded event without a push; Elevated Concern and Urgent Review notify (`guardian.notify_min_level`).
+3. Owner facial recognition stays blocked until privacy and safety requirements are settled and recorded in `CLAUDE.md`.
+4. Next priorities: validate G2 on a real camera (prerecorded wildlife clips, then live footage with labelled tracks via `sentinel.bench`), then species identification (licence-cleared classifier, e.g. an MIT/Apache MegaDetector v6 variant plus a species model, benchmarked before adoption).
+
+### Next steps
+- [ ] Run G2 on prerecorded wildlife clips and on the owner's camera; record false-alarm counts per day and level.
+- [ ] Label animal tracks in real footage (approach / retreat / lateral) and measure movement classification against them.
+- [ ] Check a ground calibration against tape-measured distances.
+- [ ] Verify dataset and weight licences (`sources.md`) before any download; evaluate MegaDetector v6 and a species classifier with `sentinel.bench`.
+- [ ] Separate disarmed-mode wildlife alert setting (decision 1), with tests.
+
 ## Open risks
 - Real-world detector accuracy at night and in bad weather is unknown until Phase 1.
 - Alert fatigue is the main product risk. Every rule needs a measured nuisance rate.
+- Wilderness Guardian movement levels are verified on synthetic sequences only; real animal movement, night IR and the missing species classes (COCO has no cougar, wolf, coyote, moose or elk) may make them unreliable until G1/G2 are validated on real footage.
 - Drone operations face strict regulation. A commercial unattended drone may never be legal in some markets, so the product must stand on cameras alone. In Canada, a Sentinel-branded drone for residential use needs a Standard 922 declaration and customers with Advanced certificates. A US version would need a separate NDAA-style parts list because of the FCC Covered List.
 - Drone product risk: the value is the integration (incident-driven, audited, evidence-linked inspections), but suburban use needs a Standard 922 declaration and Advanced-certificate pilots, and thermal detection is not yet validated. Validate demand with rural and small-business pilot customers before committing to production.

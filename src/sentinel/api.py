@@ -305,6 +305,20 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
             since_ms=since_ms, until_ms=until_ms, camera_id=camera_id, min_severity=min_severity, incident_id=incident_id, limit=limit
         )
 
+    @app.get("/api/v1/guardian")
+    def guardian(camera_id: str | None = None, _: str = Depends(require_auth)) -> dict[str, Any]:
+        """Wildlife movement intelligence: current guardian tracks with movement, estimates and risk level."""
+        with runtime._lock:
+            monitor = runtime.guardian
+            return {
+                "enabled": monitor.settings.enabled,
+                "levels": ["observed", "approaching", "elevated_concern", "urgent_review"],
+                "notify_min_level": monitor.settings.notify_min_level,
+                "calibrated_cameras": sorted(cid for cid, cal in monitor.calibration.items() if cal is not None),
+                "tracks": monitor.snapshot(camera_id),
+                "limits": "Movement is measured in the image; distances and times appear only for calibrated cameras. Levels describe observed movement, not intent.",
+            }
+
     @app.get("/api/v1/incidents")
     def incidents(status: Literal["open", "closed"] | None = None, since_ms: int | None = None, limit: int = 100, _: str = Depends(require_auth)) -> list[dict[str, Any]]:
         return runtime.store.list_incidents(status=status, since_ms=since_ms, limit=limit)

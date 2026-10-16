@@ -154,6 +154,8 @@ See `config/sentinel.example.json`. Top-level keys: `site` (id, name, `map` with
 
 Drone keys (`drone.adapter`, `connection`, `allow_flight_commands` (SITL only), `gcs_system_id`, `firmware_tested`, `drone_model`, and the extended `safety`, `weather` and `video`) are described in [drone-integration.md](./drone-integration.md#configuration). A drone's model (`drone/catalog.py`, [drone-models.md](./drone-models.md)) supplies defaults for weather limits, the simulator, camera geometry and tested firmware; explicit config values win.
 
+Wildlife movement intelligence (`guardian/`, `guardian` branch): top-level `guardian` (enabled, cameras, protected_zones, protected_zone_types, approach_camera, min_confidence, min_track_s, sustained_s, hold_s, cooldown_s, reacquire_s, reacquire_body_heights, closing_rate, closing_rate_m, notify_min_level, ignore_kinds, sensitivity, species, movement, risk) and per-camera `guardian` (`moving_camera`, `calibration.image_points`/`ground_points_m`). Off by default. See [wilderness-guardian.md](./wilderness-guardian.md#configuration).
+
 Runtime settings (arm mode, sensitivity, notifications on/off) are changed through the API and persisted to `<storage.dir>/settings.json`.
 
 ## Threading model

@@ -261,7 +261,7 @@ class CameraWorker(threading.Thread):
                 except Exception as error:  # e.g. disk full: recording stops, monitoring continues
                     self.runtime.recording_failed(camera_id, error)
                 site_ids = dict(self.runtime.engine.correlator.track_to_site)
-                self.runtime.latest_jpeg[camera_id] = encode_jpeg(annotate(image, active, camera_zones, site_ids=site_ids))
+                self.runtime.latest_jpeg[camera_id] = encode_jpeg(annotate(image, active, camera_zones, site_ids=site_ids, guardian=self.runtime.guardian_overlays(camera_id)))
                 if now_ms - last_clean_ms >= 1000:  # clean frame for the setup editor, refreshed once a second
                     last_clean_ms = now_ms
                     self.runtime.latest_frame[camera_id] = encode_jpeg(image, 85)

@@ -64,6 +64,7 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Device registry: recorders, drones, docks, sensors beside cameras; hardware compatibility profiles with support levels; sites with no cameras; several drones (primary takes inspections) | Built and tested. Only this computer is `verified`; every camera/recorder profile is `expected` or `limited`; sensors are simulated or planned (registration only, never incidents) |
 | Property planner: features, cameras with aim/FOV, sensors, network, drone docks/points; approximate coverage with line of sight, gaps, privacy warnings; camera suggestions; PoE/cable estimates; printable plan | Built and unit-tested. **Approximate geometry; never compared with a real installation** |
 | Sentinel AI Guide (Guide tab): conversational setup, troubleshooting with retest, rule configuration, everyday questions; read tools on live data, proposals confirmed by a person, secure sign-in form; built-in offline guide plus optional DeepSeek (default external) or Claude provider with address placeholders | Built; backend tests (scripted provider, fake DeepSeek and Messages APIs) and Edge tests on simulated hardware; DeepSeek checked against the live API on a simulated site. **Not yet run against the live Claude API or real hardware** |
+| Wilderness Guardian Phase 2 (`guardian` branch): animal movement intelligence (persistent guardian tracks with unambiguous re-acquisition, approach/retreat/lateral/stationary from box growth and image motion, approach to camera/protected zone/person, turns, sustained approach, calibrated-only distance and time-to-zone, explainable levels Observed/Approaching/Elevated Concern/Urgent Review, cooldowns, clip evidence, live overlay, `/api/v1/guardian`). Off by default (`docs/wilderness-guardian.md`) | Built; **synthetic sequences only** (`tests/test_sentinel_guardian.py`, `config/scenarios/wildlife_bear_approach.json`). **No real wildlife footage yet; no species classifier (COCO labels shown as unconfirmed)** |
 | Accounts/multi-user, mobile app, cloud relay, HTTPS deployment | Not started (see `ROADMAP.md`) |
 
 ## Repository map
@@ -129,6 +130,8 @@ src/sentinel/            the Sentinel brain (current product)
                          thermal (simulated fire + thermal observer), service (FlameService: accessories, configurations, monitoring
                          loop, notifications, <storage>/flame.json), reports, routes (/api/v1/flame), assistant (Guide tools/answers)
   companion/             drone companion computer (stdlib): MAVLink relay with Hub command filter, health agent, pairing CLI, Pi provisioning
+  guardian/              Wilderness Guardian (stdlib): monitor (guardian tracks, targets, levels, events, overlays), movement (relative
+                         kinematics), risk (species wording, explainable scoring), geometry (polygon distance, ground homography), validate
   web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors; install.js = Install tab + planner
   bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
                          metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
@@ -166,6 +169,7 @@ docs/environmental-intelligence.md  category audit, missing classes/datasets/lic
 docs/reliability.md            24/7 operation: health states, outages, recovery, background start, storage, backups
 docs/assistant.md              Sentinel AI Guide: modes, tools, confirmations, privacy, provider configuration
 docs/installation.md           Install tab: four paths, readiness levels, device registry and profiles, planner, drone-first
+docs/wilderness-guardian.md    Wilderness Guardian: five phases, datasets and licences, missing data, Phase 2 design, limits, camera tests
 docs/intelligence.md           rules and rule builder, rule testing, explanations, activity insights, investigation and feedback
 ROADMAP.md                     phased implementation roadmap
 sources.md                     license and reuse audit

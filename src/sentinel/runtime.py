@@ -11,6 +11,7 @@ from typing import Any, Callable
 from .config import ARM_MODES, SENSITIVITIES, cameras, zone_index
 from .engine import TemporalEventEngine
 from .explain import notification_reason
+from .guardian import GuardianMonitor
 from .health import HealthMonitor, HealthSettings
 from .incidents import DISCLAIMER, AlertPolicy, AlertPolicyConfig, IncidentConfig, IncidentManager
 from .models import Incident, Notification, SecurityEvent, Track, effective_categories, severity_at_least
@@ -71,6 +72,7 @@ class SentinelRuntime:
         self.engine = TemporalEventEngine(config, arm_mode=self.settings["arm_mode"], sensitivity=self.settings["sensitivity"])
         self.incidents = IncidentManager(IncidentConfig.from_dict(config.get("incidents")))
         self.policy = AlertPolicy(AlertPolicyConfig.from_dict(config.get("alerts")))
+        self.guardian = GuardianMonitor(config)
         self.secrets = SecretStore(self.storage_dir / "credentials.json")
         self._mqtt_publish = mqtt_publish
         self._fixed_notifiers = notifiers is not None
@@ -108,6 +110,7 @@ class SentinelRuntime:
             self.engine = TemporalEventEngine(config, arm_mode=self.settings["arm_mode"], sensitivity=self.settings["sensitivity"])
             self.incidents.config = IncidentConfig.from_dict(config.get("incidents"))
             self.policy.config = AlertPolicyConfig.from_dict(config.get("alerts"))
+            self.guardian = GuardianMonitor(config)
             if not self._fixed_notifiers:  # channels edited in the dashboard apply without a restart
                 self.dispatcher.notifiers = build_notifiers(config, self.media_root, self._mqtt_publish, self.secrets.get)
             self.zones = zone_index(config)
@@ -161,11 +164,29 @@ class SentinelRuntime:
     ) -> list[SecurityEvent]:
         with self._lock:
             events = self.engine.process(camera_id, timestamp_ms, active, ended)
+            events += self._guardian_events(camera_id, timestamp_ms, active, ended)
             site_ids = {self.engine.correlator.track_to_site.get(track.track_id, "") for track in active} - {""}
             self.incidents.touch(site_ids, timestamp_ms)
             self._extend_recordings(camera_id, site_ids, timestamp_ms)
             self._handle_events(events, timestamp_ms, image=image, active=active)
             return events
+
+    def _guardian_events(self, camera_id: str, timestamp_ms: int, active: list[Track], ended: list[Track]) -> list[SecurityEvent]:
+        """Wildlife movement intelligence runs beside the security engine; a fault
+        in it is reported as a health component and never stops security detection."""
+        if not self.guardian.settings.enabled:
+            return []
+        try:
+            events = self.guardian.process(camera_id, timestamp_ms, active, ended, self.engine.correlator.track_to_site)
+        except Exception as error:
+            log.exception("guardian failed on %s", camera_id)
+            self.health.set_component("guardian", "degraded", f"wildlife movement analysis failed: {str(error)[:160]}", timestamp_ms, notify=False)
+            return []
+        return events
+
+    def guardian_overlays(self, camera_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return self.guardian.overlays(camera_id) if self.guardian.settings.enabled else []
 
     def _handle_events(self, events: list[SecurityEvent], now_ms: int, *, image: Any = None, active: list[Track] | None = None) -> None:
         changed: dict[str, tuple[Incident, list[SecurityEvent]]] = {}
@@ -225,8 +246,8 @@ class SentinelRuntime:
     def _apply_category_policy(self, event: SecurityEvent) -> None:
         """Categories with alerts off (animals by default) are recorded as info:
         info events never open incidents or send notifications."""
-        if not event.label or event.severity == "info":
-            return
+        if not event.label or event.severity == "info" or event.details.get("guardian"):
+            return  # wildlife movement events follow the guardian settings, not the category switch
         categories = effective_categories(self.config, self.camera_configs.get(event.camera_id))
         if not categories.get(event.label, {}).get("alerts", False):
             event.details["original_severity"] = event.severity
@@ -243,7 +264,8 @@ class SentinelRuntime:
                 from .vision import annotate
 
                 camera_zones = self.camera_configs.get(event.camera_id, {}).get("zones", [])
-                event.snapshot_path = recorder.snapshot(annotate(image, active, camera_zones), event.timestamp_ms, event.event_id)
+                overlays = self.guardian.overlays(event.camera_id) if self.guardian.settings.enabled else None
+                event.snapshot_path = recorder.snapshot(annotate(image, active, camera_zones, guardian=overlays), event.timestamp_ms, event.event_id)
                 if event.snapshot_path:
                     self.record_evidence(event.snapshot_path)
                 if event.snapshot_path and not incident.snapshot_path:
@@ -484,6 +506,7 @@ class SentinelRuntime:
                 "site_tracks": [site.summary() for site in self.engine.site_tracks() if site.active_members],
                 "ambiguous_links": self.engine.correlator.ambiguous_count,
                 "coverage": self.health.coverage(self.camera_status),
+                "guardian": {"enabled": self.guardian.settings.enabled, "tracks": self.guardian.snapshot()},
             }
 
     def close(self) -> None:

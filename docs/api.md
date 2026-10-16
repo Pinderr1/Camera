@@ -169,6 +169,10 @@ Sentinel AI Guide; see [assistant.md](./assistant.md). Conversations live on the
 
 Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unknown id), 409 (drone rejected, for example preflight blocked; camera processing not running), 422 (validation), 507 (backup could not be written).
 
+## Wilderness Guardian
+
+`GET /api/v1/guardian[?camera_id=]` returns `enabled`, `levels`, `notify_min_level`, `calibrated_cameras` and `tracks[]`. Each track has `guardian_track_id`, `camera_id`, `track_id`, `kind`, `species` (display, concern, status, note, detector_label), `bbox`, `trail`, `lost`, `reacquired`, `ambiguous_with`, `movement` (movement, relative_speed in body heights/s, growth_rate, image_heading, turned, sped_up, reasons), `targets`, `estimates` (metres and seconds only when the camera is calibrated) and `assessment` (level, level_name, score, confidence, factors, held_back). `GET /api/v1/state` includes the same tracks under `guardian`. Wildlife events have `event_type` `wildlife_approaching`, `wildlife_elevated_concern` or `wildlife_urgent_review`, with the assessment in `details`. See [wilderness-guardian.md](wilderness-guardian.md).
+
 ## Optional accessories and FLAME Mode
 
 All routes below require the same authentication as other data endpoints.

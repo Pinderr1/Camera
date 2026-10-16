@@ -144,7 +144,13 @@ class MotionGate:
 CLASS_COLORS = {"person": (60, 60, 255), "vehicle": (255, 160, 40), "animal": (80, 200, 80)}
 
 
-def annotate(image: Any, tracks: list[Track], zones: list[dict[str, Any]], *, site_ids: dict[str, str] | None = None) -> Any:
+GUARDIAN_COLORS = {"observed": (80, 200, 80), "approaching": (0, 200, 255), "elevated_concern": (0, 120, 255), "urgent_review": (40, 40, 230)}
+GUARDIAN_NAMES = {"observed": "Observed", "approaching": "Approaching", "elevated_concern": "Elevated", "urgent_review": "Urgent review"}
+
+
+def annotate(
+    image: Any, tracks: list[Track], zones: list[dict[str, Any]], *, site_ids: dict[str, str] | None = None, guardian: list[dict[str, Any]] | None = None
+) -> Any:
     import cv2
 
     canvas = image.copy()
@@ -163,6 +169,19 @@ def annotate(image: Any, tracks: list[Track], zones: list[dict[str, Any]], *, si
         cv2.rectangle(canvas, top_left, bottom_right, color, 2)
         tag = (site_ids or {}).get(track.track_id, track.track_id)
         cv2.putText(canvas, f"{track.label} {tag}", (top_left[0], max(12, top_left[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+    for item in guardian or []:  # wildlife movement: trail, image heading, risk level
+        color = GUARDIAN_COLORS.get(item["level"], (200, 200, 200))
+        trail = [(int(x * width), int(y * height)) for x, y in item["trail"]]
+        for a, b in zip(trail, trail[1:]):
+            cv2.line(canvas, a, b, color, 2)
+        x, y, w, h = item["bbox"]
+        cv2.rectangle(canvas, (int(x * width), int(y * height)), (int((x + w) * width), int((y + h) * height)), color, 3)
+        if trail and item["movement"] not in {"stationary", "unclear"}:
+            vx, vy = item["velocity"]
+            tip = (int(trail[-1][0] + vx * width), int(trail[-1][1] + vy * height))
+            cv2.arrowedLine(canvas, trail[-1], tip, color, 2, tipLength=0.3)
+        text = f"{item['label']} {item['movement']} {GUARDIAN_NAMES.get(item['level'], '')}"
+        cv2.putText(canvas, text, (int(x * width), min(height - 4, int((y + h) * height) + 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
     return canvas
 
 

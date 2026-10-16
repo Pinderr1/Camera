@@ -1,0 +1,27 @@
+{
+  "site": {"id": "guardian_demo", "name": "Wilderness Guardian demo (simulated)", "map": {"width_m": 40, "height_m": 30, "origin_geo": [50.0, -115.0]}},
+  "cameras": [
+    {
+      "id": "cam_yard",
+      "name": "Back yard",
+      "fps": 5,
+      "source": {"type": "simulated", "scenario": "config/scenarios/wildlife_bear_approach.json"},
+      "zones": [
+        {"id": "tree_line", "name": "Tree line", "type": "yard", "polygon": [[0, 0.35], [0.45, 0.35], [0.45, 0.6], [0, 0.6]]},
+        {"id": "back_door", "name": "Back door", "type": "entrance", "polygon": [[0.72, 0.6], [1, 0.6], [1, 1], [0.72, 1]]}
+      ],
+      "guardian": {"moving_camera": false}
+    }
+  ],
+  "topology": {"links": []},
+  "rules": [],
+  "categories": {"animal": {"detect": true, "alerts": false}},
+  "guardian": {
+    "enabled": true,
+    "protected_zones": ["back_door"],
+    "notify_min_level": "elevated_concern",
+    "sensitivity": "normal",
+    "cooldown_s": 120
+  },
+  "storage": {"dir": "data/sentinel-guardian"}
+}

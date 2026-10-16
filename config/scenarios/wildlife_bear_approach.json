@@ -1,0 +1,30 @@
+{
+ "name": "wildlife_bear_approach",
+ "description": "Synthetic: a bear-labelled animal walks from the tree line toward the back door while a person stands on the deck. Logic test only; not real animal behaviour.",
+ "duration_s": 24,
+ "loop": false,
+ "actors": [
+  {
+   "id": "bear",
+   "label": "bear",
+   "size": [0.13, 0.1],
+   "noise": 0.003,
+   "miss_rate": 0.05,
+   "path": [
+    {"t": 0, "camera": "cam_yard", "x": 0.12, "y": 0.5, "scale": 0.8},
+    {"t": 6, "camera": "cam_yard", "x": 0.2, "y": 0.52, "scale": 0.85},
+    {"t": 20, "camera": "cam_yard", "x": 0.6, "y": 0.75, "scale": 1.6},
+    {"t": 24, "camera": "cam_yard", "x": 0.62, "y": 0.76, "scale": 1.6}
+   ]
+  },
+  {
+   "id": "owner",
+   "label": "person",
+   "noise": 0.002,
+   "path": [
+    {"t": 0, "camera": "cam_yard", "x": 0.82, "y": 0.8},
+    {"t": 24, "camera": "cam_yard", "x": 0.82, "y": 0.8}
+   ]
+  }
+ ]
+}
