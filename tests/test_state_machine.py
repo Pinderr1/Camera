@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 
 from senior_safety.alerts import build_alert_payload
 from senior_safety.clock import make_tick, synthesize_ticks
@@ -7,6 +8,17 @@ from senior_safety.state_machine import NightSafetyStateMachine, load_rules
 
 
 RULES = load_rules("config/monitoring-rules.example.json")
+SAFE_REST_RULES = deepcopy(RULES)
+SAFE_REST_RULES["zones"].append(
+    {
+        "id": "test_safe_rest_zone",
+        "kind": "chair",
+        "zone_type": "safe_rest",
+        "suppress_fall_alerts": True,
+        "urgent_if_floor_level": False,
+    }
+)
+SAFE_REST_RULES["suppression"]["fall_suppressed_zone_ids"].append("test_safe_rest_zone")
 
 
 def event(
@@ -81,11 +93,11 @@ class NightSafetyStateMachineTests(unittest.TestCase):
         self.assertIn("bed_zone_fall_suppressed", suspected.suppressions)
         self.assertIn("bed_zone_fall_suppressed", floor.suppressions)
 
-    def test_sofa_zone_suppresses_fall_and_no_motion_escalation(self):
-        machine = NightSafetyStateMachine(RULES)
-        suspected = machine.process(event(5_000, "fall_suspected", True, "pose_01", "camera_pose", "sofa_zone"))
-        floor = machine.process(event(6_000, "floor_level_posture", True, "pose_01", "camera_pose", "sofa_zone"))
-        still = machine.process(event(60_000, "no_motion", True, "pose_01", "camera_pose", "sofa_zone"))
+    def test_configured_safe_rest_zone_suppresses_fall_and_no_motion_escalation(self):
+        machine = NightSafetyStateMachine(SAFE_REST_RULES)
+        suspected = machine.process(event(5_000, "fall_suspected", True, "pose_01", "camera_pose", "test_safe_rest_zone"))
+        floor = machine.process(event(6_000, "floor_level_posture", True, "pose_01", "camera_pose", "test_safe_rest_zone"))
+        still = machine.process(event(60_000, "no_motion", True, "pose_01", "camera_pose", "test_safe_rest_zone"))
         later = machine.process(make_tick(120_000))
 
         self.assertTrue(all(decision.severity == "none" for decision in (suspected, floor, still, later)))
@@ -93,10 +105,10 @@ class NightSafetyStateMachineTests(unittest.TestCase):
         self.assertIn("fall_zone_suppressed", still.suppressions)
 
     def test_entering_safe_rest_clears_prior_floor_timers_before_escalation(self):
-        machine = NightSafetyStateMachine(RULES)
+        machine = NightSafetyStateMachine(SAFE_REST_RULES)
         machine.process(event(5_000, "floor_level_posture", True, "pose_01", "camera_pose", "carpet_zone"))
         machine.process(event(6_000, "no_motion", True, "pose_01", "camera_pose", "carpet_zone"))
-        decision = machine.process(event(60_000, "floor_level_posture", False, "pose_01", "camera_pose", "sofa_zone"))
+        decision = machine.process(event(60_000, "floor_level_posture", False, "pose_01", "camera_pose", "test_safe_rest_zone"))
 
         self.assertNotEqual(decision.state, "urgent_alert")
         self.assertEqual(decision.severity, "none")

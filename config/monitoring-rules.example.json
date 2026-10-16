@@ -25,13 +25,6 @@
       "urgent_if_floor_level": false
     },
     {
-      "id": "sofa_zone",
-      "kind": "sofa",
-      "zone_type": "safe_rest",
-      "suppress_fall_alerts": true,
-      "urgent_if_floor_level": false
-    },
-    {
       "id": "carpet_zone",
       "kind": "floor",
       "zone_type": "fall_risk",
@@ -96,6 +89,6 @@
     "realert_cooldown_s": 600,
     "normal_bed_lie_down_suppression": true,
     "normal_chair_sit_suppression": true,
-    "fall_suppressed_zone_ids": ["bed_zone", "sofa_zone"]
+    "fall_suppressed_zone_ids": ["bed_zone"]
   }
 }

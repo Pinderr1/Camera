@@ -34,7 +34,52 @@
     "unusual_inactivity",
     "manual_help_button",
     "manual_cancel",
-    "sensor_offline"
+    "sensor_offline",
+    "rug_walk",
+    "rug_trip_recovery",
+    "dance_or_play",
+    "floor_transition",
+    "post_fall_still",
+    "post_fall_moving",
+    "post_fall_recovery_attempt",
+    "post_fall_help_request",
+    "mobility_aid",
+    "visitor_or_two_people"
+  ],
+  "age_groups": [
+    "under_18",
+    "18_39",
+    "40_64",
+    "65_79",
+    "80_plus",
+    "unknown",
+    "not_applicable"
+  ],
+  "surfaces": [
+    "clear_floor",
+    "secured_rug",
+    "gym_mat",
+    "bed",
+    "unknown",
+    "not_applicable"
+  ],
+  "post_fall_behaviors": [
+    "none",
+    "still",
+    "moving_on_floor",
+    "recovery_success",
+    "recovery_failed_simulation",
+    "reaches_for_help",
+    "leaves_frame",
+    "unknown"
+  ],
+  "help_signals": [
+    "none",
+    "manual_help_button",
+    "manual_cancel_button",
+    "help_gesture",
+    "public_dataset_verbal_help",
+    "unknown"
   ],
   "routine_states": [
     "asleep_in_bed",
@@ -73,6 +118,11 @@
     "route_motion_end",
     "manual_help_pressed",
     "manual_cancel_pressed",
+    "post_fall_movement_start",
+    "recovery_attempt_start",
+    "recovery_attempt_end",
+    "help_reach_start",
+    "help_gesture_start",
     "possible_breathing_weak_signal",
     "sensor_offline",
     "sensor_online",

@@ -1,6 +1,7 @@
 import json
 import math
 import unittest
+from copy import deepcopy
 
 from senior_safety.pose_events import FrameFeatures, PoseEventEngine, point_in_polygon, torso_angle_deg
 
@@ -30,7 +31,7 @@ def frame(timestamp_ms, hip=None, shoulder_mid=None, jitter=0.0, present=None, f
     )
 
 
-def fall_sequence(start_hip=(0.6, 0.40), fallen_hip=(0.6, 0.75), fallen_shoulder=(0.75, 0.74), until_ms=13000):
+def fall_sequence(start_hip=(0.55, 0.40), fallen_hip=(0.55, 0.75), fallen_shoulder=(0.70, 0.74), until_ms=13000):
     frames = [frame(t, hip=start_hip, jitter=0.01) for t in range(0, 1100, 100)]
     frames.append(frame(1100, hip=(start_hip[0], 0.52)))
     frames.append(frame(1200, hip=(start_hip[0], 0.64)))
@@ -61,7 +62,7 @@ class PoseEventEngineTests(unittest.TestCase):
 
     def test_walking_on_route_emits_presence_and_route_motion(self):
         engine = PoseEventEngine(ZONES_CONFIG)
-        frames = [frame(t, hip=(0.6, 0.5), jitter=0.01) for t in range(0, 2000, 100)]
+        frames = [frame(t, hip=(0.75, 0.4), jitter=0.01) for t in range(0, 2000, 100)]
         events = names_values(run_frames(engine, frames))
 
         self.assertIn(("person_present", True), events)
@@ -182,11 +183,22 @@ class PoseEventEngineTests(unittest.TestCase):
         self.assertNotIn(("floor_level_posture", True), events)
         self.assertNotIn(("no_motion", True), events)
 
-    def test_sofa_zone_suppresses_fall_and_no_motion_signals(self):
-        engine = PoseEventEngine(ZONES_CONFIG)
-        frames = [frame(t, hip=(0.5, 0.40), jitter=0.01) for t in range(0, 1100, 100)]
-        frames.append(frame(1100, hip=(0.5, 0.55)))
-        frames.extend(frame(t, hip=(0.5, 0.75), shoulder_mid=(0.55, 0.74)) for t in range(1200, 13000, 100))
+    def test_configured_safe_rest_zone_suppresses_fall_and_no_motion_signals(self):
+        config = deepcopy(ZONES_CONFIG)
+        config["zones"].append(
+            {
+                "id": "test_safe_rest_zone",
+                "kind": "chair",
+                "zone_type": "safe_rest",
+                "suppress_fall_alerts": True,
+                "polygon": [[0.8, 0.65], [1.0, 0.65], [1.0, 1.0], [0.8, 1.0]],
+            }
+        )
+        config["events"]["fall_suppressed_zone_ids"].append("test_safe_rest_zone")
+        engine = PoseEventEngine(config)
+        frames = [frame(t, hip=(0.9, 0.7), jitter=0.01) for t in range(0, 1100, 100)]
+        frames.append(frame(1100, hip=(0.9, 0.78)))
+        frames.extend(frame(t, hip=(0.9, 0.85), shoulder_mid=(0.95, 0.84)) for t in range(1200, 13000, 100))
         events = names_values(run_frames(engine, frames))
 
         self.assertNotIn(("fall_suspected", True), events)
@@ -216,9 +228,9 @@ class PoseEventEngineTests(unittest.TestCase):
 
     def test_bathroom_occupancy_inferred_from_doorway_exit(self):
         engine = PoseEventEngine(ZONES_CONFIG)
-        frames = [frame(t, hip=(0.9, 0.5), jitter=0.01) for t in range(0, 2000, 100)]
+        frames = [frame(t, hip=(0.94, 0.35), jitter=0.01) for t in range(0, 2000, 100)]
         frames.extend(frame(t, present=False) for t in range(2000, 12000, 100))
-        frames.extend(frame(t, hip=(0.9, 0.5), jitter=0.01) for t in range(12000, 14000, 100))
+        frames.extend(frame(t, hip=(0.94, 0.35), jitter=0.01) for t in range(12000, 14000, 100))
         events = run_frames(engine, frames)
         pairs = names_values(events)
 

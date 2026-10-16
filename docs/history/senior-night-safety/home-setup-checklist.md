@@ -27,12 +27,15 @@ Avoid bathroom video. If a bedroom camera is necessary for bedside falls, prefer
 ## Camera Placement
 
 - Cover the bed exit and walking path, not private areas.
+- A practical bedroom layout is a bed against two walls in a corner, a secured rug on the open floor, drawers or dressers against the walls, and the camera firmly mounted on top of a dresser looking diagonally across the route. The dresser is the camera origin, not a detection zone.
+- Draw polygons in the mounted camera's perspective. The bed and rug should look like tapered quadrilaterals that follow their visible edges, not equal-width vertical strips laid side by side.
 - Mount the camera at chest height or above, angled slightly down, with the floor visible in the lower part of the frame. A camera at mattress height cannot tell "standing close to the lens" from "lying on the floor" — the 2026-07-06 pilot false alarms came from this.
 - Keep the person fully in frame along the whole path; hips or ankles cropped by the frame edge degrade fall detection.
 - Avoid mirrors, screens, medication areas, mail, and bathroom interior.
 - Test night lighting.
 - Confirm the person is visible at normal walking height and floor level.
 - Confirm blankets, pets, shadows, and laundry do not look like a person.
+- Secure the rug with a non-slip backing or remove it if it can slide or curl.
 - After mounting, run the calibration pass (`python -m senior_safety.pose_extractor --calibrate 30`) and redraw the zone polygons over the live preview (`--show`). The bed zone must cover the entire sleeping surface.
 
 ## Fall Prevention Fixes

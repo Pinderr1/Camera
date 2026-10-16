@@ -136,6 +136,10 @@ The core alert lifecycle is implemented and unit-tested. The remaining work is t
 
 Follow the existing project target of at least 200 labeled local clips or sensor sequences and 7–14 observation nights. Use able-bodied staged falls only when safely supervised; never ask the monitored older adult to stage a fall.
 
+- [x] Create a prioritized scenario acquisition matrix covering age groups, rug activity, play/exercise, post-fall behavior, help signals, environmental failures, and held-out splits.
+- [ ] Collect consented older-adult normal routine data without staged falls.
+- [ ] Collect rug, play, exercise, pet, visitor, and other hard-negative scenarios from multiple safe participants.
+- [ ] Collect safe post-fall simulations covering stillness, movement, recovery attempts, reaching for help, and the manual help button.
 - [ ] Label empty room, normal walk, bed exit, bathroom trip/return, sitting, standing, slow lie-down, bending, kneeling, floor activity, blankets/laundry, pets, poor light, occlusion, mobility aids, visitors, sensor loss, and safe staged falls.
 - [ ] Capture actual routine sensor transitions over at least 7–14 nights with notifications disabled.
 - [ ] Review every unusual transition, possible fall, offline period, nuisance candidate, and missed concern each morning.
@@ -240,7 +244,7 @@ These are the highest-value next tasks:
 4. Add service startup/restart, MQTT reconnect, and an external health heartbeat.
 5. Add retention/disk-space enforcement and decide whether MQTT is protected by TLS or network isolation.
 6. Add CI and regression tests for the two local false alerts.
-7. Begin the labeled scenario matrix and observation-only nightly log.
+7. Collect the first P0 batch from `data/scenario_matrix.csv`: consented older-adult normal routines, rug hard negatives, play/exercise, and safe post-fall help simulations; then begin the observation-only nightly log.
 8. Generate personal baselines only after enough valid routine transitions exist.
 9. Start the low-severity notification pilot only when the documented gate is met.
 
