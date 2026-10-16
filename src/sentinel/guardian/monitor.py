@@ -21,7 +21,7 @@ from ..models import SecurityEvent, Track
 from .geometry import GroundCalibration, distance_to_polygon, point_in_polygon
 from .movement import MovementEstimate, MovementSettings, Sample, distance_trend, estimate
 from .risk import CONCERNS, LEVEL_NAMES, LEVEL_RANK, LEVEL_SEVERITY, LEVELS, RiskAssessment, RiskSettings, SpeciesProfile, apply_decision, assess, species_profile
-from .species import SpeciesDecision, SpeciesPolicy, SpeciesSettings, TrackSpecies
+from .species import SpeciesDecision, SpeciesPolicy, SpeciesSettings, TrackSpecies, is_blank
 
 TRAIL_POINTS = 30
 HOLD_GAP_MS = 1000  # a level still counts as held across a dropout this short (one missed detection must not reset it)
@@ -93,11 +93,24 @@ class GuardianTrack:
     kind_weights: dict[str, float] = field(default_factory=dict)  # detector label -> summed confidence over the track
     resets: int = 0
     species: TrackSpecies = field(default_factory=TrackSpecies)  # classifier results for this animal, if enabled
+    aside: bool = False  # set aside: see set_aside()
 
     @property
     def anchor(self) -> tuple[float, float]:
         x, y, w, h = self.bbox
         return (x + w / 2, y + h)
+
+    def set_aside(self, settings: SpeciesSettings) -> bool:
+        """Only a camera-trap detector's generic "animal" ever saw this track, and the
+        species classifier agrees the box is blank (a rock, stick or moving water).
+        Any specific detector label ("bear", "dog") keeps the track, whatever the
+        classifier says; a later crop that finds an animal brings it back."""
+        return self.generic_only and is_blank(self.species.decision, settings)
+
+    @property
+    def generic_only(self) -> bool:
+        """Only a camera-trap detector's generic "animal" label has described this track."""
+        return bool(self.kind_weights) and set(self.kind_weights) <= {"animal"}
 
     def label_shares(self) -> dict[str, float]:
         total = sum(self.kind_weights.values())
@@ -122,6 +135,7 @@ class GuardianTrack:
             "targets": list(self.targets),
             "estimates": dict(self.estimates),
             "assessment": assessment,
+            "set_aside": "species classifier: no animal in the box" if self.aside else "",
         }
 
 
@@ -216,7 +230,8 @@ class GuardianMonitor:
         for gtrack in self.tracks.values():
             if gtrack.camera_id != camera_id or gtrack.lost or gtrack.last_seen_ms != now_ms:
                 continue
-            if gtrack.species.due(now_ms, self.species_settings):
+            quick = self.species_settings.blank_recheck_s if gtrack.generic_only and gtrack.species.looks_blank() else None
+            if gtrack.species.due(now_ms, self.species_settings, quick):
                 gtrack.species.pending, gtrack.species.last_request_ms = True, now_ms
                 due.append((gtrack.guardian_id, gtrack.bbox))
         return due
@@ -253,6 +268,10 @@ class GuardianMonitor:
         for track in animals:
             gtrack = self.tracks[self._by_track[track.track_id]]
             self._observe(gtrack, track, now_ms)
+            gtrack.aside = gtrack.set_aside(self.species_settings)
+            if gtrack.aside:
+                gtrack.assessment = None  # no level, no event, no overlay while set aside
+                continue
             assessment = self._assess(gtrack, track, people, now_ms, camera_motion)
             event = self._maybe_emit(gtrack, track, assessment, now_ms, (site_ids or {}).get(track.track_id, ""))
             if event:
@@ -544,7 +563,7 @@ class GuardianMonitor:
         """Compact drawing data for the live view: box, trail, heading, level."""
         out = []
         for g in self.tracks.values():
-            if g.camera_id != camera_id or g.lost:
+            if g.camera_id != camera_id or g.lost or g.aside:
                 continue
             out.append({
                 "track_id": g.track_id,

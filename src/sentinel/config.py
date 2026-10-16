@@ -455,6 +455,8 @@ def _validate_reliability(config: dict[str, Any], raw_cameras: list, errors: lis
             errors.append(f"{scope}.failures_before_fallback must be an integer >= 1")
         if "retry_s" in detector and not _positive(detector["retry_s"]):
             errors.append(f"{scope}.retry_s must be positive")
+        if "animal_detector" in detector:
+            _validate_animal_detector(detector["animal_detector"], f"{scope}.animal_detector", errors)
 
     from .simulation import FAULT_TYPES
 
@@ -500,3 +502,33 @@ def _is_number(value: Any) -> bool:
 
 def _positive(value: Any) -> bool:
     return _is_number(value) and value > 0
+
+
+ANIMAL_DETECTOR_KEYS = {"enabled", "model", "model_path", "score_threshold", "input_size", "cpu_threads"}
+
+
+def _validate_animal_detector(block: Any, path: str, errors: list[str]) -> None:
+    """Optional camera-trap animal detector next to the main one (detectors.AnimalAugmentedDetector)."""
+    if not isinstance(block, dict):
+        errors.append(f"{path} must be an object")
+        return
+    unknown = set(block) - ANIMAL_DETECTOR_KEYS
+    if unknown:
+        errors.append(f"{path} has unknown keys {sorted(unknown)}")
+    if not isinstance(block.get("enabled", True), bool):
+        errors.append(f"{path}.enabled must be true or false")
+    threshold = block.get("score_threshold", 0.6)
+    if not _is_number(threshold) or not 0 < threshold < 1:
+        errors.append(f"{path}.score_threshold must be between 0 and 1")
+    model = block.get("model", "mdv6_apa_rtdetr_c")
+    if not isinstance(model, str) or not model:
+        errors.append(f"{path}.model must be a model name")
+    elif "model_path" not in block:
+        try:
+            from .detectors_onnx import MODELS
+        except ImportError:  # no ONNX Runtime: the camera runs EfficientDet and the add-on is skipped
+            return
+        if model not in MODELS:
+            errors.append(f"{path}.model {model!r} is not a known ONNX model")
+        elif not MODELS[model].get("commercial_ok"):
+            errors.append(f"{path}.model {model!r} needs a licence review before it can run (commercial_ok is false)")

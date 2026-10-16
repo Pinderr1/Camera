@@ -145,6 +145,12 @@ class SpeciesSettings:
     admin1_region: str | None = None
     queue_size: int = 8
     cpu_threads: int = 2
+    # A track seen only as a generic "animal" (camera-trap detector, no COCO label) is set
+    # aside when at least `min_agreeing` crops agree the picture is blank at this score:
+    # MegaDetector boxes rocks, sticks and moving water (docs/guardian-datasets.md).
+    # 1 turns this off: SpeciesNet also called 1.9 % of single crops of real animals blank.
+    blank_confidence: float = 0.8
+    blank_recheck_s: float = 1.0  # a generic box whose first crop looks blank is re-checked this soon
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "SpeciesSettings":
@@ -254,9 +260,14 @@ class TrackSpecies:
     pending: bool = False
     decision: SpeciesDecision | None = None
 
-    def due(self, now_ms: int, settings: SpeciesSettings) -> bool:
+    def due(self, now_ms: int, settings: SpeciesSettings, interval_s: float | None = None) -> bool:
+        interval = settings.reclassify_s if interval_s is None else interval_s
         return (not self.pending and self.crops < settings.max_crops_per_track
-                and now_ms - self.last_request_ms >= settings.reclassify_s * 1000)
+                and now_ms - self.last_request_ms >= interval * 1000)
+
+    def looks_blank(self) -> bool:
+        """The averaged top label so far is "blank" (worth a quick second look)."""
+        return ((self.decision.taxon or {}).get("label") == "blank") if self.decision is not None else False
 
     def add(self, scores: dict[int, float], policy: SpeciesPolicy) -> SpeciesDecision:
         self.pending = False
@@ -271,3 +282,11 @@ class TrackSpecies:
         top_index = max(mean, key=mean.get) if mean else None
         self.decision = policy.decide(mean, crops=self.votes.get(top_index, 0))
         return self.decision
+
+
+def is_blank(decision: "SpeciesDecision | None", settings: SpeciesSettings) -> bool:
+    """The classifier agrees, over enough crops, that there is no animal in the box."""
+    taxon = (decision.taxon or {}) if decision is not None else {}
+    return (decision is not None and settings.blank_confidence < 1 and taxon.get("label") == "blank"
+            and decision.confidence >= settings.blank_confidence
+            and decision.crops >= settings.min_agreeing)

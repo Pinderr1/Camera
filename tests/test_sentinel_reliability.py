@@ -190,6 +190,35 @@ class CameraFailureTests(ServiceCase):
             wait_for(lambda: "cpu_fallback" in status["health"]["warnings"])
             self.assertEqual(service.runtime.store.list_outages(), [], "a working CPU fallback keeps the camera monitored")
 
+    def test_failing_animal_detector_never_costs_camera_coverage(self):
+        from sentinel.detectors import AnimalAugmentedDetector
+
+        class Primary:
+            providers = ["CPUExecutionProvider"]
+
+            def detect(self, frame):
+                return []
+
+            def close(self):
+                pass
+
+        class BrokenAnimalModel(Primary):
+            def detect(self, frame):
+                raise RuntimeError("MegaDetector inference failed")
+
+        with mock.patch("sentinel.pipeline.create_detector", lambda settings, threshold: AnimalAugmentedDetector(Primary(), BrokenAnimalModel())), \
+                self.assertLogs("sentinel.detectors", "WARNING"):
+            service = self.service(site_config(self.directory.name))
+            wait_for(lambda: self.state(service) == "monitoring")
+            components = service.runtime.health.components
+            wait_for(lambda: "animal_detector:cam_a" in components, message="animal detector failure not reported")
+        self.assertEqual(components["animal_detector:cam_a"]["state"], "degraded")
+        self.assertIn("MegaDetector inference failed", components["animal_detector:cam_a"]["detail"])
+        status = service.runtime.camera_status["cam_a"]
+        self.assertEqual((status["detector_errors"], status.get("detector_state")), (0, "ok"), "the main detector is unaffected")
+        self.assertEqual(self.state(service), "monitoring")
+        self.assertFalse([n for n in self.notifications if "nimal detector" in n["title"]], "an optional model is not pushed")
+
     def test_total_ai_failure_reports_not_monitoring_and_recovers(self):
         service = self.service(site_config(self.directory.name, faults={"cam_a": [{"type": "detector_error", "at_s": 2, "duration_s": 6}]}))
         wait_for(lambda: self.state(service) == "monitoring")

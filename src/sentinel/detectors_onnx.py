@@ -42,6 +42,9 @@ COCO91_IDS = [
     64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90,
 ]
 COCO91 = {category_id: name for category_id, name in zip(COCO91_IDS, COCO80)}
+# MegaDetector's three classes; "animal" and "vehicle" are Sentinel category names already.
+MEGADETECTOR = ["animal", "person", "vehicle"]
+_LABEL_SETS = {"coco80": COCO80, "megadetector": MEGADETECTOR}
 
 _YOLOX = "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/{}.onnx"
 _HF = "https://huggingface.co/onnx-community/{}/resolve/main/onnx/model.onnx"
@@ -78,6 +81,18 @@ MODELS: dict[str, dict[str, Any]] = {
         "url": _HF.format("rtdetr_v2_r18vd-ONNX"), "path": "models/onnx/rtdetr_v2_r18vd-ONNX/model.onnx", "input_size": [640, 640],
         "license": "Apache-2.0 (code: lyuwenyu/RT-DETR; weights: PekingU/rtdetr_v2_r18vd); ONNX conversion by onnx-community",
         "training_data": "COCO 2017 (ImageNet-pretrained ResNet-18 backbone)", "commercial_ok": True,
+    },
+    # MegaDetector V6, Apache variant (camera-trap detector: animal / person / vehicle).
+    # No public ONNX: exported once by scripts/guardian/export_megadetector_onnx.py.
+    "mdv6_apa_rtdetr_c": {
+        "family": "detr", "labels": "megadetector", "normalize": False, "keep_aspect": False, "resize": "area",
+        "path": "models/megadetector/mdv6_apa_rtdetr_c/model.onnx", "input_size": [640, 640],
+        "export": "scripts/guardian/export_megadetector_onnx.py",
+        "license": "Apache-2.0 weights (Pytorch-Wildlife model zoo: MDV6-apa-rtdetr-c; Zenodo record 15398270, "
+                   "MD5 3992888e26f627ee5a4ff9f116be97c3); code Apache-2.0 (lyuwenyu/RT-DETR) and MIT (Pytorch-Wildlife)",
+        "training_data": "MegaDetector camera-trap training set (Microsoft AI for Good; includes LILA public datasets such as "
+                         "Caltech, ENA24, NACTI); ImageNet-pretrained ResNet-18-vd backbone",
+        "commercial_ok": True,
     },
     "rfdetr_base": {
         "family": "detr", "labels": "coco91", "normalize": True,
@@ -161,11 +176,13 @@ class OnnxDetector:
         name = settings.get("model", "yolox_s")
         if name not in MODELS and "model_path" not in settings:
             raise ValueError(f"unknown ONNX model {name!r}; known: {', '.join(MODELS)}")
-        spec = MODELS.get(name, {}) | {key: settings[key] for key in ("family", "labels", "normalize") if key in settings}
+        spec = MODELS.get(name, {}) | {key: settings[key] for key in ("family", "labels", "normalize", "keep_aspect", "resize") if key in settings}
         self.name = name
         self.family = spec["family"]
         path = Path(settings.get("model_path", spec.get("path", "")))
         if not path.exists():
+            if not settings.get("model_url", spec.get("url")):
+                raise FileNotFoundError(f"{path} missing: export it with {spec.get('export', 'the model export script')}")
             path.parent.mkdir(parents=True, exist_ok=True)
             log.info("downloading %s to %s", name, path)
             urllib.request.urlretrieve(settings.get("model_url", spec["url"]), path)
@@ -188,9 +205,12 @@ class OnnxDetector:
                 log.warning("%s has a fixed %sx%s input; ignoring input_size %s", name, fixed[3], fixed[2], size)
                 size = [fixed[3], fixed[2]]
         self.input_w, self.input_h = int(size[0]), int(size[1])
-        self.keep_aspect = bool(settings.get("keep_aspect", self.family == "yolox"))
+        self.keep_aspect = bool(spec.get("keep_aspect", self.family == "yolox"))
         self.normalize = bool(spec.get("normalize", False))
-        self.labels = COCO80 if spec.get("labels", "coco80") == "coco80" else None
+        self.labels = _LABEL_SETS.get(spec.get("labels", "coco80"))  # None: raw COCO category ids
+        # "area" averages pixels when shrinking, as the PIL resize MegaDetector was trained with does;
+        # plain bilinear drops detail on 2048 px camera-trap frames shrunk to 640.
+        self.interpolation = spec.get("resize", "linear")
         self.score_threshold = score_threshold
         self.nms_iou = float(settings.get("nms_iou", 0.45 if self.family == "yolox" else 0.7))
         self.allowed = set(settings.get("classes", ["person", "car", "truck", "bus", "motorcycle", "bicycle", "dog", "cat"]))
@@ -271,7 +291,9 @@ class OnnxDetector:
             target = (max(32, int(round(w * scale / 32)) * 32), max(32, int(round(h * scale / 32)) * 32))
         else:
             target = (self.input_w, self.input_h)
-        rgb = cv2.cvtColor(cv2.resize(bgr, target, interpolation=cv2.INTER_LINEAR), cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        shrink = self.interpolation == "area" and (target[0] < w or target[1] < h)
+        resized = cv2.resize(bgr, target, interpolation=cv2.INTER_AREA if shrink else cv2.INTER_LINEAR)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         if self.normalize:
             rgb = (rgb - np.array([0.485, 0.456, 0.406], np.float32)) / np.array([0.229, 0.224, 0.225], np.float32)
         outputs = dict(zip([o.name for o in self.session.get_outputs()], self.session.run(None, {self.input_name: rgb.transpose(2, 0, 1)[None]})))
@@ -283,7 +305,7 @@ class OnnxDetector:
         for (cx, cy, bw, bh), cls, score in zip(boxes, classes, best):
             if score < self.score_threshold:
                 continue
-            name = COCO80[int(cls)] if self.labels else COCO91.get(int(cls))
+            name = self.labels[int(cls)] if self.labels else COCO91.get(int(cls))
             if name is None or name not in self.allowed:
                 continue
             results.append((name, float(score), (float(cx - bw / 2), float(cy - bh / 2), float(bw), float(bh))))

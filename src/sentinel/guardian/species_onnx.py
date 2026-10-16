@@ -3,7 +3,8 @@ keeps it off the camera threads (I/O edge: numpy, OpenCV, onnxruntime).
 
 The model is Google's SpeciesNet v4 `always_crop` classifier (Apache-2.0),
 exported once to ONNX by scripts/guardian/export_speciesnet_onnx.py. Crops come
-from Sentinel's own detector boxes, so MegaDetector is never needed. Preprocessing
+from Sentinel's own detector boxes (optionally MegaDetector V6 Apache as an animal
+add-on); SpeciesNet's own MegaDetector v5a step is never used. Preprocessing
 matches SpeciesNet: crop the box, resize to 480x480 (bilinear, no antialias),
 RGB, NHWC float in 0..1, softmax over the logits."""
 
@@ -145,6 +146,7 @@ class SpeciesWorker:
         self.classified = 0
         self.dropped = 0
         self.failures = 0
+        self.busy = False  # a job is being classified (offline evaluation waits on it)
         self._ms: list[float] = []
         self._thread = threading.Thread(target=self._run, name="guardian-species", daemon=True)
         self._thread.start()
@@ -208,6 +210,7 @@ class SpeciesWorker:
                 self.on_failure(job)
                 continue
             started = time.perf_counter()
+            self.busy = True
             try:
                 prepare = getattr(self.model, "prepare", None)
                 scores = self.model.classify([prepare(job.crop) if prepare else job.crop])[0]
@@ -216,8 +219,10 @@ class SpeciesWorker:
                 self.error = str(error)[:300]
                 log.warning("species classification failed: %s", self.error)
                 self.on_failure(job)
+                self.busy = False
                 continue
             self._ms.append((time.perf_counter() - started) * 1000)
             del self._ms[:-200]
             self.classified += 1
             self.on_result(job, scores)
+            self.busy = False

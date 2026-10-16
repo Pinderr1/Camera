@@ -6,9 +6,10 @@ No model has been trained. Every number below names the images behind it. They a
 
 ## Summary (2026-10-16)
 
-- **Species recognition works end to end, off by default.** SpeciesNet v4.0.3a (Apache-2.0 code and weights) runs on ONNX Runtime. Crops come from Sentinel's own YOLOX animal boxes, so MegaDetector is never used. Results flow into guardian tracks, wording, events and incidents, notifications, the live overlay and `/api/v1/guardian`. A species is named only when confident; otherwise "Bear detected — species uncertain" or the detector's unconfirmed label.
+- **Species recognition works end to end, off by default.** SpeciesNet v4.0.3a (Apache-2.0 code and weights) runs on ONNX Runtime. Crops come from Sentinel's own detector boxes (YOLOX, plus the optional MegaDetector V6 Apache animal detector below); SpeciesNet's own MegaDetector v5a step is never used. Results flow into guardian tracks, wording, events and incidents, notifications, the live overlay and `/api/v1/guardian`. A species is named only when confident; otherwise "Bear detected — species uncertain" or the detector's unconfirmed label.
 - **On real images (435 downloaded):** with Sentinel's boxes, 160 of the 161 crops SpeciesNet confirmed were the species the dataset names. The one wrong call was an elk confirmed as domestic cattle at 0.98. **The bottleneck is the detector:** YOLOX found an animal in only 168 of the 395 images that contain one (many are night IR frames or partly visible animals).
 - **Usable commercially:** ENA24, Caltech Camera Traps, NACTI, WCS and WSU Lynx (all CDLA-Permissive-1.0). **Research only / not fetched:** Animal Kingdom, Idaho Camera Traps.
+- **Detector gap closed on camera-trap stills (2026-10-16).** The optional animal detector (MegaDetector V6, Apache variant `MDV6-apa-rtdetr-c`, next to YOLOX) finds an animal in 368 of 395 animal images (YOLOX alone: 168), and SpeciesNet then confirms the right species on 321–324 of 395 (YOLOX: 157). Cost: boxes on 9 of 40 empty frames (rocks, sticks; mostly called `blank` by SpeciesNet, which Guardian now uses to set such tracks aside) and about twice the detection time. MegaDetector's training data probably includes these datasets, so these figures are optimistic. See [Animal detector](#animal-detector-megadetector-v6).
 - **Downloaded:** 435 images (194.5 MB): 240 from ENA24 and Caltech, and 195 from NACTI through the new streaming CSV importer (moose 40, elk 40, uncertain elk 15, black bear 30, cougar 30, coyote 20, negatives 20).
 - **Still missing:** grizzly bears (no source in any LILA dataset) and North American wolves (best candidate: WSU Lynx, not yet fetched).
 
@@ -79,7 +80,7 @@ NACTI has no boxes of its own, and its MegaDetector results are not loaded, so t
 
 What this shows:
 
-- **Detector recall is the main limitation.** YOLOX found an animal in 168 of 395 animal images (43 %): 56 of 90 black bears, 27 of 80 cougars, 22 of 70 coyotes, 21 of 40 moose and 13 of 40 elk. It also gives the wrong COCO label (cougars as `dog`, `cat` or `bird`). A permissively licensed camera-trap detector (MegaDetector V6 MIT/Apache variants) or fine-tuning YOLOX on these datasets is the next step for recall.
+- **Detector recall is the main limitation.** YOLOX found an animal in 168 of 395 animal images (43 %): 56 of 90 black bears, 27 of 80 cougars, 22 of 70 coyotes, 21 of 40 moose and 13 of 40 elk. It also gives the wrong COCO label (cougars as `dog`, `cat` or `bird`). The optional MegaDetector V6 Apache add-on now closes most of this gap (see [Animal detector](#animal-detector-megadetector-v6)).
 - **Dog, coyote and wolf:** SpeciesNet never predicted a wolf on any image. Coyotes were called coyote in 22/22 crops from Sentinel boxes (both runs) and 44/47 reference crops (the other 3 were not canids); dogs were called domestic dog in 7/7 and 10/11. No wolf images exist yet, so wolf recognition is untested.
 - **Bears:** every confident bear call was "American black bear" (112/112 across both runs and box types). No black bear was ever called brown or grizzly. There are no grizzly images, so the reverse confusion is untested. The 60 ENA24 bears are `unassigned` (no camera location) and probably in SpeciesNet's training data: they are **not** an independent held-out set.
 - **Confidence:** correct top labels had median 0.99 (10th percentile 0.95 on Sentinel boxes, 0.90 on reference boxes). The four wrong confirmations on reference boxes scored 0.70–0.76. At the new 0.8 default they would all have become uncertain, at the cost of 7 correct reference and 3 correct Sentinel-box calls also becoming uncertain. The NACTI elk-as-cattle error at 0.98 shows that a threshold alone is not enough, which is why live tracks also need two agreeing crops and a confirmed species never lowers concern.
@@ -98,6 +99,110 @@ Measured 2026-10-16 on the development laptop: **Intel Core i5-1135G7, Intel Iri
 | Memory | Process RSS +300 MB for the classifier (detector + classifier about 740 MB; peak sampled 960 MB). About 650 MB of shared GPU memory | |
 
 With the defaults, one animal costs at most 6 crops × about 0.35 s of GPU time, spread over at least 20 s. Camera threads never wait for it. On the GTX 1070 (DirectML or CUDA) both models should be several times faster, but that has not been measured.
+
+## Animal detector (MegaDetector V6)
+
+Added 2026-10-16 to close the detector gap above. Optional and off by default: `detector.animal_detector` (see [architecture.md](architecture.md#3-detection-detectorspy-detectors_onnxpy)). YOLOX stays the main detector for people and vehicles. MegaDetector only adds `animal` boxes that YOLOX missed.
+
+### Which MegaDetector, and why
+
+| Variant | Licence (Pytorch-Wildlife model zoo) | Published animal mAR / mAP50 | Decision |
+| --- | --- | --- | --- |
+| MDv5a/b, MDV6-yolov9/yolov10/rtdetr (Ultralytics) | AGPL-3.0 | 76.8–82.8 / 87.2–92.8 | Excluded (AGPL) |
+| **MDV6-apa-rtdetr-c** (RT-DETRv2-R18, 20 M parameters) | **Apache-2.0** | 81.1 / 91.0 | **Integrated** (`mdv6_apa_rtdetr_c`) |
+| MDV6-apa-rtdetr-e (R101, 76 M) | Apache-2.0 | 82.9 / 94.1 | Not tried: 1.2 GB checkpoint, about 4× the compute |
+| MDV6-mit-yolov9-c (9.7 M) | MIT | 74.8 / 87.6 | Downloaded, not exported: lower published recall, and its export needs the MultimediaTechLab YOLO stack (omegaconf, lightning, a separate config file). Worth revisiting if CPU-only speed matters |
+| MDV6-mit-yolov9-e | MIT | 76.1 / 71.5 | Not tried |
+
+The weights come from Zenodo record 15398270 (`MDV6-apa-rtdetr-c.pth`, MD5 `3992888e…be97c3`, SHA-256 `4814cdbc…a6fce`). The record carries a blanket CC-BY-4.0 tag; the per-model Apache licence in the model zoo is the one applied (see `sources.md`). `scripts/guardian/export_megadetector_onnx.py` (throwaway torch environment) refuses any other MD5 before unpickling, exports the model without its post-processor (`logits`, `pred_boxes`; opset 17; ONNX SHA-256 `2aed208d…ac7db4`) and checks parity on a real image: max logit difference 1.2e-4, max box difference 1.2e-5. DirectML and CPU give identical boxes in Sentinel. Preprocessing matches MegaDetector's training: plain 640×640 resize (area interpolation when shrinking), RGB 0–1, sigmoid scores.
+
+**Caveat on every number below:** MegaDetector's training data very likely includes these LILA datasets (ENA24, Caltech, NACTI). YOLOX saw COCO only. MegaDetector's still-image figures are therefore optimistic. The video clips are not from LILA.
+
+### Still images: 435 camera-trap frames
+
+`python scripts/guardian/animal_detector_eval.py run --out bench_runs/guardian_detectors/NAME` (each detector in its own process; threshold sweep; then SpeciesNet on each configuration's best box). 395 images contain an animal (the `negative` bucket holds deer, foxes, raccoons and other non-target animals); 40 are labelled empty. Box metrics use the dataset's own boxes (178 boxes on ENA24 and part of Caltech; NACTI has none). Night = infrared (equal colour channels).
+
+| Detector (threshold) | Animal images found | Day | Night | Empty frames with an animal box | Box recall @IoU 0.5 | Box precision | Mean IoU |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| YOLOX-s 960×544 (0.5, shipped) | 168/395 (42 %) | 92/195 | 76/200 | 0/40 | 76/178 | 92 % | 0.86 |
+| YOLOX-s (0.1) | 294/395 (74 %) | 145/195 | 149/200 | 6/40 | 128/178 | 48 % | 0.86 |
+| MegaDetector V6 Apache (0.4) | 385/395 (98 %) | 188/195 | 197/200 | 32/40 | 173/178 | 94 % | 0.87 |
+| **MegaDetector V6 Apache (0.6, default)** | **367/395 (93 %)** | 175/195 | **192/200** | **9/40** | 170/178 | 98 % | 0.87 |
+| YOLOX-s 0.5 + MegaDetector 0.6 (add-on) | 368/395 (93 %) | 176/195 | 192/200 | 9/40 | 170/178 | 94 % | 0.86 |
+
+Images found per target, YOLOX → add-on at 0.6: black bear 56 → 83 of 90, cougar 27 → 66 of 80, coyote 22 → 67 of 70, elk 13 → 39 of 40, moose 21 → 40 of 40, other animals 20 → 59 of 60. Lowering YOLOX's threshold is not a fix: at 0.1 it still misses a quarter of the animals and halves box precision.
+
+**False positives.** The 0.4 boxes on "empty" frames were checked by eye: a stick, graffiti on a culvert, rocks and a shadow, scored 0.6–0.8. At 0.6, 9 remain; SpeciesNet calls 7 of those 9 `blank` (6 at ≥ 0.8), and the other two are probably real animals in frames labelled empty (an opossum at the frame edge that MDv5a also boxed, and a raccoon in a dark frame). So 0.6 is the default: compared with 0.4 it keeps the same species results (below) with a quarter of the empty-frame boxes.
+
+**With SpeciesNet** (one crop per image, `min_agreeing=1`; images where the detector found the animal and SpeciesNet confirmed the dataset's species, over all 395):
+
+| Configuration | Confirmed right | Confirmed wrong | Uncertain | Unknown | No box | End to end |
+| --- | --- | --- | --- | --- | --- | --- |
+| YOLOX-s | 157 | 1 | 5 | 5 | 227 | **157/395 (40 %)** |
+| MegaDetector 0.6 | 324 | 11 | 15 | 17 | 28 | **324/395 (82 %)** |
+| YOLOX-s + MegaDetector 0.6 | 321 | 12 | 18 | 17 | 27 | 321/395 (81 %) |
+
+Black bear 76/90 confirmed (YOLOX 52), cougar 58/80 (25), coyote 61/70 (21), elk 29/40 (12), moose 35/40 (20). Of the 11 wrong confirmations, 8 are one NACTI camera in Florida (FL-02) labelled elk and called domestic cattle: near-black night frames with only a rump or flank in view, and Florida has no wild elk, so the label itself is doubtful. The others: a bear called wild boar, a coyote called red fox, a coyote called white-tailed deer. These are single-crop calls; live tracks need two agreeing crops.
+
+**SpeciesNet `blank` on real animals.** Of the 367 MegaDetector boxes on animal images, SpeciesNet called 7 (1.9 %) blank at ≥ 0.8 on a single crop (mostly night or partial views). This matters for the rule below.
+
+### Video: 13 trail-camera clips
+
+`python scripts/guardian/fetch_wildlife_videos.py` then `python scripts/guardian/video_eval.py --detectors yolox_s,mdv6,yolox_s+mdv6 --out bench_runs/guardian_video/NAME`. Clips and labels: `config/guardian/videos.json` (Wikimedia Commons: 11 US public domain, 2 CC BY-SA 2.0; licence and SHA-1 checked on download). 8 day clips, 3 night infrared, 1 tiny weasel, 1 empty river. Each clip runs at 5 fps through the detector, IoUTracker, SentinelRuntime, Guardian and SpeciesNet (on its real worker thread). Presence ranges were labelled by eye from contact sheets.
+
+| Clip | Light | Animal-present frames found: YOLOX / MD / YOLOX+MD | Empty ranges, frames with a shown track (YOLOX / YOLOX+MD) | Expected species confirmed: YOLOX / YOLOX+MD |
+| --- | --- | --- | --- | --- |
+| black_bear_day | day | 78% / 84% / 98% | - / - | yes / yes |
+| cougar_day | day | 40% / 64% / 65% | 0/130 / 3/130 | yes / yes |
+| wolf_day | day | 64% / 100% / 100% | 0/7 / 1/7 | no / no |
+| coyote_day | day | 58% / 100% / 100% | - / - | yes / yes |
+| elk_cow_calf_day | day | 85% / 100% / 100% | 0/8 / 0/8 | WRONG: Red deer / WRONG: Red deer |
+| elk_herd_day | day | 100% / 100% / 100% | - / - | no / no |
+| elk_bulls_snow | day | 94% / 100% / 100% | - / - | yes / yes (also wrong: Red deer, Red deer) |
+| lynx_snow_day | day | 40% / 69% / 73% | 0/30 / 0/30 | yes / yes |
+| weasel_day | day | 0% / 0% / 0% | 0/35 / 0/35 | - / - |
+| fox_family_night | night | 98% / 100% / 100% | - / - | yes / yes |
+| moose_night | night | 69% / 100% / 100% | - / - | yes / yes |
+| coyote_night | night | 9% / 100% / 100% | - / - | no / yes |
+| river_empty | day | - / - / - | 0/150 / 17/150 | - / - |
+
+| Configuration | Animal-present frames found (day / night / all) | Empty-range frames with a box | ... with a shown Guardian track | Clips with expected species confirmed | Wrong species confirmations |
+| --- | --- | --- | --- | --- | --- |
+| YOLOX | 490/763 (64%) / 175/276 (63%) / 665/1039 (64%) | 1/360 | 0/360 | 7/11 | 1 |
+| MD | 628/763 (82%) / 276/276 (100%) / 904/1039 (87%) | 75/360 | 21/360 | 8/11 | 1 |
+| YOLOX+MD | 668/763 (88%) / 276/276 (100%) / 944/1039 (91%) | 75/360 | 21/360 | 8/11 | 3 |
+
+What it shows:
+
+- **Recall:** the add-on finds animals on 91 % of animal-present frames (YOLOX 64 %); night infrared goes from 63 % to 100 %. The night coyote YOLOX almost never saw (9 %) is found on every frame and confirmed as a coyote. Detection time per frame roughly doubles (YOLOX 180–260 ms, add-on 460–750 ms on the Iris Xe).
+- **Species:** the expected species is confirmed on 8 of 11 clips (YOLOX 7). Still not confirmed: the black wolf (SpeciesNet stays at "Dog-like animal — species uncertain", correctly not naming it), the elk herd (stays "Deer-family animal — species uncertain") and the elk cow and calf (confirmed as **red deer**, wrong). The add-on also confirmed red deer on two short tracks in the bull-elk clip (YOLOX-labelled `cow`/`horse` boxes), so it has 3 wrong confirmations to YOLOX's 1. SpeciesNet's geofence allows red deer in Canada (farmed and feral herds), so setting `country: CAN` does not prevent it; it does in the USA.
+- **False positives:** MegaDetector boxes the empty river on 71 of 150 frames (YOLOX: 0) and opens four tracks. With the blank rule (below) all four are set aside; a false track is still on screen for about a second before its second crop (17 of 150 frames). The cougar clip keeps 3 shown frames after the cougar leaves.
+- **Still missed by everything:** the weasel (tiny, under two seconds), the cougar once it is small and half hidden in vegetation (about 35 % of its frames), and the lynx at distance on bright snow (about 30 %).
+- **More tracks per animal:** the add-on splits animals into more Guardian tracks (black bear 4 vs 2, elk bulls 5 vs 3), because YOLOX and MegaDetector boxes alternate on the same animal. Guardian links them by re-acquisition only when unambiguous.
+
+### Generic boxes the classifier calls blank (Guardian)
+
+MegaDetector boxes moving water, rocks and sticks. On the river clip it opened four "Animal (species unknown)" tracks, and SpeciesNet's agreed top label on every one was `blank` (0.90–0.94). Guardian now **sets aside** a track when (1) only the generic `animal` label ever described it (no COCO label such as `bear`, `dog` or `cat` from the main detector), and (2) at least `min_agreeing` (2) crops agree the box is `blank` with an averaged score of at least `guardian.species_classifier.blank_confidence` (0.8). A set-aside track gets no level, no event and no overlay; it stays in `/api/v1/guardian` with `set_aside` explaining why, and a later crop that finds an animal brings it back. To shorten the time a false box is on screen, a generic box whose first crop looks blank is re-checked after `blank_recheck_s` (1 s) instead of the usual 4 s. A COCO-labelled track is never set aside, so the classifier still never quietens the main detector. `blank_confidence: 1` turns the rule off. The rule only works with the species classifier on, so **use the animal detector together with the species classifier.** Residual risk: an animal seen only by MegaDetector and called blank on two crops would be set aside (single-crop rate on real animals above: 1.9 %).
+
+### Speed and memory (i5-1135G7, Iris Xe, DirectML)
+
+| Detector | Input | Detection p50 / p95 | CPU p50 / p95 | Process RSS added |
+| --- | --- | --- | --- | --- |
+| YOLOX-s | 960×544 | 147 / 207 ms | 86 / 99 ms (CPU profile: YOLOX-tiny 416) | 384 MB |
+| MegaDetector V6 Apache | 640×640 | 220 / 447 ms | 804 / 1,003 ms (2048×1536 stills) | 635 MB |
+
+With the add-on, each processed frame runs both detectors in sequence. In the video test that was about 600–750 ms per frame on this laptop (YOLOX alone 190–270 ms), so a 5 fps camera is processed at roughly 1.5 fps: enough for slow animal movement, too slow for several cameras on this machine. The CPU path (0.8 s per frame) is too slow for continuous use. No NVIDIA figures yet.
+
+### Recommended configuration
+
+For a camera where wildlife matters, keep YOLOX and add both optional models:
+
+```json
+"detector": {"type": "onnx", "model": "auto", "animal_detector": {"model": "mdv6_apa_rtdetr_c", "score_threshold": 0.6}},
+"guardian": {"enabled": true, "species_classifier": {"enabled": true}}
+```
+
+`animal_detector` can also be set per camera (`cameras[].detector`). Why the add-on and not MegaDetector alone: MegaDetector as the only detector (`"model": "mdv6_apa_rtdetr_c"`, which also reports `person` and `vehicle`) was nearly as good on animals in the video test (87 % of frames, 1 wrong species, fewer split tracks, half the detection time), but its person and vehicle detection has never been measured on Sentinel's people benchmark, so it must not replace YOLOX on a security camera. On a wildlife-only camera (no people rules) it is a reasonable, cheaper choice. Without the exported model the camera runs YOLOX alone and the `animal_detector:<camera>` health component says why. Everything else (people, vehicles, V1 rules) is unchanged.
 
 ## Licences, versions and attribution (datasets)
 
@@ -120,7 +225,7 @@ CDLA-Permissive-1.0 lets us use, modify and share the data, including commercial
 
 | Model | Code | Weights | Commercial use | Notes |
 | --- | --- | --- | --- | --- |
-| MegaDetector V6 ([Pytorch-Wildlife model zoo](https://microsoft.github.io/Pytorch-Wildlife/model_zoo/)) | MIT | `MDV6-yolov9-c/e`, `MDV6-yolov10-c/e`: **AGPL**. `MDV6-mit-yolov9-c/e`: **MIT**. `MDV6-apa-rtdetr-c/e`: **Apache 2.0** | MIT and Apache variants only | Not downloaded. Best candidate to raise animal recall in front of SpeciesNet; record the exact file and hash before use |
+| MegaDetector V6 ([Pytorch-Wildlife model zoo](https://microsoft.github.io/Pytorch-Wildlife/model_zoo/)) | MIT | `MDV6-yolov9-c/e`, `MDV6-yolov10-c/e`: **AGPL**. `MDV6-mit-yolov9-c/e`: **MIT**. `MDV6-apa-rtdetr-c/e`: **Apache 2.0** | MIT and Apache variants only | `MDV6-apa-rtdetr-c` **integrated** as the optional animal detector (hashes in [Animal detector](#animal-detector-megadetector-v6)); `MDV6-mit-yolov9-c` downloaded, not exported |
 | MegaDetector v5a/v5b, MDv1000 ([agentmorris/MegaDetector](https://github.com/agentmorris/MegaDetector)) | MIT (repository) | Not stated; v5 is YOLOv5-based (Ultralytics, AGPL-3.0) | **Not cleared** | Do not ship. Precomputed v5a boxes are kept only as unverified hints |
 | Pytorch-Wildlife DFNE (northeastern North America) | MIT (repository) | Not stated | Unknown | Species list not published |
 
@@ -171,7 +276,7 @@ Storage on disk: 194.5 MB of images (188 MB on disk), 170 MB of cached metadata 
 
 1. **Grizzly bears.** No LILA dataset has `ursus arctos`. The best lead is iNaturalist research-grade observations with CC0 or CC-BY photos (per-photo licences; CC-BY-NC excluded). That would be close-up photos rather than camera-trap frames. Until then, a "grizzly bear" or "brown bear" call from SpeciesNet is unvalidated, and Sentinel's wording falls back to "Bear detected — species uncertain" whenever black and brown bear scores are close.
 2. **North American wolves.** NACTI has none; WCS's are unchecked. WSU Lynx (Washington, 637 locations, CDLA-Permissive) is registered as a candidate; its metadata still needs inspecting and a label map.
-3. **Detector recall on camera-trap stills** (43 % here) is the weakest link. See next steps.
+3. **Detector false positives and cost.** MegaDetector raised recall on stills from 42 % to 93 %, but it boxes rocks, sticks and moving water, and doubles detection time. Its numbers on LILA images are optimistic (likely training data). A tiny animal (weasel clip) is still missed by every detector.
 4. **Security-camera viewpoint and video.** Everything here is knee-height camera-trap stills. The species path still needs testing on the owner's camera footage.
 5. **Independent evaluation.** SpeciesNet was trained partly on public camera-trap data that may include these datasets, ENA24 has no locations, and NACTI's sample has no eval split.
 6. **Expert verification** of source labels, and **behaviour labels** (Animal Kingdom only, not licensed).
@@ -179,7 +284,7 @@ Storage on disk: 194.5 MB of images (188 MB on disk), 170 MB of cached metadata 
 
 ## Next steps (no training yet)
 
-1. Measure a permissive camera-trap detector in front of SpeciesNet (MegaDetector V6 `MDV6-apa-rtdetr-c` or `MDV6-mit-yolov9-c`) on the same samples with `speciesnet_eval.py`.
+1. Run `scripts/guardian/video_eval.py` on the owner's own recorded footage (add entries with `"path"` to a copy of `config/guardian/videos.json`), day and night, with the animal detector and species classifier on; record false tracks per day.
 2. Inspect WSU Lynx metadata, add its label map (wolf, moose, elk, black bear) and fetch a location-split sample.
 3. Run the evaluation on the GTX 1070 machine (copy `models/speciesnet/v4.0.3a/`) and record speed.
 4. Run the species path on the owner's recorded camera footage (see [wilderness-guardian.md](wilderness-guardian.md#real-camera-validation-plan)) before enabling it on a live site.

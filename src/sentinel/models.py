@@ -8,14 +8,15 @@ SEVERITIES = ("info", "low", "medium", "high")
 SEVERITY_RANK = {name: rank for rank, name in enumerate(SEVERITIES)}
 
 # Security categories and the COCO labels (what YOLOX/EfficientDet were trained
-# on) that feed them. `unknown_motion` comes from motion analysis, not a detector.
+# on) that feed them. MegaDetector's own classes are already category names
+# ("animal", "person", "vehicle"), so they are listed too. `unknown_motion` comes from motion analysis, not a detector.
 # COCO has no "package/parcel", "insect", or "vegetation" classes: see
 # docs/environmental-intelligence.md for what needs other models or motion analysis.
 CATEGORY_LABELS: dict[str, tuple[str, ...]] = {
     "person": ("person",),
-    "vehicle": ("car", "truck", "bus", "motorcycle"),
+    "vehicle": ("car", "truck", "bus", "motorcycle", "vehicle"),
     "bicycle": ("bicycle",),
-    "animal": ("bird", "cat", "dog", "horse", "sheep", "cow", "bear", "elephant", "zebra", "giraffe"),
+    "animal": ("bird", "cat", "dog", "horse", "sheep", "cow", "bear", "elephant", "zebra", "giraffe", "animal"),
     "bag": ("backpack", "handbag", "suitcase"),
     "unknown_motion": (),
 }

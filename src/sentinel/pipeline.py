@@ -144,6 +144,7 @@ class CameraWorker(threading.Thread):
             detector, provider = self._create_detector(categories, cpu_only=True)
             detector_state, detector_error = "fallback", _error_text(error)
         on_fallback = detector_state == "fallback"  # running on CPU because the configured detector failed
+        reported_animal_status: tuple[str, str] | None = None
         try:
             source = open_source(self.camera, self.config, self.runtime.secrets.get)
         except Exception:
@@ -213,6 +214,10 @@ class CameraWorker(threading.Thread):
                     try:
                         detections = filter_detections(detector.detect(frame), camera_id, zones, min_area, enabled)
                         consecutive_errors = 0
+                        animal_status = getattr(detector, "animal_status", None)
+                        if animal_status is not None and animal_status != reported_animal_status:
+                            self.runtime.animal_detector_health(camera_id, *animal_status)
+                            reported_animal_status = animal_status
                         detect_ms.append((time.perf_counter() - stage) * 1000)
                         last_inference_ms = int(time.time() * 1000)
                         if probing:

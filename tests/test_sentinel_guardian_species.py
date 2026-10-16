@@ -258,7 +258,7 @@ class RealModelTests(unittest.TestCase):
 class MonitorIntegrationTests(unittest.TestCase):
     """Species decisions flow into tracking IDs, wording, events, overlays and the API view."""
 
-    def run_track(self, scores, seconds=8.0, **species):
+    def run_track(self, scores, seconds=8.0, label="bear", approach=False, **species):
         from sentinel.guardian.monitor import GuardianMonitor
         from sentinel.tracker import IoUTracker
         from test_sentinel_guardian import FPS, NOON_MS, box, guardian_config
@@ -270,7 +270,8 @@ class MonitorIntegrationTests(unittest.TestCase):
         events, requested = [], []
         for step in range(int(seconds * FPS)):
             now = NOON_MS + step * 1000 // FPS
-            active, ended = tracker.update([box(0.2 + 0.06 * step / FPS, 0.75, 0.12)], now)
+            grow = step / FPS if approach else 0.0  # approaching the camera: lower and larger in the image
+            active, ended = tracker.update([box(0.2 + 0.06 * step / FPS, 0.75 - 0.15 * approach + 0.02 * grow, 0.12 + 0.01 * grow, label=label)], now)
             events += monitor.process("cam_a", now, active, ended)
             for guardian_id, bbox in monitor.species_requests("cam_a", now):
                 requested.append(now)
@@ -291,6 +292,34 @@ class MonitorIntegrationTests(unittest.TestCase):
         self.assertEqual(view["species"]["status"], "classifier")
         self.assertEqual(view["species"]["species_confidence"], 0.93)
         self.assertTrue(monitor.overlays("cam_a")[0]["label"].startswith("Black bear 93%"))
+
+    def test_blank_classifier_sets_aside_a_generic_camera_trap_box(self):
+        # MegaDetector's generic "animal" box on a rock, approaching in image terms: once two
+        # crops agree it is blank, the track gets no level, no event and no overlay.
+        monitor, events, requested = self.run_track({7: 0.93, 0: 0.02}, label="animal", approach=True)
+        view = monitor.snapshot()[0]
+        self.assertTrue(view["set_aside"])
+        self.assertIsNone(view["assessment"])
+        self.assertEqual(monitor.overlays("cam_a"), [])
+        self.assertFalse([e for e in events if e.timestamp_ms > requested[1]], "nothing after the second blank crop")
+        monitor, _, requested = self.run_track({7: 0.93, 0: 0.02}, label="animal", approach=True, reclassify_s=4)
+        self.assertEqual(requested[1] - requested[0], 1000, "a blank-looking generic box is re-checked after 1 s, not 4 s")
+        monitor, _, requested = self.run_track({0: 0.93}, label="animal", reclassify_s=4)
+        self.assertEqual(requested[1] - requested[0], 4000, "an animal-looking box keeps the normal interval")
+
+    def test_blank_never_quietens_a_specific_detector_label(self):
+        monitor, events, _ = self.run_track({7: 0.95}, label="bear", approach=True)
+        view = monitor.snapshot()[0]
+        self.assertEqual(view["set_aside"], "")
+        self.assertTrue(monitor.overlays("cam_a"))
+        self.assertEqual(view["species"]["concern"], "high", "a COCO 'bear' keeps its concern whatever the classifier says")
+
+    def test_one_blank_crop_or_a_weak_blank_is_not_enough(self):
+        for scores, species in (({7: 0.93}, {"max_crops_per_track": 1}), ({7: 0.6, 0: 0.3}, {}), ({7: 1.0}, {"blank_confidence": 1})):
+            with self.subTest(scores=scores):
+                monitor, _, _ = self.run_track(scores, label="animal", min_agreeing=2, **species)
+                self.assertEqual(monitor.snapshot()[0]["set_aside"], "")
+                self.assertTrue(monitor.overlays("cam_a"))
 
     def test_uncertain_species_never_allows_species_guidance(self):
         monitor, events, _ = self.run_track({0: 0.5, 1: 0.45})

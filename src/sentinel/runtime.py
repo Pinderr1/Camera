@@ -221,6 +221,12 @@ class SentinelRuntime:
         with self._lock:
             self.health.set_component("guardian_species", state, detail, int(time.time() * 1000), notify=False)
 
+    def animal_detector_health(self, camera_id: str, state: str, detail: str) -> None:
+        """Optional camera-trap animal detector (detectors.AnimalAugmentedDetector): its
+        failures never stop the camera, so they are a component, not a camera state."""
+        with self._lock:
+            self.health.set_component(f"animal_detector:{camera_id}", state, detail, int(time.time() * 1000), notify=False)
+
     def guardian_species_frame(self, camera_id: str, now_ms: int, image: Any) -> None:
         """Called by camera workers after each processed frame; never raises."""
         species = self.species

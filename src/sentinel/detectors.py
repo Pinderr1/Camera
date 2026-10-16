@@ -216,7 +216,77 @@ def detection_thresholds(settings: dict[str, Any], offset: float = 0.0) -> tuple
     return min(float(low), report), report
 
 
+class AnimalAugmentedDetector:
+    """The site's detector plus a camera-trap animal detector (MegaDetector).
+
+    The primary detector keeps every box it reports (people and vehicles stay
+    exactly as before). The animal detector contributes only `animal` boxes, and
+    only where no primary animal box already covers the animal, so a COCO label
+    such as "bear" is kept when both see the same animal.
+
+    The animal detector is optional: if it cannot load or its inference fails,
+    the primary detector's boxes are returned unchanged and `animal_status`
+    says why (reported as the `animal_detector` health component)."""
+
+    def __init__(self, primary: Detector, animal: Detector | None, overlap_iou: float = 0.5, error: str = "") -> None:
+        self.primary, self.animal, self.overlap_iou = primary, animal, overlap_iou
+        self.providers = getattr(primary, "providers", None)
+        self.animal_status = ("ok", "") if animal is not None else ("degraded", f"animal detector unavailable ({error}); using the main detector's animal labels")
+        self.animal_failures = 0
+
+    def detect(self, frame: Frame) -> list[Detection]:
+        from .models import canonical_class
+        from .tracker import iou
+
+        detections = self.primary.detect(frame)
+        if self.animal is None:
+            return detections
+        try:
+            extra = self.animal.detect(frame)
+        except Exception as error:  # never let the optional model cost the camera its people/vehicle coverage
+            self.animal_failures += 1
+            self.animal_status = ("degraded", f"animal detector failed ({type(error).__name__}: {str(error)[:120]}); using the main detector's animal labels")
+            if self.animal_failures == 1 or self.animal_failures % 100 == 0:
+                log.warning("animal detector failed (%d): %s", self.animal_failures, error)
+            return detections
+        self.animal_status = ("ok", "")
+        primary_animals = [d.bbox for d in detections if canonical_class(d.label) == "animal"]
+        for det in extra:
+            if canonical_class(det.label) != "animal":
+                continue
+            if any(iou(det.bbox, box) >= self.overlap_iou for box in primary_animals):
+                continue
+            detections.append(det)
+        return detections
+
+    def describe(self) -> dict[str, Any]:
+        describe = lambda detector: detector.describe() if hasattr(detector, "describe") else {}  # noqa: E731
+        animal = describe(self.animal) if self.animal is not None else {}
+        return describe(self.primary) | {"animal_detector": animal | {"state": self.animal_status[0], "detail": self.animal_status[1]}}
+
+    def close(self) -> None:
+        self.primary.close()
+        if self.animal is not None:
+            self.animal.close()
+
+
+ANIMAL_DETECTOR_DEFAULTS = {"model": "mdv6_apa_rtdetr_c", "score_threshold": 0.6}
+
+
 def create_detector(settings: dict[str, Any], score_threshold: float) -> Detector:
+    animal = settings.get("animal_detector")
+    if isinstance(animal, dict) and animal.get("enabled", True) and settings.get("type") == "onnx":
+        primary = create_detector({key: value for key, value in settings.items() if key != "animal_detector"}, score_threshold)
+        if "classes" in settings and "animal" not in settings["classes"]:
+            return primary  # the animal category is switched off for this camera
+        merged = ANIMAL_DETECTOR_DEFAULTS | animal
+        animal_settings = {"type": "onnx", "providers": settings.get("providers", "auto"), "classes": ["animal"]} | {
+            key: value for key, value in merged.items() if key not in {"enabled", "score_threshold"}}
+        try:
+            return AnimalAugmentedDetector(primary, create_detector(animal_settings, float(merged["score_threshold"])))
+        except Exception as error:
+            log.warning("animal detector %s not loaded: %s", merged.get("model"), error)
+            return AnimalAugmentedDetector(primary, None, error=f"{type(error).__name__}: {str(error)[:160]}")
     kind = settings.get("type", "mediapipe")
     if kind == "scripted":
         return ScriptedDetector()
