@@ -54,6 +54,20 @@ ONNX Runtime and `onnxruntime-directml` are MIT. `onnx` (Apache-2.0) is only use
 
 Candidate future detectors with permissive licences: YOLOX (Apache-2.0), RT-DETR (Apache-2.0), RTMDet / MMDetection (Apache-2.0). Verify the licence of the **weights** and the training data, not only the code.
 
+### Guardian wildlife data and models (checked 2026-10-15, `guardian` branch)
+
+Details, versions and citations are in `docs/guardian-datasets.md`; the machine-readable registry is `config/guardian/datasets.json`. Downloaded images stay in `data/guardian/` (git-ignored).
+
+| Source | Licence (as published) | Commercial use | Status |
+| --- | --- | --- | --- |
+| ENA24-detection, Caltech Camera Traps, NACTI, WCS Camera Traps (LILA BC) | CDLA-Permissive-1.0 | Allowed; keep the licence text with any redistributed data, cite the paper named on each page | Sample downloaded for evaluation/fine-tuning preparation |
+| LILA MegaDetector results files (MDv5a boxes) | No licence stated on the LILA results page | Unclear | Stored as machine-generated, unverified boxes in the manifest; never treated as ground truth |
+| Idaho Camera Traps (LILA) | "Images may not be sold in any format" | No | Registry entry only, not fetched |
+| Animal Kingdom | No licence published; request form | Unknown | Research only, not fetched |
+| SpeciesNet (google/cameratrapai) | Code Apache-2.0; weights Apache 2.0 (Kaggle `licenseName`, every v4.0.0a–v4.0.3b instance) | Code and weights allowed; the ensemble also needs MegaDetector (below) | Not downloaded |
+| MegaDetector V6 (Pytorch-Wildlife model zoo) | `MDV6-yolov9-c/e`, `MDV6-yolov10-c/e`: AGPL; `MDV6-mit-yolov9-c/e`: MIT; `MDV6-apa-rtdetr-c/e`: Apache 2.0 | Only the MIT and Apache variants are candidates | Not downloaded |
+| MegaDetector v5a/v5b, MDv1000 | Repository MIT; weights licence not stated; v5 is YOLOv5 (Ultralytics AGPL-3.0) based | Not cleared | Do not ship |
+
 ## Legacy CameraAI audit (senior night safety, frozen)
 
 ### Direct Reuse

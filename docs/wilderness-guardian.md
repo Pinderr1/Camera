@@ -59,7 +59,7 @@ Confusing black bears with grizzly bears has real consequences. Agency safety ad
 
 ### Datasets and models
 
-Checked on 2026-10-15 against each publisher's own page (LILA BC, GitHub). Nothing has been downloaded. Before any download, record the dataset and any pre-trained weights in `sources.md`, and check weights licences separately from code licences.
+Checked on 2026-10-15 against each publisher's own page (LILA BC, GitHub). A first licence-checked sample of individual images has since been downloaded with the Guardian dataset importer; species coverage verified from the metadata, exact licences, versions and what is missing are in [guardian-datasets.md](guardian-datasets.md). Record any new dataset or pre-trained weights in `sources.md`, and check weights licences separately from code licences.
 
 | Dataset or model | Species covered | Images / video | Labels and annotations | Licence and commercial use | Detection | Tracking | Behaviour | Training gaps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

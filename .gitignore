@@ -38,3 +38,6 @@ __pycache__/
 node_modules/
 .DS_Store
 Thumbs.db
+
+# Guardian wildlife dataset downloads (images, metadata cache, manifests)
+data/guardian/

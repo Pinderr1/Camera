@@ -1,0 +1,154 @@
+{
+  "_comment": "Guardian wildlife dataset registry. Licences checked 2026-10-15 against each publisher's page (see docs/guardian-datasets.md). Label maps are explicit: an unlisted source label is never imported. 'species' means the SOURCE labels the image as that species (not verified by Sentinel); 'uncertain' keeps a possible target that the source label does not settle; 'negative' means no target animal; 'excluded' images are never downloaded.",
+  "targets": ["black_bear", "grizzly_bear", "cougar", "wolf", "coyote", "moose", "elk"],
+  "sources": [
+    {
+      "id": "ena24",
+      "name": "ENA24-detection",
+      "page": "https://lila.science/datasets/ena24detection",
+      "version": "ena24.json (info.version 1; LILA page updated 2024-08-28)",
+      "format": "coco_camera_traps",
+      "metadata_url": "https://storage.googleapis.com/public-datasets-lila/ena24/ena24.json",
+      "image_base_url": "https://storage.googleapis.com/public-datasets-lila/ena24/images",
+      "md_results_url": "https://lila.science/public/lila-md-results/ena24_mdv5a.0.0_results.json.zip",
+      "licence": {
+        "id": "CDLA-Permissive-1.0",
+        "url": "https://cdla.io/permissive-1-0/",
+        "commercial_use": "allowed",
+        "conditions": "Keep the CDLA-Permissive-1.0 text with redistributed data; results of computational analysis are not restricted.",
+        "attribution": "Yousif H, Kays R, He Z. Dynamic Programming Selection of Object Proposals for Sequence-Level Animal Species Classification in the Wild. IEEE TCSVT, 2019. Data via LILA BC."
+      },
+      "label_map": {
+        "American Black Bear": {"target": "black_bear", "status": "species"},
+        "Coyote": {"target": "coyote", "status": "species"},
+        "Dog": {"status": "negative"},
+        "White_Tailed_Deer": {"status": "negative"},
+        "Bobcat": {"status": "negative"},
+        "Red Fox": {"status": "negative"},
+        "Domestic Cat": {"status": "negative"},
+        "Horse": {"status": "negative"},
+        "Northern Raccoon": {"status": "negative"},
+        "Human": {"status": "excluded"},
+        "Vehicle": {"status": "excluded"}
+      }
+    },
+    {
+      "id": "caltech_camera_traps",
+      "name": "Caltech Camera Traps",
+      "page": "https://lila.science/datasets/caltech-camera-traps",
+      "version": "caltech_camera_traps.json version 20210113; boxes caltech_bboxes_20200316.json",
+      "format": "coco_camera_traps",
+      "metadata_url": "https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/labels/caltech_camera_traps.json.zip",
+      "bbox_url": "https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/labels/caltech_bboxes_20200316.json",
+      "image_base_url": "https://storage.googleapis.com/public-datasets-lila/caltech-unzipped/cct_images",
+      "md_results_url": "https://lila.science/public/lila-md-results/caltech-camera-traps_mdv5a.0.0_results.json.zip",
+      "licence": {
+        "id": "CDLA-Permissive-1.0",
+        "url": "https://cdla.io/permissive-1-0/",
+        "commercial_use": "allowed",
+        "conditions": "Keep the CDLA-Permissive-1.0 text with redistributed data.",
+        "attribution": "Beery S, Van Horn G, Perona P. Recognition in Terra Incognita. ECCV 2018. Images from the NPS and USGS. Data via LILA BC."
+      },
+      "label_map": {
+        "coyote": {"target": "coyote", "status": "species"},
+        "mountain_lion": {"target": "cougar", "status": "species"},
+        "empty": {"status": "negative"},
+        "dog": {"status": "negative"},
+        "deer": {"status": "negative"},
+        "bobcat": {"status": "negative"},
+        "cow": {"status": "negative"},
+        "cat": {"status": "negative"},
+        "car": {"status": "excluded"}
+      }
+    },
+    {
+      "id": "nacti",
+      "name": "North American Camera Trap Images (NACTI)",
+      "page": "https://lila.science/datasets/nacti",
+      "version": "nacti_metadata.1.14.json (info.version 1.14, 2019-02-27); boxes nacti_20230920_bboxes",
+      "format": "coco_camera_traps",
+      "metadata_url": "https://storage.googleapis.com/public-datasets-lila/nacti/nacti_metadata.1.14.json.zip",
+      "image_base_url": "https://storage.googleapis.com/public-datasets-lila/nacti-unzipped",
+      "_md_results_note": "MDv5a results exist (https://lila.science/public/lila-md-results/nacti_mdv5a.0.0_results.json.zip, 125 MB zipped) but are too large to parse in memory here; NACTI records therefore carry no boxes.",
+      "licence": {
+        "id": "CDLA-Permissive-1.0",
+        "url": "https://cdla.io/permissive-1-0/",
+        "commercial_use": "allowed",
+        "conditions": "Keep the CDLA-Permissive-1.0 text with redistributed data.",
+        "attribution": "Tabak MA, Norouzzadeh MS, Wolfson DW, et al. Machine learning to classify animal species in camera trap images: Applications in ecology. Methods in Ecology and Evolution 10(4):585-590, 2019. Data via LILA BC."
+      },
+      "label_map": {
+        "ursus americanus": {"target": "black_bear", "status": "species"},
+        "puma concolor": {"target": "cougar", "status": "species"},
+        "canis latrans": {"target": "coyote", "status": "species"},
+        "canis lupus": {"target": "wolf", "status": "species"},
+        "alces alces": {"target": "moose", "status": "species"},
+        "cervus canadensis": {"target": "elk", "status": "species"},
+        "cervus elaphus": {"target": "elk", "status": "uncertain", "note": "Source label is red deer (Cervus elaphus). In US studies this may be elk under older taxonomy; not confirmed."},
+        "unidentified deer": {"status": "negative", "note": "Could include elk or moose; kept out of the target classes, never relabelled."},
+        "empty": {"status": "negative"},
+        "bos taurus": {"status": "negative"},
+        "odocoileus hemionus": {"status": "negative"},
+        "canis familiaris": {"status": "negative"},
+        "lynx rufus": {"status": "negative"},
+        "sus scrofa": {"status": "negative"},
+        "vehicle": {"status": "excluded"}
+      }
+    },
+    {
+      "id": "wcs",
+      "name": "WCS Camera Traps",
+      "page": "https://lila.science/datasets/wcscameratraps",
+      "version": "wcs_camera_traps.json (info.version 1.0, 2019); boxes wcs_20220205",
+      "format": "coco_camera_traps",
+      "metadata_url": "https://storage.googleapis.com/public-datasets-lila/wcs/wcs_camera_traps.json.zip",
+      "image_base_url": "https://storage.googleapis.com/public-datasets-lila/wcs-unzipped",
+      "licence": {
+        "id": "CDLA-Permissive-1.0",
+        "url": "https://cdla.io/permissive-1-0/",
+        "commercial_use": "allowed",
+        "conditions": "Keep the CDLA-Permissive-1.0 text with redistributed data.",
+        "attribution": "Wildlife Conservation Society. WCS Camera Traps. Data via LILA BC."
+      },
+      "label_map": {
+        "canis lupus": {"target": "wolf", "status": "species"},
+        "puma concolor": {"target": "cougar", "status": "species"},
+        "canis latrans": {"target": "coyote", "status": "species"},
+        "ursus thibetanus": {"status": "negative", "note": "Asiatic black bear, not the North American black bear."},
+        "empty": {"status": "negative"},
+        "homo sapiens": {"status": "excluded"},
+        "human": {"status": "excluded"}
+      }
+    },
+    {
+      "id": "animal_kingdom",
+      "name": "Animal Kingdom",
+      "page": "https://github.com/sutdcv/Animal-Kingdom",
+      "version": "not checked (access by request form)",
+      "format": null,
+      "licence": {
+        "id": "unknown",
+        "url": null,
+        "commercial_use": "unknown",
+        "conditions": "No licence published on the repository; access through a request form. Research only until written terms are obtained.",
+        "attribution": "Ng XL, Ong KE, Zheng Q, Ni Y, Yeo SY, Liu J. Animal Kingdom. CVPR 2022."
+      },
+      "label_map": {}
+    },
+    {
+      "id": "idaho_camera_traps",
+      "name": "Idaho Camera Traps",
+      "page": "https://lila.science/datasets/idaho-camera-traps/",
+      "version": "not checked",
+      "format": null,
+      "licence": {
+        "id": "custom-no-sale",
+        "url": "https://lila.science/datasets/idaho-camera-traps/",
+        "commercial_use": "not_allowed",
+        "conditions": "Images may not be sold in any format, but may be used for scientific publications.",
+        "attribution": "Idaho Department of Fish and Game. Data via LILA BC."
+      },
+      "label_map": {}
+    }
+  ]
+}
