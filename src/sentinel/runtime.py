@@ -190,6 +190,14 @@ class SentinelRuntime:
             self.health.set_component("guardian", "ok", "", timestamp_ms)
         return events
 
+    def guardian_set_aside_boxes(self, camera_id: str) -> list[tuple[float, float, float, float]]:
+        """Boxes Guardian has set aside on this camera (the species classifier agrees
+        they hold no animal): the animal detector's schedule ignores them."""
+        with self._lock:
+            if not self.guardian.settings.enabled:
+                return []
+            return [g.bbox for g in self.guardian.tracks.values() if g.camera_id == camera_id and g.aside and not g.lost]
+
     def guardian_overlays(self, camera_id: str) -> list[dict[str, Any]]:
         with self._lock:
             return self.guardian.overlays(camera_id) if self.guardian.settings.enabled else []

@@ -98,7 +98,7 @@ def _validate_species_classifier(block: Any, errors: list[str]) -> None:
         errors.append(f"{path} has unknown keys {sorted(unknown)}")
     if not isinstance(block.get("enabled", False), bool):
         errors.append(f"{path}.enabled must be true or false")
-    for key in ("min_confidence", "min_margin", "group_confidence", "blank_confidence"):
+    for key in ("min_confidence", "min_margin", "group_confidence", "blank_confidence", "settle_confidence"):
         value = block.get(key, 0.5)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
             errors.append(f"{path}.{key} must be between 0 and 1")

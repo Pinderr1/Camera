@@ -106,6 +106,12 @@ MODELS: dict[str, dict[str, Any]] = {
 _PROVIDERS = {"dml": "DmlExecutionProvider", "cuda": "CUDAExecutionProvider", "openvino": "OpenVINOExecutionProvider", "cpu": "CPUExecutionProvider"}
 _SESSIONS: dict[tuple, Any] = {}
 _SESSIONS_LOCK = threading.Lock()
+# One lock for every DirectML session in the process. Measured (ORT 1.24, Iris Xe):
+# two *different* DirectML sessions running at the same time crash the process
+# (access violation), e.g. SpeciesNet on its worker thread while a camera runs
+# YOLOX, or two cameras running YOLOX and MegaDetector. One GPU runs one
+# inference at a time anyway, so serialising them costs nothing measurable.
+_DML_LOCK = threading.Lock()
 
 
 def resolve_providers(requested: Any) -> list[str]:
@@ -142,12 +148,14 @@ def _session(path: Path, providers: list[str], cpu_threads: int):
                 options.enable_mem_pattern = False  # required by DirectML
                 options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             session = ort.InferenceSession(str(path), sess_options=options, providers=providers)
-            # One GPU runs one inference at a time anyway; serialising DirectML calls
-            # from several camera threads avoids relying on concurrent-run support.
-            lock = threading.Lock() if session.get_providers()[0] == "DmlExecutionProvider" else None
+            # DirectML calls from all camera and classifier threads share one lock (see _DML_LOCK).
+            lock = _DML_LOCK if session.get_providers()[0] == "DmlExecutionProvider" else None
             _SESSIONS[key] = _SharedSession(session, lock)
             log.info("loaded %s on %s", path.name, session.get_providers()[0])
         return _SESSIONS[key]
+
+
+GPU_WAIT_S = 10.0  # longest a caller waits for the shared DirectML lock
 
 
 class _SharedSession:
@@ -158,8 +166,14 @@ class _SharedSession:
     def run(self, names, feed):
         if self.lock is None:
             return self.session.run(names, feed)
-        with self.lock:
+        # A hung GPU call must not block every camera forever: waiting callers fail
+        # instead, and the camera worker's existing error handling moves them to CPU.
+        if not self.lock.acquire(timeout=GPU_WAIT_S):
+            raise TimeoutError(f"GPU busy for more than {GPU_WAIT_S:.0f} s (another model holds it)")
+        try:
             return self.session.run(names, feed)
+        finally:
+            self.lock.release()
 
     def get_inputs(self):
         return self.session.get_inputs()
@@ -200,10 +214,14 @@ class OnnxDetector:
             if self.family == "yolox" and size[0] % 32 == 0 and size[1] % 32 == 0:
                 # YOLOX is fully convolutional and its export has no baked-in sizes, so
                 # only the declared input shape needs relaxing (weights untouched).
-                self.session = _session(_dynamic_copy(path), self.providers, int(settings.get("cpu_threads", 0)))
+                path = _dynamic_copy(path)
+                self.session = _session(path, self.providers, int(settings.get("cpu_threads", 0)))
             else:
                 log.warning("%s has a fixed %sx%s input; ignoring input_size %s", name, fixed[3], fixed[2], size)
                 size = [fixed[3], fixed[2]]
+        self.precision = "fp32"
+        if settings.get("precision", "fp32") == "fp16":
+            self._use_fp16(path, settings)
         self.input_w, self.input_h = int(size[0]), int(size[1])
         self.keep_aspect = bool(spec.get("keep_aspect", self.family == "yolox"))
         self.normalize = bool(spec.get("normalize", False))
@@ -219,11 +237,34 @@ class OnnxDetector:
         if self.family == "yolox":
             self._grids = _yolox_grids(self.input_w, self.input_h)
 
+    def _use_fp16(self, path: Path, settings: dict[str, Any]) -> None:
+        """`precision: fp16` runs a half-precision copy (`<model>.fp16.onnx`, made once by
+        scripts/convert_onnx_fp16.py) on a GPU provider. Measured for YOLOX-s 960x544 on
+        DirectML (Iris Xe): same precision/recall on MOT16 and CAVIAR within 0.3 points,
+        detection p50 12-38 % faster (docs/benchmarking.md). CPUs gain nothing from fp16,
+        and a missing copy or a model that will not load in fp16 keeps fp32."""
+        if self.session.get_providers()[0] == "CPUExecutionProvider":
+            log.info("%s: fp16 only helps on a GPU; using fp32 on CPU", self.name)
+            return
+        candidate = path.with_name(f"{path.stem}.fp16.onnx")
+        if not candidate.exists():
+            log.warning("%s: %s missing (run scripts/convert_onnx_fp16.py); using fp32", self.name, candidate)
+            return
+        try:
+            session = _session(candidate, self.providers, int(settings.get("cpu_threads", 0)))
+        except Exception as error:  # e.g. MegaDetector's fp16 graph fails DirectML graph fusion (measured)
+            log.warning("%s: fp16 copy does not load (%s); using fp32", self.name, str(error)[:160])
+            return
+        if session.get_providers()[0] == "CPUExecutionProvider":
+            return
+        self.session, self.precision = session, "fp16"
+
     def describe(self) -> dict[str, Any]:
         spec = MODELS.get(self.name, {})
         return {
             "model": self.name,
             "provider": self.session.get_providers()[0],
+            "precision": self.precision,
             "input": [self.input_w, self.input_h],
             "license": spec.get("license", "custom model: verify licence"),
             "training_data": spec.get("training_data", "unknown"),

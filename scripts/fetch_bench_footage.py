@@ -111,7 +111,27 @@ class HttpRangeFile(io.RawIOBase):
         self._cache_start = start
 
 
+def ffmpeg() -> str:
+    """ffmpeg on PATH, else $FFMPEG, else the binary bundled with the optional
+    imageio-ffmpeg package (pip install imageio-ffmpeg; nothing system-wide)."""
+    import os
+
+    found = shutil.which("ffmpeg") or os.environ.get("FFMPEG")
+    if not found:
+        try:
+            import imageio_ffmpeg
+
+            found = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            pass
+    if not found:
+        raise SystemExit("ffmpeg is needed to encode the MOT16 frames: install it, set FFMPEG=<path to ffmpeg.exe>, "
+                         "or pip install imageio-ffmpeg")
+    return found
+
+
 def fetch_mot() -> None:
+    encoder = ffmpeg()  # fail before downloading anything
     remote = HttpRangeFile(MOT_URL)
     with zipfile.ZipFile(remote) as archive:
         names = archive.namelist()
@@ -145,7 +165,7 @@ def fetch_mot() -> None:
                 frame_rate = _seqinfo(target / "seqinfo.ini").get("frameRate", "30")
                 print(f"{sequence}: encoding {len(list(Path(temporary).glob('*.jpg')))} frames")
                 subprocess.run(
-                    ["ffmpeg", "-loglevel", "error", "-y", "-framerate", frame_rate, "-i", str(Path(temporary) / "%06d.jpg"),
+                    [encoder, "-loglevel", "error", "-y", "-framerate", frame_rate, "-i", str(Path(temporary) / "%06d.jpg"),
                      "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", str(video)],
                     check=True,
                 )
@@ -159,7 +179,7 @@ def make_substreams() -> None:
         if source.exists() and not target.exists():
             print(f"{sequence}: encoding 640p10 sub-stream copy")
             subprocess.run(
-                ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(source), "-vf", "scale=640:-2", "-r", "10",
+                [ffmpeg(), "-nostdin", "-loglevel", "error", "-y", "-i", str(source), "-vf", "scale=640:-2", "-r", "10",
                  "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-g", "20", str(target)],
                 check=True,
             )

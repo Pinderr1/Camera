@@ -307,6 +307,14 @@ class MonitorIntegrationTests(unittest.TestCase):
         monitor, _, requested = self.run_track({0: 0.93}, label="animal", reclassify_s=4)
         self.assertEqual(requested[1] - requested[0], 4000, "an animal-looking box keeps the normal interval")
 
+    def test_confident_confirmation_stops_reclassifying(self):
+        _, _, settled = self.run_track({0: 0.97, 1: 0.01}, seconds=12.0)
+        self.assertEqual(len(settled), 2, "two agreeing crops at 0.97 settle the species")
+        _, _, unsettled = self.run_track({0: 0.90, 1: 0.03}, seconds=12.0)
+        self.assertGreater(len(unsettled), 2, "a confirmation below settle_confidence keeps being re-checked")
+        _, _, off = self.run_track({0: 0.97, 1: 0.01}, seconds=12.0, settle_confidence=1)
+        self.assertGreater(len(off), 2)
+
     def test_blank_never_quietens_a_specific_detector_label(self):
         monitor, events, _ = self.run_track({7: 0.95}, label="bear", approach=True)
         view = monitor.snapshot()[0]

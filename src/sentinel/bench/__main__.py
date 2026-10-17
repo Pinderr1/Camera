@@ -57,6 +57,7 @@ def _add_detector_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--providers", help="ONNX execution providers in order, e.g. dml,cpu or cpu")
     parser.add_argument("--min-box-area", type=float, help="Drop boxes smaller than this fraction of the frame")
     parser.add_argument("--cpu-threads", type=int, help="ONNX intra-op CPU threads per session")
+    parser.add_argument("--model-path", help="Run this ONNX file with the --model registry entry's settings (e.g. an fp16 copy)")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -95,6 +96,8 @@ def _detector_overrides(args: argparse.Namespace) -> dict:
         overrides["model"] = args.model
         if not args.detector_type:
             overrides["type"] = "mediapipe" if args.model.startswith("efficientdet") else "onnx"
+    if getattr(args, "model_path", None):
+        overrides["model_path"] = args.model_path
     if args.score_threshold is not None:
         overrides["score_threshold"] = args.score_threshold
     if args.low_score_threshold is not None:

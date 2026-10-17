@@ -155,6 +155,16 @@ def merge(primary, animal, iou_threshold=0.5):
     return kept
 
 
+def paired(primary, animal):
+    """detectors.AnimalAugmentedDetector with `merge: animal_box` (the shipped default)."""
+    from sentinel.detectors import AnimalAugmentedDetector
+    from sentinel.models import Detection
+
+    to_det = lambda d: Detection(d["label"], d["conf"], tuple(d["bbox"]))  # noqa: E731
+    merged = AnimalAugmentedDetector._paired([to_det(d) for d in primary], [to_det(d) for d in animal])
+    return [{"label": d.label, "conf": d.confidence, "bbox": list(d.bbox)} for d in merged]
+
+
 def score(records_by_key, rows_by_key, threshold, night_by_key):
     """Detection metrics for one detector at one threshold."""
     c = Counter()
@@ -296,6 +306,10 @@ def report(out: Path, model_dir: str, provider: str, union_threshold: float | No
         configs["yolox_s+mdv6"] = union_rows
         chosen["yolox_s+mdv6"] = score(records_by_key, {k: [d | {"conf": 1.0} for d in v] for k, v in union_rows.items()}, 0.0, night)
         chosen["yolox_s+mdv6"]["threshold"] = f"{ty} / {tm}"
+        paired_rows = {k: paired(animal_boxes(rows["yolox_s"][k], ty), animal_boxes(rows["mdv6_apa_rtdetr_c"][k], tm)) for k in keys}
+        configs["yolox_s+mdv6 paired"] = paired_rows
+        chosen["yolox_s+mdv6 paired"] = score(records_by_key, {k: [d | {"conf": 1.0} for d in v] for k, v in paired_rows.items()}, 0.0, night)
+        chosen["yolox_s+mdv6 paired"]["threshold"] = f"{ty} / {tm}"
     species, species_provider = species_stage(records_by_key, configs, model_dir, provider)
 
     summary = {"images": len(keys), "low_threshold": LOW, "sweeps": sweeps, "operating_points": chosen,

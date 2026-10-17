@@ -7,7 +7,7 @@ from collections import deque
 from typing import Any, Callable
 
 from .config import sensitivity_adjustments
-from .detectors import create_detector, detection_thresholds, resolve_detector_settings
+from .detectors import AnimalAugmentedDetector, create_detector, detection_thresholds, resolve_detector_settings
 from .engine import ZoneMap
 from .environment import EnvironmentMonitor, EnvironmentSettings
 from .models import Detection, canonical_class, detector_labels, effective_categories
@@ -212,6 +212,8 @@ class CameraWorker(threading.Thread):
                     last_detect_ms = now_ms
                     stage = time.perf_counter()
                     try:
+                        if isinstance(detector, AnimalAugmentedDetector):
+                            frame.meta["set_aside_boxes"] = self.runtime.guardian_set_aside_boxes(camera_id)
                         detections = filter_detections(detector.detect(frame), camera_id, zones, min_area, enabled)
                         consecutive_errors = 0
                         animal_status = getattr(detector, "animal_status", None)

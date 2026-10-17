@@ -156,6 +156,200 @@ class MergeTests(unittest.TestCase):
             self.assertIs(create_detector({"type": "onnx", "model": "yolox_s", "animal_detector": {"enabled": False}}, 0.5), primary)
 
 
+class ScheduleTests(unittest.TestCase):
+    """MegaDetector runs on a schedule: a slow scan while no animal is around, every
+    frame for a while after either detector saw one."""
+
+    def run_frames(self, schedule, script):
+        from sentinel.detectors import AnimalSchedule
+
+        class Counting(StubDetector):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def detect(self, frame):
+                self.calls += 1
+                return list(script.get(frame.timestamp_ms, {}).get("animal", []))
+
+        class Main(StubDetector):
+            def detect(self, frame):
+                return list(script.get(frame.timestamp_ms, {}).get("main", []))
+
+        animal = Counting()
+        detector = AnimalAugmentedDetector(Main(), animal, schedule=AnimalSchedule(**schedule))
+        ran = []
+        for t in range(0, 10_000, 200):  # 5 fps for 10 s
+            before = animal.calls
+            detector.detect(Frame(None, t))
+            if animal.calls > before:
+                ran.append(t)
+        return ran, detector
+
+    def test_scans_once_a_second_when_nothing_is_there(self):
+        ran, detector = self.run_frames({"scan_interval_s": 1.0}, {})
+        self.assertEqual(ran, list(range(0, 10_000, 1000)))
+        self.assertEqual(detector.describe()["animal_detector"]["runs"], 10)
+
+    def test_follows_every_frame_after_an_animal_then_falls_back(self):
+        bear = Detection("animal", 0.8, (0.2, 0.2, 0.2, 0.2))
+        ran, _ = self.run_frames({"scan_interval_s": 1.0, "follow_s": 3.0}, {2000: {"animal": [bear]}})
+        self.assertEqual([t for t in ran if 2000 <= t <= 5000], list(range(2000, 5200, 200)), "every frame for 3 s")
+        self.assertEqual([t for t in ran if t > 5000], [6000, 7000, 8000, 9000], "back to the 1 s scan")
+
+    def test_main_detector_animal_also_starts_following(self):
+        dog = Detection("dog", 0.8, (0.2, 0.2, 0.2, 0.2))
+        ran, _ = self.run_frames({"scan_interval_s": 1.0, "follow_s": 1.0}, {1400: {"main": [dog]}})
+        self.assertIn(1400, ran, "an animal seen by YOLOX brings MegaDetector in on the same frame")
+
+    def test_set_aside_boxes_do_not_keep_it_following(self):
+        from sentinel.detectors import AnimalSchedule
+
+        water = Detection("animal", 0.7, (0.4, 0.6, 0.2, 0.1))
+        animal = StubDetector([water])
+        detector = AnimalAugmentedDetector(StubDetector(), animal, schedule=AnimalSchedule(scan_interval_s=1.0, follow_s=3.0))
+        runs = []
+        for t in range(0, 6000, 200):
+            # From 1 s on, Guardian has set the water track aside; the camera worker passes its box.
+            meta = {"set_aside_boxes": [(0.41, 0.6, 0.2, 0.1)]} if t >= 1000 else {}
+            before = detector.runs
+            detector.detect(Frame(None, t, meta=meta))
+            if detector.runs > before:
+                runs.append(t)
+        self.assertEqual(runs[:5], [0, 200, 400, 600, 800], "following the new box until Guardian sets it aside")
+        self.assertEqual([t for t in runs if t >= 4000], [4800, 5800], "3 s after the last un-set-aside box, back to the 1 s scan")
+        self.assertTrue(detector._news([Detection("animal", 0.8, (0.0, 0.0, 0.1, 0.1))], [(0.41, 0.6, 0.2, 0.1)]),
+                        "an animal elsewhere still counts")
+
+    def test_half_rate_while_following(self):
+        bear = Detection("animal", 0.8, (0.2, 0.2, 0.2, 0.2))
+        script = {t: {"animal": [bear]} for t in range(0, 10_000, 200)}
+        ran, _ = self.run_frames({"scan_interval_s": 1.0, "follow_interval_s": 0.4}, script)
+        self.assertEqual(ran[:4], [0, 400, 800, 1200])
+
+    def test_scan_zero_runs_every_frame(self):
+        ran, _ = self.run_frames({"scan_interval_s": 0.0}, {})
+        self.assertEqual(len(ran), 50)
+
+    def test_paired_merge_gives_one_box_per_animal_with_the_specific_label(self):
+        from sentinel.detectors import AnimalSchedule
+
+        main = StubDetector([Detection("person", 0.9, (0.1, 0.1, 0.1, 0.3)), Detection("bear", 0.7, (0.5, 0.5, 0.2, 0.2)),
+                             Detection("dog", 0.6, (0.8, 0.8, 0.1, 0.1))])
+        animal = StubDetector([Detection("animal", 0.8, (0.48, 0.47, 0.26, 0.25)),  # same bear, different size (IoU 0.6)
+                               Detection("animal", 0.7, (0.0, 0.7, 0.1, 0.1))])  # missed by YOLOX
+        detections = AnimalAugmentedDetector(main, animal, schedule=AnimalSchedule()).detect(frame())
+        self.assertEqual(sorted(d.label for d in detections), ["animal", "bear", "dog", "person"])
+        bear = next(d for d in detections if d.label == "bear")
+        self.assertEqual(bear.bbox, (0.48, 0.47, 0.26, 0.25), "MegaDetector's box, YOLOX's label")
+        self.assertEqual(bear.confidence, 0.8)
+        self.assertEqual(next(d for d in detections if d.label == "person").bbox, (0.1, 0.1, 0.1, 0.3), "people untouched")
+
+    def test_two_animals_side_by_side_are_not_merged(self):
+        from sentinel.detectors import AnimalSchedule
+
+        main = StubDetector([Detection("cat", 0.7, (0.30, 0.5, 0.1, 0.2)), Detection("cat", 0.7, (0.42, 0.5, 0.1, 0.2))])
+        animal = StubDetector([Detection("animal", 0.8, (0.30, 0.5, 0.1, 0.2)), Detection("animal", 0.8, (0.42, 0.5, 0.1, 0.2))])
+        detections = AnimalAugmentedDetector(main, animal, schedule=AnimalSchedule()).detect(frame())
+        self.assertEqual(len(detections), 2)
+        self.assertEqual({d.label for d in detections}, {"cat"})
+
+
+@unittest.skipIf(np is None, "numpy not installed")
+class GpuLockTests(unittest.TestCase):
+    def test_every_directml_session_shares_one_lock(self):
+        # Measured: two different DirectML sessions running at once crash the process.
+        try:
+            from sentinel import detectors_onnx
+        except ImportError:
+            self.skipTest("onnxruntime not installed")
+
+        class FakeOrtSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_providers(self):
+                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+        with mock.patch("onnxruntime.InferenceSession", FakeOrtSession), mock.patch.dict(detectors_onnx._SESSIONS, clear=True):
+            a = detectors_onnx._session(Path("a.onnx"), ["DmlExecutionProvider"], 0)
+            b = detectors_onnx._session(Path("b.onnx"), ["DmlExecutionProvider"], 0)
+        self.assertIsNot(a, b)
+        self.assertIs(a.lock, b.lock)
+
+    def test_busy_gpu_raises_instead_of_waiting_forever(self):
+        try:
+            from sentinel import detectors_onnx
+        except ImportError:
+            self.skipTest("onnxruntime not installed")
+        import threading
+
+        lock = threading.Lock()
+        shared = detectors_onnx._SharedSession(mock.Mock(), lock)
+        lock.acquire()
+        try:
+            with mock.patch.object(detectors_onnx, "GPU_WAIT_S", 0.05), self.assertRaises(TimeoutError):
+                shared.run(None, {})
+        finally:
+            lock.release()
+        shared.run(None, {})  # free again
+
+
+@unittest.skipIf(np is None, "numpy not installed")
+class PrecisionTests(unittest.TestCase):
+    """`detector.precision: fp16` (opt-in) uses a pre-converted copy on a GPU only."""
+
+    def make(self, provider, exists, fail=False):
+        try:
+            from sentinel import detectors_onnx
+            from test_sentinel_detectors import FakeSession
+        except ImportError:
+            self.skipTest("onnxruntime not installed")
+        loaded = []
+
+        class Session(FakeSession):
+            def get_providers(self):
+                return [provider, "CPUExecutionProvider"]
+
+        def session(path, providers, threads):
+            if fail and path.name.endswith(".fp16.onnx"):
+                raise RuntimeError("DmlGraphFusionHelper: The parameter is incorrect")
+            loaded.append(path.name)
+            return Session([1, 3, "h", "w"], {"output": np.zeros((1, 10, 85), np.float32)})
+
+        real_exists = Path.exists
+        with mock.patch.object(detectors_onnx, "_session", side_effect=session), \
+                mock.patch.object(detectors_onnx, "resolve_providers", return_value=[provider, "CPUExecutionProvider"]), \
+                mock.patch("pathlib.Path.exists", lambda path: exists if path.name.endswith(".fp16.onnx") else True):
+            detector = detectors_onnx.OnnxDetector({"model": "yolox_s", "model_path": "m/yolox_s.dynamic.onnx", "precision": "fp16"}, 0.5)
+        return detector, loaded
+
+    def test_gpu_with_copy_runs_fp16(self):
+        detector, loaded = self.make("DmlExecutionProvider", exists=True)
+        self.assertEqual(detector.describe()["precision"], "fp16")
+        self.assertEqual(loaded[-1], "yolox_s.dynamic.fp16.onnx")
+
+    def test_cpu_or_missing_copy_stays_fp32(self):
+        with self.assertLogs("sentinel.detectors", "INFO"):
+            detector, loaded = self.make("CPUExecutionProvider", exists=True)
+        self.assertEqual((detector.precision, loaded), ("fp32", ["yolox_s.dynamic.onnx"]))
+        with self.assertLogs("sentinel.detectors", "WARNING"):
+            detector, _ = self.make("DmlExecutionProvider", exists=False)
+        self.assertEqual(detector.precision, "fp32")
+
+    def test_copy_that_will_not_load_stays_fp32(self):
+        with self.assertLogs("sentinel.detectors", "WARNING") as logs:
+            detector, _ = self.make("DmlExecutionProvider", exists=True, fail=True)
+        self.assertEqual(detector.precision, "fp32")
+        self.assertIn("does not load", "\n".join(logs.output))
+
+    def test_config_accepts_only_fp32_or_fp16(self):
+        base = {"site": {"id": "s"}, "cameras": [{"id": "c1", "source": {"type": "simulated"}}]}
+        validate_config(base | {"detector": {"type": "onnx", "model": "auto", "precision": "fp16"}})
+        with self.assertRaises(ConfigError):
+            validate_config(base | {"detector": {"type": "onnx", "model": "auto", "precision": "int8"}})
+
+
 class ConfigTests(unittest.TestCase):
     def base(self, animal):
         return {"site": {"id": "s"}, "cameras": [{"id": "c1", "source": {"type": "simulated"}}],
@@ -163,11 +357,13 @@ class ConfigTests(unittest.TestCase):
 
     def test_valid_block(self):
         validate_config(self.base({"model": "mdv6_apa_rtdetr_c", "score_threshold": 0.4}))
+        validate_config(self.base({"scan_interval_s": 0, "follow_interval_s": 0.4, "follow_s": 3, "merge": "add_missing"}))
         validate_config(self.base({}))
 
     def test_invalid_blocks(self):
         for block, message in (([], "must be an object"), ({"score_threshold": 1.5}, "between 0 and 1"),
-                               ({"threshold": 0.3}, "unknown keys"), ({"enabled": "yes"}, "true or false")):
+                               ({"threshold": 0.3}, "unknown keys"), ({"enabled": "yes"}, "true or false"),
+                               ({"scan_interval_s": -1}, "non-negative"), ({"merge": "union"}, "animal_box or add_missing")):
             with self.subTest(block=block), self.assertRaises(ConfigError) as caught:
                 validate_config(self.base(block))
             self.assertIn(message, str(caught.exception))

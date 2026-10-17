@@ -8,6 +8,8 @@
 python scripts/fetch_bench_footage.py      # about 600 MB into data/bench/ (git-ignored)
 ```
 
+The MOT16 frames are re-encoded with ffmpeg (libx264, CRF 20). Without ffmpeg on PATH, set `FFMPEG=<path to ffmpeg.exe>` or `pip install imageio-ffmpeg` (its bundled binary is used; nothing is installed system-wide). The footage is per machine: copy `data/bench/` between computers or fetch it again.
+
 | Clip(s) | Source and licence | Annotations | Conditions |
 | --- | --- | --- | --- |
 | `mot16_02` | MOTChallenge MOT16-02, CC BY-NC-SA 3.0 | Per-frame pedestrian boxes and identities | Day, eye-level plaza, crowded |
@@ -89,3 +91,21 @@ For a real camera, copy `live.example.json` and set `{"type": "rtsp", "url": "rt
 ## Findings
 
 See `ROADMAP.md`, "Real-footage benchmark findings", for the current numbers and limitations.
+
+### YOLOX-s in fp16 (2026-10-16)
+
+Machine: i5-1135G7 laptop, Intel Iris Xe, DirectML (ONNX Runtime 1.24). Footage restored on this machine with the fetcher (the 2026-10-13 comparison ran on the i7-2600K / GTX 1070 desktop). Same five clips, model (YOLOX-s), input (960×544), threshold (0.5), provider and pipeline as the detector comparison; the only difference is the ONNX file: `yolox_s.dynamic.onnx` (fp32) vs `yolox_s.dynamic.fp16.onnx` (`scripts/convert_onnx_fp16.py`, fp32 inputs and outputs). The fp32 figures reproduce the 2026-10-13 accuracy table exactly. Runs: `bench_runs/people_fp16/{fp32,fp16}` (git-ignored).
+
+| Clip | Precision fp32 → fp16 | Recall fp32 → fp16 | Recall ≥50 % visible | False positives | Missed | Mostly tracked | ID switches | Detect p50 / p95 ms fp32 → fp16 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MOT16-09 (doorbell height) | 94.6 → 94.5 % | 74.1 → 74.1 % | 97.5 → 97.7 % | 37 → 38 | 228 → 228 | 10/24 → 10/24 | 50 → 43 | 190/259 → 167/323 |
+| MOT16-02 (crowded plaza) | 87.8 → 87.7 % | 32.0 → 31.9 % | 65.4 → 65.2 % | 132 → 133 | 2017 → 2019 | 6/51 → 6/51 | 49 → 48 | 180/219 → 143/250 |
+| MOT16-04 (night, elevated) | 98.0 → 98.1 % | 53.4 → 53.2 % | 79.6 → 79.4 % | 84 → 82 | 3692 → 3703 | 19/82 → 19/82 | 71 → 69 | 196/280 → 142/194 |
+| CAVIAR Browse1 | 87.3 → 87.0 % | 15.7 → 15.4 % | 15.7 → 15.4 % | 7 → 7 | 258 → 259 | 0/4 → 0/4 | 1 → 1 | 207/305 → 128/163 |
+| CAVIAR Walk1 | 87.5 → 87.5 % | 12.5 → 12.5 % | 12.5 → 12.5 % | 3 → 3 | 147 → 147 | 0/4 → 0/4 | 0 → 0 | 191/252 → 119/148 |
+
+Small and distant people: these annotations have no box under 10 % of the frame height, so the "small" bucket is empty; medium-sized people (10–25 %) move by at most 0.9 points (CAVIAR Browse1 42.6 → 41.7 %, MOT16-02 33.3 → 33.0 %, others unchanged).
+
+Detector only (MOT16-09, 525 frames, streamed, two alternating runs each): p50 234 / 241 ms (fp32) vs 161 / 177 ms (fp16), about 30 % faster; shared GPU memory 282 MB vs 105 MB. Process CPU stays at 7–10 % of the machine either way. Single-sample GPU utilisation readings varied too much between repeats to compare.
+
+Verdict: on this DirectML GPU, fp16 gives the same detections within 0.3 points of precision and recall and about 30 % less detection time. It is available as `detector.precision: "fp16"` (opt-in; it needs the converted file, uses fp32 on CPU, and falls back to fp32 when the copy is missing or fails to load). MegaDetector V6 does **not** load in fp16 under DirectML (graph fusion error with every op block list tried), so it stays fp32. Not measured on the GTX 1070 or on CUDA.

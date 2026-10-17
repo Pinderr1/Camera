@@ -151,6 +151,9 @@ class SpeciesSettings:
     # 1 turns this off: SpeciesNet also called 1.9 % of single crops of real animals blank.
     blank_confidence: float = 0.8
     blank_recheck_s: float = 1.0  # a generic box whose first crop looks blank is re-checked this soon
+    # A species confirmed at this score by `min_agreeing` crops is not re-classified:
+    # each SpeciesNet crop holds the shared GPU for about 0.35 s (Iris Xe). 1 turns it off.
+    settle_confidence: float = 0.95
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "SpeciesSettings":
@@ -262,8 +265,14 @@ class TrackSpecies:
 
     def due(self, now_ms: int, settings: SpeciesSettings, interval_s: float | None = None) -> bool:
         interval = settings.reclassify_s if interval_s is None else interval_s
-        return (not self.pending and self.crops < settings.max_crops_per_track
+        return (not self.pending and self.crops < settings.max_crops_per_track and not self.settled(settings)
                 and now_ms - self.last_request_ms >= interval * 1000)
+
+    def settled(self, settings: SpeciesSettings) -> bool:
+        """Confirmed confidently enough that more crops would not change the answer."""
+        d = self.decision
+        return (d is not None and settings.settle_confidence < 1 and d.status == "confirmed"
+                and d.confidence >= settings.settle_confidence and d.crops >= settings.min_agreeing)
 
     def looks_blank(self) -> bool:
         """The averaged top label so far is "blank" (worth a quick second look)."""

@@ -457,6 +457,8 @@ def _validate_reliability(config: dict[str, Any], raw_cameras: list, errors: lis
             errors.append(f"{scope}.retry_s must be positive")
         if "animal_detector" in detector:
             _validate_animal_detector(detector["animal_detector"], f"{scope}.animal_detector", errors)
+        if detector.get("precision", "fp32") not in {"fp32", "fp16"}:
+            errors.append(f"{scope}.precision must be fp32 or fp16")
 
     from .simulation import FAULT_TYPES
 
@@ -504,7 +506,8 @@ def _positive(value: Any) -> bool:
     return _is_number(value) and value > 0
 
 
-ANIMAL_DETECTOR_KEYS = {"enabled", "model", "model_path", "score_threshold", "input_size", "cpu_threads"}
+ANIMAL_DETECTOR_KEYS = {"enabled", "model", "model_path", "score_threshold", "input_size", "cpu_threads",
+                        "scan_interval_s", "follow_interval_s", "follow_s", "merge"}
 
 
 def _validate_animal_detector(block: Any, path: str, errors: list[str]) -> None:
@@ -517,6 +520,12 @@ def _validate_animal_detector(block: Any, path: str, errors: list[str]) -> None:
         errors.append(f"{path} has unknown keys {sorted(unknown)}")
     if not isinstance(block.get("enabled", True), bool):
         errors.append(f"{path}.enabled must be true or false")
+    for key in ("scan_interval_s", "follow_interval_s", "follow_s"):
+        value = block.get(key, 0)
+        if not _is_number(value) or value < 0:
+            errors.append(f"{path}.{key} must be a non-negative number of seconds")
+    if block.get("merge", "animal_box") not in {"animal_box", "add_missing"}:
+        errors.append(f"{path}.merge must be animal_box or add_missing")
     threshold = block.get("score_threshold", 0.6)
     if not _is_number(threshold) or not 0 < threshold < 1:
         errors.append(f"{path}.score_threshold must be between 0 and 1")

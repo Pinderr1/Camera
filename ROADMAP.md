@@ -589,6 +589,8 @@ Machine: i5-1135G7 + Iris Xe (DirectML). Data: 435 camera-trap stills (ENA24, Ca
 | MegaDetector V6 Apache alone (0.6) | 367/395 | 9/40 | 324/395 | 87 % (100 %) | 21/360 | 8/11 / 1 | 220 ms |
 | **YOLOX + MegaDetector add-on (0.6)** | 368/395 | 9/40 | 321/395 | 91 % (100 %) | 21/360 | 8/11 / 3 | about 2× YOLOX |
 
+**Optimisation (2026-10-16, same clips and laptop):** paired boxes (MegaDetector's box, YOLOX's label) cut wrong species confirmations 3 → 1 and duplicate-track frames 157 → 117 at the same recall; the scan/follow schedule cuts detection time −11 % on these animal-heavy clips and −59 % on an almost empty one (weasel: p50 447 → 184 ms); half rate while following saves about 35 % but follows fewer animals (opt-in). Fixed a crash: two DirectML sessions running at once kill the process (all DirectML calls now share one lock with a 10 s wait limit). YOLOX fp16 on MOT16/CAVIAR: accuracy within 0.3 points, about 30 % faster on DirectML (`detector.precision`, opt-in). Not measured: multi-camera load, fp16 + schedule on clips. Detail: [docs/guardian-datasets.md](docs/guardian-datasets.md#real-time-optimisation-2026-10-16), [docs/benchmarking.md](docs/benchmarking.md#yolox-s-in-fp16-2026-10-16).
+
 Selected: the add-on, for wildlife cameras only (people and vehicles stay on the benchmarked YOLOX; nothing changes unless `detector.animal_detector` is set). MegaDetector's threshold is 0.6, not 0.4: same species results on stills with 9 instead of 32 empty-frame boxes. Generic-only tracks that SpeciesNet agrees are `blank` are set aside by Guardian (river clip: 4 false tracks, all set aside, about 1 s on screen each).
 
 ## Open risks

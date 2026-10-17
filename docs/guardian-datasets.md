@@ -193,6 +193,28 @@ MegaDetector boxes moving water, rocks and sticks. On the river clip it opened f
 
 With the add-on, each processed frame runs both detectors in sequence. In the video test that was about 600–750 ms per frame on this laptop (YOLOX alone 190–270 ms), so a 5 fps camera is processed at roughly 1.5 fps: enough for slow animal movement, too slow for several cameras on this machine. The CPU path (0.8 s per frame) is too slow for continuous use. No NVIDIA figures yet.
 
+### Real-time optimisation (2026-10-16)
+
+Same 13 clips, same i5-1135G7 / Iris Xe laptop, one run per configuration (`bench_runs/guardian_video/opt1`). "Followed" = animal-present frames with a live Guardian track (seen within 1 s): what a person sees as "the animal is being tracked". Duplicate-track frames = two live tracks overlapping (IoU > 0.3), a proxy for one animal tracked twice (identity switches need per-frame identity labels, which these clips do not have). Detection means are per processed frame; this laptop's GPU timing varies by about ±10 % between runs.
+
+| Configuration | Animal frames with a box | Followed (night) | Empty frames: box / shown track | Duplicate-track frames | Guardian tracks / animals | Expected species / wrong | Detection mean |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| YOLOX only | 64 % | 68 % (61 %) | 1 / 0 of 360 | 111 | 25 / 21 | 7/11 / 1 | about 180 ms |
+| First add-on (`merge: add_missing`, MegaDetector every frame) | 91 % | 88 % (98 %) | 75 / 21 | 157 | 36 / 21 | 8/11 / 3 | 482 ms |
+| Paired boxes (`merge: animal_box`), every frame | 91 % | 88 % (98 %) | 75 / 21 | 117 | 33 / 21 | 8/11 / **1** | 471 ms |
+| **Paired + schedule (shipped defaults: scan 1 s, follow every frame for 3 s)** | 91 % | 88 % (98 %) | 74 / 18 | 117 | 33 / 21 | 8/11 / 1 | 417 ms |
+| Paired + schedule, half rate while following (`follow_interval_s: 0.4`) | 77 % | 87 % (96 %) | 32 / 8 | 122 | 29 / 21 | 8/11 / 1 | **298 ms** |
+
+What changed and why:
+
+- **Paired boxes** fixed the main cause of split tracks: on frames where YOLOX missed the animal, MegaDetector's differently sized box stood in, so one animal alternated between two geometries. Now each animal gets MegaDetector's box and keeps YOLOX's specific label. Wrong species confirmations fell from 3 to 1 and duplicate-track frames from 157 to 117, with the same recall.
+- **Schedule.** These are animal-heavy trail-camera clips, so the saving here is modest (−11 %). It is large on empty scenes, which is most of a security camera's day: on the weasel clip (animal for under 2 s) MegaDetector ran on 10 of 50 frames and detection p50 fell from 447 to 184 ms, YOLOX's own cost. On the river clip its false boxes on water kept it following (147 of 151 frames); boxes on tracks Guardian has set aside no longer keep it following (unit-tested, not re-measured on the clip).
+- **Half rate while following** cuts detection time by about 35 %, but a few animals are followed less (night coyote 97 → 92 %, day coyote 88 → 83 %). That is an accuracy trade, so it stays opt-in, e.g. for several cameras on one small GPU.
+- **SpeciesNet re-use:** a species confirmed at ≥ 0.95 by two crops is no longer re-classified (`settle_confidence`), because every crop now holds the shared GPU (next item). Not separately measured.
+- **Crash fixed (found while profiling):** two different DirectML sessions running at the same time crash the process (exit code 139, reproduced every time: YOLOX with SpeciesNet, YOLOX with MegaDetector). Live Sentinel could hit this whenever the species worker classified while a camera ran YOLOX, or with two cameras on different models. All DirectML calls now share one lock (both pairs then ran 30 concurrent rounds without a crash), and a caller waiting more than 10 s for the GPU gets an error, so a hung GPU call ends in the existing CPU fallback instead of stalling every camera.
+- **fp16:** YOLOX in fp16 keeps people-detection accuracy within 0.3 points and is about 30 % faster on this GPU ([benchmarking.md](benchmarking.md#yolox-s-in-fp16-2026-10-16)); available as `detector.precision: "fp16"`. MegaDetector does not load in fp16 under DirectML. Lower input resolution and parallel model execution were not adopted: MegaDetector's export has a fixed 640×640 input, and parallel DirectML execution crashes (above).
+- **Not measured** (stopped for time): the combined fp16 + schedule configuration on the clips, the set-aside schedule fix on the river clip, and the multi-camera load test (`scripts/guardian/multicam_load.py` is written but was not run; this laptop had about 1 GB of free RAM while another project's Android emulator ran, and the last full run failed with out-of-memory errors).
+
 ### Recommended configuration
 
 For a camera where wildlife matters, keep YOLOX and add both optional models:
