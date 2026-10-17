@@ -474,7 +474,7 @@ class DroneVideoTests(unittest.TestCase):
             drone = SimulatedDrone(map_point_to_geo(ORIGIN, 6, 4), cruise_speed_mps=10)
             drone.connect()
             manager = DroneManager(drone, FENCE, ORIGIN, DroneSafetyConfig(inspection_altitude_m=12, hover_s=2), records=store)
-            settings = {"source": {"type": "simulated_aerial", "objects": [{"label": "person", "path": [{"t": 0, "map": [35, 3.5]}]}]}, "fps": 10}
+            settings = {"source": {"type": "simulated_aerial", "objects": [{"label": "vehicle", "path": [{"t": 0, "map": [35, 3.5]}]}]}, "fps": 10}  # a vehicle: a person under the aircraft stops the inspection (standoff tests)
             worker = DroneVideoWorker(manager, settings, config={}, media_root=Path(directory) / "media", record_evidence=store.record_evidence)
             manager.video_status = worker.status
             worker.start()
@@ -494,7 +494,7 @@ class DroneVideoTests(unittest.TestCase):
                 worker.join(timeout=5)
             summary = request.observations
             self.assertTrue(summary.get("final"))
-            self.assertEqual(summary["max_visible"], {"person": 1})
+            self.assertEqual(summary["max_visible"], {"vehicle": 1})
             row = summary["observations"][0]
             self.assertLess(row["position"]["distance_from_target_m"], 3.0)
             self.assertRegex(row["snapshot_path"], r"^drone/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.jpg$", "portable file name (no ':' alternate streams on Windows)")

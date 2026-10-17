@@ -922,8 +922,9 @@ def signing_lockout(ctx):
 
 # ---- video and camera --------------------------------------------------------------------------------
 
+# A vehicle at the inspection point: a person there would stop the inspection by design (person standoff, drone/standoff.py).
 PERSON = {"source": {"type": "simulated_aerial", "objects": [
-    {"label": "person", "path": [{"t": 0, "map": [34.6, 4.0]}, {"t": 20, "map": [35.4, 4.4]}, {"t": 40, "map": [34.6, 4.0]}]}]}}
+    {"label": "vehicle", "path": [{"t": 0, "map": [34.6, 4.0]}, {"t": 20, "map": [35.4, 4.4]}, {"t": 40, "map": [34.6, 4.0]}]}]}}
 
 
 def video_inspection(ctx, faults_when_on_station: list[VideoFault] | None = None):
@@ -992,7 +993,7 @@ def camera_blank_frames(ctx):
     video = request.observations.get("video", {})
     ctx.observed["video summary"] = video
     ctx.expect("blank frames are rejected and reported", (video.get("frames_rejected") or {}).get("blank", 0) > 0, str(video))
-    ctx.expect("the person is still observed after the camera recovers", request.observations.get("max_visible", {}).get("person") == 1,
+    ctx.expect("the vehicle is still observed after the camera recovers", request.observations.get("max_visible", {}).get("vehicle") == 1,
                str(request.observations.get("max_visible")))
 
 

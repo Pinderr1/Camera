@@ -266,6 +266,26 @@ class EventStore:
             body["clip_path"] = clip_path
         self._write("UPDATE events SET body = ? WHERE event_id = ?", (json.dumps(body), event_id))
 
+    def scrub_identity(self, member_id: str) -> int:
+        """A household member withdrew consent: remove their id and name from stored
+        events (the events themselves stay, as an unverified person). Returns the count."""
+        needle = f'"member_id": "{member_id}"'
+        with self._lock:
+            rows = self._db.execute("SELECT event_id, summary, body FROM events WHERE body LIKE ?", (f"%{needle}%",)).fetchall()
+        changed = 0
+        for row in rows:
+            body = json.loads(row["body"])
+            identity = body.get("details", {}).get("identity")
+            if not isinstance(identity, dict) or identity.get("member_id") != member_id:
+                continue
+            name = identity.get("display_name") or ""
+            body["details"]["identity"] = {"status": "unverified", "member_id": "", "display_name": "", "reason": "member_removed"}
+            summary = row["summary"].replace(f" ({name})", "") if name else row["summary"]
+            body["summary"] = summary
+            if self._write("UPDATE events SET body = ?, summary = ? WHERE event_id = ?", (json.dumps(body), summary, row["event_id"])):
+                changed += 1
+        return changed
+
     def upsert_incident(self, incident: Incident) -> None:
         self._write(
             "INSERT OR REPLACE INTO incidents VALUES (?,?,?,?,?,?)",

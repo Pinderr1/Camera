@@ -95,7 +95,7 @@ Safety monitor (every 0.5 s):
 
 ## Inspection workflow
 
-1. **Request.** An incident at or above `drone.auto_request_min_severity` creates a request for the incident zone's map centroid, with the observed reason ("Person entered Shed (incident severity high)"). Operators can request zones, inspection points or coordinates. Targets outside the geofence are refused.
+1. **Request.** An incident at or above `drone.auto_request_min_severity` creates a request for the incident zone's map centroid, with the observed reason ("Person entered Shed (incident severity high)"). Operators can request zones, inspection points or coordinates. Targets outside the geofence are refused. **Person standoff:** when people are reported near the target (by the incident, the fixed cameras or the drone's own video), the hover point moves back toward home until it is `drone.safety.person_standoff_m` (default 30 m, floor 10 m) clear of them; a route with no such point, or one passing near people, is refused; in flight a person inside the standoff stops the inspection (the simulator holds, a real aircraft's pilot is advised). Details: [identity.md](identity.md#drone-person-standoff).
 2. **Readiness**, all shown on the Drone tab:
    - link, battery, GPS (fix, HDOP, satellites), EKF, pre-arm checks (with the FC's own PreArm message);
    - on the ground with no other inspection open, safety state, home inside the fence, launch point;

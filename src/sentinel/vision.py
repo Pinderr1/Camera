@@ -149,7 +149,8 @@ GUARDIAN_NAMES = {"observed": "Observed", "approaching": "Approaching", "elevate
 
 
 def annotate(
-    image: Any, tracks: list[Track], zones: list[dict[str, Any]], *, site_ids: dict[str, str] | None = None, guardian: list[dict[str, Any]] | None = None
+    image: Any, tracks: list[Track], zones: list[dict[str, Any]], *, site_ids: dict[str, str] | None = None, guardian: list[dict[str, Any]] | None = None,
+    identity: dict[str, str] | None = None,
 ) -> Any:
     import cv2
 
@@ -168,6 +169,8 @@ def annotate(
         color = CLASS_COLORS.get(track.label, (200, 200, 200))
         cv2.rectangle(canvas, top_left, bottom_right, color, 2)
         tag = (site_ids or {}).get(track.track_id, track.track_id)
+        if (identity or {}).get(track.track_id):  # household-member recognition (live view only)
+            tag += f" {identity[track.track_id]}"
         cv2.putText(canvas, f"{track.label} {tag}", (top_left[0], max(12, top_left[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
     for item in guardian or []:  # wildlife movement: trail, image heading, risk level
         color = GUARDIAN_COLORS.get(item["level"], (200, 200, 200))

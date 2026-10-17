@@ -72,6 +72,17 @@ Details, versions and citations are in `docs/guardian-datasets.md`; the machine-
 | Wildlife test clips (Wikimedia Commons; `config/guardian/videos.json`) | 11 US public domain (USFWS, BLM, Vermont Fish & Wildlife as stated on Commons), 2 CC BY-SA 2.0 (Kameron Perensovich) | Testing only; never redistributed | Downloaded by `scripts/guardian/fetch_wildlife_videos.py` into `data/guardian/videos/` (git-ignored) after the Commons licence and SHA-1 match the registry; attribution written next to the files |
 | MegaDetector v5a/v5b, MDv1000 | Repository MIT; weights licence not stated; v5 is YOLOv5 (Ultralytics AGPL-3.0) based | Not cleared | Do not ship |
 
+### Household-member recognition models (checked 2026-10-16)
+
+Optional feature, off by default (`docs/identity.md`). Files are downloaded by `scripts/fetch_face_models.py` into `models/face/` (git-ignored) and checked by SHA-256.
+
+| Model | Licence (as published) | Commercial use | Status |
+| --- | --- | --- | --- |
+| YuNet face detector `face_detection_yunet_2023mar.onnx` (OpenCV Zoo, `models/face_detection_yunet`) | MIT ("All files in this directory are licensed under MIT License") | Allowed | Used through `cv2.FaceDetectorYN`. SHA-256 `8f2383e4…2552fa4` |
+| SFace recognizer `face_recognition_sface_2021dec.onnx` (OpenCV Zoo, `models/face_recognition_sface`) | Apache-2.0 ("All files in this directory are licensed under Apache 2.0 License") | Weights licence allows it; **training data not documented** by OpenCV Zoo. The SFace paper (Zhong et al., 2021) trained on CASIA-WebFace, VGGFace2 and MS-Celeb-1M, whose terms are research-oriented (MS-Celeb-1M was withdrawn) | Used through `cv2.FaceRecognizerSF`. SHA-256 `0ba9fbfa…7c3e79`. **Legal review before sale**, or replace with a recognizer trained on commercially licensed data |
+| InsightFace / ArcFace pretrained models (buffalo_l etc.) | Code MIT; pretrained weights non-commercial research only | No | Not used |
+| MOT16-09 ground-truth identities (MOTChallenge, CC BY-NC-SA 3.0) | Evaluation only | No (evaluation) | Used by `scripts/identity_eval.py` to label which pedestrian a face belongs to; never trained on, never shipped |
+
 ## Legacy CameraAI audit (senior night safety, frozen)
 
 ### Direct Reuse

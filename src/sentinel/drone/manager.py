@@ -13,6 +13,7 @@ from .commissioning import RECORD_KINDS, journey
 from .flight_health import FlightHealthMonitor
 from .geofence import Geofence
 from .mission import Route, plan_route, to_qgc_plan, to_waypoints_text
+from .standoff import DEFAULT_STANDOFF_M, DRONE_SIGHTING_MAX_AGE_MS, MIN_STANDOFF_M, PersonArea, nearest, path_conflicts, station_for
 
 OPEN_REQUEST_STATES = {"pending_approval", "approved", "in_progress"}
 FINAL_STATES = {"denied", "expired", "completed", "aborted", "interrupted", "not_flown"}
@@ -33,6 +34,13 @@ ADVICE = {  # (if the aircraft is already doing it, if the pilot should): never 
     "navigation_lost": ("Navigation failed ({why}): the aircraft cannot be relied on to return home; it is {doing}. Be ready to fly manually.",
                         "Navigation failed ({why}): return-to-home may not be possible. The pilot should take manual control and land safely."),
 }
+PERSON_ADVICE = {  # (Sentinel stopped the simulator, the pilot of a real aircraft should act)
+    "command": "A person was reported about {distance} m from the aircraft (standoff {standoff:g} m, from {source}): Sentinel stopped the "
+               "inspection and the aircraft is holding position. Move it away from people on a path clear of them; never descend toward a person.",
+    "propose": "A person was reported about {distance} m from the aircraft (standoff {standoff:g} m, from {source}): stop the inspection, "
+               "climb if needed and move the aircraft away from them. Never fly over or descend toward a person.",
+}
+PERSON_SOURCES = {"incident": "the incident's area", "camera": "a fixed camera", "drone_video": "the drone camera"}
 
 
 @dataclass
@@ -53,6 +61,7 @@ class InspectionRequest:
     note: str = ""
     drone_id: str = ""
     reason: str = ""  # what was observed that led to the request (behaviour, never intent)
+    people_areas: list[dict[str, Any]] = field(default_factory=list)  # where people were reported at request time (standoff.PersonArea)
     mode: str = ""  # command (Sentinel flies a simulator) | propose (the pilot flies the exported route); fixed at approval
     route: dict[str, Any] = field(default_factory=dict)
     approved_until_ms: int | None = None
@@ -87,6 +96,7 @@ class DroneSafetyConfig:
     inspect_every_flights: int = 20  # maintenance reminder
     lost_contact_s: float = 900.0  # an inspection with no telemetry this long is closed as interrupted (beyond any endurance)
     safe_action_retry_s: float = 10.0  # simulators only: repeat a refused safety command at most this often
+    person_standoff_m: float = DEFAULT_STANDOFF_M  # horizontal distance kept from every reported person (never below MIN_STANDOFF_M)
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "DroneSafetyConfig":
@@ -96,6 +106,10 @@ class DroneSafetyConfig:
     @property
     def transit_altitude_m(self) -> float:
         return max(self.safe_transit_altitude_m or self.inspection_altitude_m, self.inspection_altitude_m)
+
+    @property
+    def standoff_m(self) -> float:
+        return max(MIN_STANDOFF_M, float(self.person_standoff_m))
 
 
 @dataclass
@@ -169,6 +183,9 @@ class DroneManager:
         # and extra readiness checks ({id, label, state, detail, blocker}).
         self.request_guard: Callable[[str], str] = lambda source: ""
         self.extra_checks: Callable[[], list[dict[str, Any]]] = lambda: []
+        # Set by the service: people the fixed cameras see right now, as [{source, label, map_polygon}] in site map
+        # metres. Must not take the runtime lock (it is read while this manager's lock is held).
+        self.people_areas: Callable[[], list[dict[str, Any]]] = lambda: []
         self.requests: dict[str, InspectionRequest] = {}
         self.safety_state = "ok"
         self.safety_notes: list[str] = []
@@ -254,6 +271,13 @@ class DroneManager:
             add("on_ground", "On the ground, no inspection in progress", "fail" if flying else "pass",
                 "airborne" if telemetry.in_air else "an inspection is approved or in progress" if flying else "ready", "already_flying")
             add("safety", "Safety monitor", "pass" if self.safety_state == "ok" else "fail", self.safety_state, f"safety_{self.safety_state}")
+            launch_people, _ = nearest(self.site_origin, self.reported_people(), *self.current_home())
+            if launch_people < self.safety.standoff_m:
+                add("people", "People near the launch point", "warn",
+                    f"a person was reported about {launch_people:.0f} m from the launch point: keep everyone clear of take-off and landing")
+            else:
+                add("people", "People near the launch point", "pass", f"none reported within {self.safety.standoff_m:g} m "
+                    "(cameras cannot see everywhere: the pilot checks too)")
             home_problems = self.geofence.violations(*self.current_home())
             add("home_fence", "Home inside the geofence", "fail" if home_problems else "pass", ", ".join(home_problems) or "inside", "home_outside_geofence")
             if telemetry.lat is not None and not telemetry.in_air:
@@ -396,7 +420,10 @@ class DroneManager:
         incident_id: str = "",
         reason: str = "",
         hover_s: float = 0.0,
+        person_map_polygons: list[list[list[float]]] | None = None,
     ) -> InspectionRequest:
+        """`person_map_polygons`: areas (site map metres) where the incident behind this request saw a
+        person; the aircraft keeps the person standoff from them."""
         with self._lock:
             refused = self.request_guard(source)
             if refused:
@@ -417,6 +444,8 @@ class DroneManager:
                 request_id=f"insp_{now}_{self._seq}", created_ms=now, source=source, target_lat=lat, target_lon=lon,
                 target_label=label, requested_by=requested_by, incident_id=incident_id, drone_id=self.drone_id, reason=reason[:300],
                 aircraft=self.aircraft_label(), hover_s=max(0.0, min(float(hover_s), 1800.0)),
+                people_areas=[PersonArea("incident", label, tuple(map_point_to_geo(self.site_origin, *p) for p in polygon)).as_dict()
+                              for polygon in person_map_polygons or [] if len(polygon) >= 3],
             )
             self.requests[request.request_id] = request
             self.audit(requested_by, "drone_inspection_requested", request.as_dict())
@@ -428,12 +457,53 @@ class DroneManager:
         return f"{self.model['name']} ({'aircraft, telemetry only' if self.adapter.is_physical else 'simulated'})"
 
     def plan(self, request: InspectionRequest) -> Route:
-        route = plan_route(self.current_home(), (request.target_lat, request.target_lon), self.geofence,
-                           safe_transit_altitude_m=self.safety.transit_altitude_m, inspection_altitude_m=self.safety.inspection_altitude_m,
-                           hover_s=request.hover_s or self.safety.hover_s, label=request.target_label)
+        home, target = self.current_home(), (request.target_lat, request.target_lon)
+        people = self.reported_people(request)
+        standoff = self.safety.standoff_m
+        station, moved = station_for(home, target, people, standoff)
+        route = plan_route(home, target, self.geofence, safe_transit_altitude_m=self.safety.transit_altitude_m,
+                           inspection_altitude_m=self.safety.inspection_altitude_m, hover_s=request.hover_s or self.safety.hover_s,
+                           label=request.target_label, station=station)
+        route.person_standoff = {"standoff_m": standoff, "people_reported": len(people), "station_moved_m": round(moved, 1),
+                                 "areas": [area.as_dict() for area in people]}
+        if station is None:
+            route.problems = sorted(set(route.problems) | {"no_inspection_point_clear_of_people"})
+            route.notes.append(f"People were reported around the target and no hover point between it and home is {standoff:g} m clear of them.")
+        elif people:
+            en_route, near_home = path_conflicts(home, station, people, standoff)
+            if en_route < standoff:
+                route.problems = sorted(set(route.problems) | {"route_passes_near_people"})
+                route.notes.append(f"The route passes about {en_route:.0f} m from a reported person (standoff {standoff:g} m).")
+            if near_home < standoff:
+                route.notes.append(f"A person was reported about {near_home:.0f} m from the launch point: keep everyone clear of take-off and landing.")
+            if moved > 0:
+                route.notes.append(f"People were reported near the target: the aircraft hovers {moved:.0f} m back toward home and looks from there, "
+                                   f"never closer than {standoff:g} m to them.")
         estimate = self.endurance(route)
         route.notes.append(f"Endurance: {estimate['detail']}.")
         return route
+
+    def reported_people(self, request: InspectionRequest | None = None, now_ms: int | None = None) -> list[PersonArea]:
+        """Every place a person is reported: the request's incident areas, fixed cameras now, and
+        recent sightings on the drone's own video. A failing source is treated as reporting nobody,
+        which is why the pilot stays responsible for people they can see."""
+        now_ms = now_ms or int(time.time() * 1000)
+        areas = [PersonArea.from_dict(area) for area in (request.people_areas if request else [])]
+        try:
+            live = self.people_areas()
+        except Exception:
+            live = []
+        for area in live:
+            polygon = area.get("map_polygon") or []
+            if len(polygon) >= 3:
+                areas.append(PersonArea(area.get("source", "camera"), area.get("label", ""),
+                                        tuple(map_point_to_geo(self.site_origin, *point) for point in polygon)))
+        active = self.requests.get(self._mission["request_id"]) if self._mission else None
+        for row in ((active.observations or {}).get("observations", []) if active else []):
+            position = row.get("position", {})
+            if row.get("label") == "person" and position.get("available") and now_ms - int(row.get("last_ms", 0)) <= DRONE_SIGHTING_MAX_AGE_MS:
+                areas.append(PersonArea("drone_video", "person", point=(position["lat"], position["lon"]), radius_m=float(position.get("uncertainty_m", 0))))
+        return areas
 
     def endurance(self, route: Route) -> dict[str, Any]:
         return catalog.endurance_check(self.model, route.as_dict(), self.adapter.telemetry().battery_pct, self.safety.rth_battery_pct)
@@ -492,7 +562,7 @@ class DroneManager:
             request = self.requests.get(request_id)
             if request is None:
                 raise KeyError(request_id)
-            route = Route(**{k: (tuple(v) if k in ("home", "target") else v) for k, v in request.route.items()}) if request.route else self.plan(request)
+            route = Route.from_dict(request.route) if request.route else self.plan(request)
             if fmt == "waypoints":
                 return f"{request_id}.waypoints", to_waypoints_text(route)
             plan = to_qgc_plan(route, self.geofence, request_id=request_id)
@@ -543,6 +613,10 @@ class DroneManager:
                 problems = self.geofence.violations(lat, lon, altitude)
                 if problems:
                     raise FlightCommandRejected(f"target rejected: {', '.join(problems)}")
+                closest, _ = nearest(self.site_origin, self.reported_people(), lat, lon)
+                if closest < self.safety.standoff_m:
+                    raise FlightCommandRejected(f"target_near_person: a person was reported {closest:.0f} m from it "
+                                                f"(standoff {self.safety.standoff_m:g} m)")
                 self.adapter.goto(lat, lon, altitude)
             elif action == "hold":
                 self.adapter.hold()
@@ -598,6 +672,12 @@ class DroneManager:
                     # GPS or EKF failure: the flight controller cannot be relied on to navigate home. Its EKF failsafe lands or holds altitude.
                     self.safety_state = "navigation_lost"
                     self._safe_action("land", "navigation_lost", telemetry.flight_mode, nav_ok, why=nav_why)
+                if position_current:
+                    request = self.requests.get(self._mission["request_id"]) if self._mission else None
+                    closest, area = nearest(self.site_origin, self.reported_people(request, now_ms), telemetry.lat, telemetry.lon)
+                    if closest < self.safety.standoff_m:
+                        self.safety_state = "person_too_close" if self.safety_state == "ok" else self.safety_state
+                        self._person_too_close(closest, area, now_ms)
             elif telemetry.connected and telemetry.in_air:
                 self.safety_state = "link_lost"  # FC failsafe owns the response; we only report it
             elif telemetry.connected and not telemetry.link_ok:
@@ -655,6 +735,7 @@ class DroneManager:
                     "min_altitude_m": self.geofence.min_altitude_m,
                 },
                 "safe_transit_altitude_m": self.safety.transit_altitude_m,
+                "person_standoff": {"standoff_m": self.safety.standoff_m, "people_reported": [area.as_dict() for area in self.reported_people()]},
                 "home": list(self.current_home()),
                 "health": self.health.summary(telemetry, int(time.time() * 1000)),
                 "records_ok": not self.persist_failures,
@@ -794,7 +875,8 @@ class DroneManager:
                 return
         elif telemetry.lat is None:
             return
-        distance = distance_m((telemetry.lat, telemetry.lon), (request.target_lat, request.target_lon)) if telemetry.lat is not None else 1e9
+        station = tuple(request.route.get("station") or (request.target_lat, request.target_lon))
+        distance = distance_m((telemetry.lat, telemetry.lon), station) if telemetry.lat is not None else 1e9
         returning = telemetry.flight_mode in RETURN_MODES
         if request.phase in {"takeoff", "enroute", "inspecting"} and returning:
             # The flight controller is returning on its own (failsafe) or the pilot chose to.
@@ -805,7 +887,7 @@ class DroneManager:
             if telemetry.in_air and telemetry.alt_m >= transit - 1.5:
                 request.phase = "enroute"
                 if command:
-                    self.adapter.goto(request.target_lat, request.target_lon, transit)
+                    self.adapter.goto(station[0], station[1], transit)
             elif landed and now_ms - (request.started_ms or now_ms) > 5000:
                 self._finish(request, "aborted", "the aircraft landed or disarmed before reaching the inspection point", now_ms)
                 return
@@ -909,6 +991,29 @@ class DroneManager:
             self.audit("system", f"drone_auto_{action}", {"reason": reason, "drone": self.drone_id})
         except FlightCommandRejected as error:
             self.safety_notes = (self.safety_notes + [f"{reason}: {error}"])[-20:]
+
+    def _person_too_close(self, distance: float, area: PersonArea | None, now_ms: int) -> None:
+        """A person is reported inside the standoff: the inspection stops. A simulator Sentinel flies
+        holds position (it never approaches further); for a real aircraft the pilot is told to move away."""
+        if self._mission and self.requests[self._mission["request_id"]].phase not in ("aborting", "returning"):
+            self._abort_mission("person_within_standoff")
+        mode = self.mode()[0]
+        text = PERSON_ADVICE[mode].format(distance=max(0, int(round(distance / 5.0) * 5)), standoff=self.safety.standoff_m,
+                                          source=PERSON_SOURCES.get(area.source if area else "", "a report"))
+        last = self.advisories[-1] if self.advisories else None
+        if last is None or last["reason"] != "person_within_standoff" or last["text"] != text:
+            self.advisories = (self.advisories + [{"ms": now_ms, "reason": "person_within_standoff", "text": text}])[-50:]
+            self.audit("system", "drone_person_standoff", {"drone": self.drone_id, "distance_m": round(distance, 1),
+                                                           "standoff_m": self.safety.standoff_m, "source": area.source if area else ""})
+            if self._flight is not None:
+                self._flight["safety_events"].append([now_ms, "person_within_standoff"])
+        if mode == "command" and now_ms - self._safe_action_ms.get("hold", 0) >= self.safety.safe_action_retry_s * 1000:
+            self._safe_action_ms["hold"] = now_ms
+            try:
+                self.adapter.hold()
+                self.audit("system", "drone_auto_hold", {"reason": "person_within_standoff", "drone": self.drone_id})
+            except FlightCommandRejected as error:
+                self.safety_notes = (self.safety_notes + [f"person_within_standoff: {error}"])[-20:]
 
     def _recover_after_restart(self, telemetry: Any) -> None:
         """Simulators only: Sentinel restarted while it was flying an inspection

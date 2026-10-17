@@ -12,7 +12,7 @@ RULE_FIELDS = {
     "id", "name", "description", "type", "enabled", "severity", "classes", "zones", "zone_types", "arm_modes",
     "active_hours", "active_days", "min_confidence", "min_observations", "cooldown_s", "notify",
     "min_dwell_s", "max_roam", "require_arrival", "count", "window_s", "within_s", "min_cameras",
-    "rules", "min_matches", "scope",
+    "rules", "min_matches", "scope", "within", "min_closing", "identity_filter", "identity_wait_s",
 }
 TYPE_LABELS = {
     "zone_entry": "Enters an area",
@@ -21,6 +21,7 @@ TYPE_LABELS = {
     "sequence": "Moves through areas in order",
     "multi_camera": "Seen across several cameras",
     "combination": "Several observations together",
+    "zone_approach": "Moves toward an area",
 }
 MODE_LABELS = {"home": "Home", "away": "Away", "night": "Night", "vacation": "Vacation", "disarmed": "Disarmed"}
 CLASS_LABELS = {"person": "person", "vehicle": "vehicle", "bicycle": "bicycle", "animal": "animal", "bag": "bag", "unknown_motion": "unidentified moving object"}
@@ -68,6 +69,9 @@ def describe_rule(rule: dict[str, Any], zone_names: dict[str, str] | None = None
     elif kind == "sequence":
         steps = " then ".join(zone_names.get(zone, zone) for zone in rule.get("zones", []))
         what = f"{who.capitalize()} goes to {steps} within {_duration(rule.get('within_s', 0))}"
+    elif kind == "zone_approach":
+        what = (f"{who.capitalize()} moves toward {where}, at least {rule.get('min_closing', 1.0):g} body heights closer within "
+                f"{_duration(rule.get('window_s', 4))}, and comes within {rule.get('within', 2.0):g} body heights of it")
     elif kind == "multi_camera":
         what = f"{who.capitalize()} is followed across {rule.get('min_cameras', 2)} or more cameras within {_duration(rule.get('window_s', 0))}"
     else:
@@ -85,6 +89,9 @@ def describe_rule(rule: dict[str, Any], zone_names: dict[str, str] | None = None
         when.append(f"after at least {rule['min_observations']} detections of the subject")
     if rule.get("min_confidence"):
         when.append(f"with detection confidence of at least {round(rule['min_confidence'] * 100)}%")
+    if rule.get("identity_filter") == "not_known":
+        when.append("unless household-member recognition is enabled and has already recognized the person "
+                    "(people it has not recognized, including those whose face was not seen, still count)")
     notify = rule.get("notify", "auto")
     then = {"auto": f"Records a {rule['severity']} event; a notification follows the mode's alert level",
             "always": f"Records a {rule['severity']} event and always notifies in an armed mode",
@@ -138,6 +145,16 @@ TEMPLATES: list[dict[str, Any]] = [
      "summary": "Someone staying near the front of the business at night.",
      "rule": {"type": "dwell", "zone_types": ["entrance", "perimeter"], "classes": ["person"], "min_dwell_s": 120, "max_roam": 3,
               "severity": "medium", "active_hours": {"start": "22:00", "end": "06:00"}, "cooldown_s": 900}},
+    {"key": "approach_restricted", "title": "Someone heading for a restricted area", "scenario": "residential",
+     "summary": "A person moving clearly toward a place nobody should be, such as a pool gate or shed, before they reach it. Pick the areas.",
+     "rule": {"type": "zone_approach", "zones": [], "classes": ["person"], "within": 2.0, "min_closing": 1.0, "window_s": 4,
+              "severity": "medium", "arm_modes": ["away", "night", "vacation"], "min_observations": 3, "cooldown_s": 300}},
+    {"key": "restricted_entry_not_household", "title": "Restricted area, unless a recognized household member",
+     "scenario": "residential",
+     "summary": "Like 'Person in a restricted area', but recorded without alerting when household-member recognition has recognized "
+                "the person. Anyone not recognized, including people whose face was not seen, still alerts.",
+     "rule": {"type": "zone_entry", "zone_types": ["restricted"], "classes": ["person"], "severity": "high", "min_observations": 2,
+              "identity_filter": "not_known", "identity_wait_s": 3}},
     {"key": "two_concerns", "title": "Two separate concerns within ten minutes", "scenario": "residential",
      "summary": "Only alert when at least two of the chosen rules match close together. Set those rules to record only.",
      "rule": {"type": "combination", "rules": [], "min_matches": 2, "within_s": 600, "scope": "site", "severity": "high"}},

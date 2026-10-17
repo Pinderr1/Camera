@@ -173,6 +173,20 @@ Errors use standard status codes with `{"detail": "..."}`: 401 (auth), 404 (unkn
 
 `GET /api/v1/guardian[?camera_id=]` returns `enabled`, `levels`, `notify_min_level`, `calibrated_cameras`, `species_classifier` (`{"enabled": false}`, or the optional SpeciesNet worker's `state` starting/ready/failed/stopped, `error`, `model`, `provider`, `load_ms`, `classified`, `dropped`, `failures`, `mean_ms` and the decision `settings`) and `tracks[]`. Each track has `guardian_track_id`, `camera_id`, `track_id`, `kind`, `species` (display, concern, status `detector_class` / `classifier` / `classifier_uncertain` / `unknown`, note, detector_label, detector_labels, `species_confidence` (only when confirmed), `species_specific_guidance_allowed` (true only for a confirmed species) and `classifier`: status confirmed/uncertain/unknown, key, display, confidence, the classifier's own `taxon` with taxonomy and score, rolled-up `group`, `reasons`, `top` five labels and `crops`), `bbox`, `trail`, `lost`, `reacquired`, `ambiguous_with`, `movement` (movement, relative_speed in body heights/s, growth_rate, image_heading, turned, sped_up, reasons), `targets`, `estimates` (metres and seconds only when the camera is calibrated), `assessment` (level, level_name, score, confidence, factors, held_back; `null` while set aside) and `set_aside` (empty, or why the track is ignored: a generic camera-trap box the species classifier agrees is blank). `GET /api/v1/state` includes the same tracks under `guardian`. Wildlife events have `event_type` `wildlife_approaching`, `wildlife_elevated_concern` or `wildlife_urgent_review`, with the assessment in `details`. See [wilderness-guardian.md](wilderness-guardian.md).
 
+## Household-member recognition
+
+Optional, off by default. Responses never contain face templates, face crops or photos. See [identity.md](identity.md).
+
+| Method | Path | Body / notes |
+| --- | --- | --- |
+| GET | `/api/v1/identity` | `enabled`, `settings`, `members[]` (`member_id`, `display_name`, `role`, `consent` {agreed, given_by, relationship, method, statement_version, note, recorded_by, recorded_ms}, `enrolled_ms`, `updated_ms`, `photos_enrolled`), `gallery_error`, `subjects[]` (live site tracks: `site_track_id`, `status` known/unknown/unverified, `member_id`, `display_name`, `reason`, `deciding`, `evidence` counts, `cameras`), `worker` (state, faces_checked, dropped, failures, mean_ms, members_ready), `consent` (statement, statement_version, relationships, methods), `models`, `statuses` |
+| POST | `/api/v1/identity/members` | `{"display_name", "consent": {"agreed": true, "given_by", "relationship": "self\|parent_or_guardian", "method": "in_person\|written\|digital", "statement_version", "note"}}`; 422 without a valid consent |
+| POST | `/api/v1/identity/members/{id}/photos` | `{"images": [base64 JPEG/PNG, 1–10, at most 8 MB each]}`: one clear face per photo; refused (422) if the photos disagree or match another member; returns `enrollment_complete` |
+| POST | `/api/v1/identity/members/{id}/capture` | `{"camera_id"}`: enroll from the camera's current privacy-masked picture (member alone in view); 503 without a current picture |
+| DELETE | `/api/v1/identity/members/{id}` | Consent withdrawn: deletes the member and every template, scrubs their id and name from stored events; returns `templates_deleted`, `events_scrubbed` |
+
+`GET /api/v1/state` includes `identity` (`enabled`, `subjects`, `worker`). Events of type `identity` (info) record status changes of a subject; person events carry `details.identity` while recognition is on. `zone_approach` events describe a subject moving toward an area. Drone status includes `person_standoff` (`standoff_m`, `people_reported[]`); routes include `station` (the hover point) and `person_standoff`; new route problems `no_inspection_point_clear_of_people`, `route_passes_near_people`; `goto` can be refused with `target_near_person`; safety state `person_too_close`.
+
 ## Optional accessories and FLAME Mode
 
 All routes below require the same authentication as other data endpoints.

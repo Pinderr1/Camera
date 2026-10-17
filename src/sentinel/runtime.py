@@ -12,6 +12,7 @@ from .config import ARM_MODES, SENSITIVITIES, cameras, zone_index
 from .engine import TemporalEventEngine
 from .explain import notification_reason
 from .guardian import GuardianMonitor
+from .identity import IdentityMonitor
 from .health import HealthMonitor, HealthSettings
 from .incidents import DISCLAIMER, AlertPolicy, AlertPolicyConfig, IncidentConfig, IncidentManager
 from .models import Incident, Notification, SecurityEvent, Track, effective_categories, severity_at_least
@@ -102,6 +103,14 @@ class SentinelRuntime:
         self._health_seq = 0
         self.species = None  # optional Guardian species classifier (guardian/species_service.py)
         self._configure_species()
+        # Optional household-member recognition (identity/): off by default; the gallery holds consented members only.
+        from .identity.gallery import FaceGallery
+
+        self.identity = IdentityMonitor(config)
+        self.identity_gallery = FaceGallery(self.storage_dir / "identity" / "gallery.dat")
+        self.identity_service = None
+        self._identity_seq = 0
+        self._configure_identity()
 
     def reconfigure(self, config: dict[str, Any]) -> None:
         """Apply an edited site config. Zones, rules, topology, and alert policy
@@ -114,6 +123,8 @@ class SentinelRuntime:
             self.policy.config = AlertPolicyConfig.from_dict(config.get("alerts"))
             self.guardian = GuardianMonitor(config, next_id=self.guardian.next_id)  # never reuse a guardian id
             self._configure_species()
+            self.identity = IdentityMonitor(config)
+            self._configure_identity()
             if not self._fixed_notifiers:  # channels edited in the dashboard apply without a restart
                 self.dispatcher.notifiers = build_notifiers(config, self.media_root, self._mqtt_publish, self.secrets.get)
             self.zones = zone_index(config)
@@ -167,8 +178,12 @@ class SentinelRuntime:
     ) -> list[SecurityEvent]:
         with self._lock:
             events = self.engine.process(camera_id, timestamp_ms, active, ended)
+            if self.identity.settings.enabled:
+                self.identity.observe(camera_id, timestamp_ms, active, ended, self.engine.correlator.track_to_site)
             events += self._guardian_events(camera_id, timestamp_ms, active, ended)
             site_ids = {self.engine.correlator.track_to_site.get(track.track_id, "") for track in active} - {""}
+            if self.drone is not None:
+                self._refresh_person_areas()
             self.incidents.touch(site_ids, timestamp_ms)
             self._extend_recordings(camera_id, site_ids, timestamp_ms)
             self._handle_events(events, timestamp_ms, image=image, active=active)
@@ -246,7 +261,93 @@ class SentinelRuntime:
             log.warning("species classification skipped on %s: %s", camera_id, error)
             self._species_health("degraded", f"species classification failed: {str(error)[:160]}")
 
-    def _handle_events(self, events: list[SecurityEvent], now_ms: int, *, image: Any = None, active: list[Track] | None = None) -> None:
+    # ---- household-member recognition (identity/) ----------------------------
+
+    def _configure_identity(self) -> None:
+        """Start, keep, restart or stop the face worker to match the config. The engine
+        sees identity statuses only while recognition is on; a missing model only
+        degrades the `identity` component and everyone stays "unverified"."""
+        settings = self.identity.settings
+        self.engine.identity_lookup = self.identity.site_identity if settings.enabled else None
+        if self.identity_service is not None and (not settings.enabled or self.identity_service.settings != settings):
+            self.identity_service.stop(wait=False)
+            self.identity_service = None
+        if not settings.enabled:
+            self.health.components.pop("identity", None)
+            return
+        if self.identity_service is not None:
+            self.identity_service.attach()
+            return
+        try:
+            from .identity.service import IdentityService
+
+            self.identity_service = IdentityService(settings, self.identity_gallery, self._lock, lambda: self.identity,
+                                                    self._identity_changes, self._identity_health)
+        except Exception as error:  # numpy/OpenCV missing
+            log.warning("household-member recognition not started: %s", error)
+            self._identity_health("degraded", f"recognition not started ({str(error)[:160]}); everyone is shown as unverified")
+
+    def _identity_health(self, state: str, detail: str) -> None:
+        with self._lock:
+            self.health.set_component("identity", state, detail, int(time.time() * 1000), notify=False)
+
+    def identity_frame(self, camera_id: str, now_ms: int, image: Any) -> None:
+        """Called by camera workers after each processed frame; never raises, never waits on the model."""
+        service = self.identity_service
+        if service is None:
+            return
+        try:
+            service.frame(camera_id, now_ms, image)
+        except Exception as error:
+            log.warning("face check skipped on %s: %s", camera_id, error)
+            self._identity_health("degraded", f"face checks failed: {str(error)[:160]}")
+
+    IDENTITY_TEXT = {
+        "known": "{who} in {where} recognized as a household member",
+        "unknown": "{who} in {where} did not match any enrolled household member",
+        "unverified": "{who} in {where}: household-member recognition is no longer certain",
+    }
+
+    def _identity_changes(self, changes: list[dict[str, Any]], now_ms: int) -> None:
+        """Status changes of a subject become `identity` info events: they never open an
+        incident or alert on their own, and join an incident that already covers the subject.
+        Event text never names anyone (boundary 1): the member id and name are in the details only."""
+        events = []
+        for change in changes:
+            identity = change["identity"]
+            self._identity_seq += 1
+            zone = self.zones.get(change["zone_id"], {}).get("name", change["zone_id"]) if change["zone_id"] else self._camera_name(change["camera_id"])
+            events.append(SecurityEvent(
+                event_id=f"evt_{now_ms}_identity_{self._identity_seq}", event_type="identity", severity="info",
+                camera_id=change["camera_id"], timestamp_ms=now_ms, started_ms=now_ms, confidence=1.0,
+                summary=self.IDENTITY_TEXT[identity["status"]].format(who="Person", where=zone),
+                label="person", zone_id=change["zone_id"], track_ids=[change["track_id"]], site_track_id=change["site_track_id"],
+                reason_codes=[f"identity_{identity['status']}", identity["reason"]],
+                details={"identity": {key: identity[key] for key in ("status", "member_id", "display_name", "reason", "evidence")},
+                         "previous_status": change["previous"],
+                         "identity_note": "recognition compares faces with enrolled household members only; "
+                                          "not recognized does not mean unwelcome"},
+            ))
+        self._handle_events(events, now_ms, request_drone=False)  # recognition never sends the drone anywhere
+
+    def identity_member_removed(self, member_id: str, actor: str) -> dict[str, Any]:
+        """Consent withdrawn: delete the templates, forget live matches, scrub stored events."""
+        removed = self.identity_gallery.remove_member(member_id)
+        with self._lock:
+            changes = self.identity.forget_member(member_id)
+            if changes:
+                self._identity_changes(changes, int(time.time() * 1000))
+        removed["events_scrubbed"] = self.store.scrub_identity(member_id)
+        self.store.audit(actor, "identity_member_removed", {"member_id": member_id, "templates_deleted": removed["templates_deleted"],
+                                                             "events_scrubbed": removed["events_scrubbed"]})
+        return removed
+
+    def identity_overlays(self, camera_id: str) -> dict[str, str]:
+        with self._lock:
+            return self.identity.overlays(camera_id) if self.identity.settings.enabled else {}
+
+    def _handle_events(self, events: list[SecurityEvent], now_ms: int, *, image: Any = None, active: list[Track] | None = None,
+                       request_drone: bool = True) -> None:
         changed: dict[str, tuple[Incident, list[SecurityEvent]]] = {}
         for event in events:
             self._apply_category_policy(event)
@@ -266,7 +367,8 @@ class SentinelRuntime:
                 if reason and notification.message.endswith(DISCLAIMER):
                     notification = dataclasses.replace(notification, message=notification.message[: -len(DISCLAIMER)] + reason + "\n" + DISCLAIMER)
                 self._notify(notification)
-            self._maybe_request_drone(incident)
+            if request_drone:
+                self._maybe_request_drone(incident)
 
     SCENE_LABELS = {
         "lighting_change": "Lighting change",
@@ -361,6 +463,23 @@ class SentinelRuntime:
         if self.settings.get("notifications_enabled", True):
             self.dispatcher.submit(notification)
 
+    def _refresh_person_areas(self) -> None:
+        """Zones (with a site-map outline) where a person is present now, for the drone's
+        person standoff. Replaced as a whole, so person_map_areas() needs no lock."""
+        areas = []
+        for site in self.engine.site_tracks():
+            if site.label != "person" or not site.active_members:
+                continue
+            for zone_id, presence in site.zones.items():
+                zone = self.zones.get(zone_id, {})
+                if presence.left_ms is None and "map_polygon" in zone:
+                    areas.append({"source": "camera", "label": zone.get("name", zone_id), "map_polygon": zone["map_polygon"]})
+        self._person_areas = areas
+
+    def person_map_areas(self) -> list[dict[str, Any]]:
+        """Read by drone managers while they hold their own lock: never takes the runtime lock."""
+        return list(getattr(self, "_person_areas", []))
+
     def _maybe_request_drone(self, incident: Incident) -> None:
         """Queue (never approve) an inspection request for serious incidents."""
         drone_config = self.config.get("drone", {})
@@ -375,10 +494,13 @@ class SentinelRuntime:
             return
         polygon = zone["map_polygon"]
         centroid = (sum(p[0] for p in polygon) / len(polygon), sum(p[1] for p in polygon) / len(polygon))
+        # A person was part of the incident: the aircraft keeps the person standoff from the area being inspected (where
+        # they were last seen). Where people are now comes live from the cameras (person_map_areas).
+        person_polygons = [polygon] if "person" in incident.labels else []
         try:
             self.drone.request_inspection(
                 requested_by="sentinel", map_point=centroid, label=zone.get("name", zone["id"]), source="incident", incident_id=incident.incident_id,
-                reason=f"{incident.title} (incident severity {incident.severity})",
+                reason=f"{incident.title} (incident severity {incident.severity})", person_map_polygons=person_polygons,
             )
         except Exception as error:
             log.warning("drone inspection request not created: %s", error)
@@ -514,6 +636,8 @@ class SentinelRuntime:
         now_ms = now_ms or int(time.time() * 1000)
         with self._lock:
             self.engine.tick(now_ms)
+            if self.drone is not None:
+                self._refresh_person_areas()
             visits, trips = self.engine.drain_activity()
             if (visits or trips) and self.config.get("activity", {}).get("enabled", True):
                 self.store.add_activity(visits, trips)
@@ -566,11 +690,15 @@ class SentinelRuntime:
                 "coverage": self.health.coverage(self.camera_status),
                 "guardian": {"enabled": self.guardian.settings.enabled, "tracks": self.guardian.snapshot(),
                              "species_classifier": self.species.status() if self.species else {"enabled": False}},
+                "identity": {"enabled": self.identity.settings.enabled, "subjects": self.identity.snapshot() if self.identity.settings.enabled else [],
+                             "worker": self.identity_service.status() if self.identity_service else {"state": "off"}},
             }
 
     def close(self) -> None:
         if self.species is not None:
             self.species.stop()
+        if self.identity_service is not None:
+            self.identity_service.stop()
         for recorder in self.recorders.values():
             recorder.finish()
         self.dispatcher.stop()

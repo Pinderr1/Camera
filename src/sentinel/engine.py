@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from senior_safety.pose_events import point_in_polygon
 
@@ -17,6 +17,7 @@ ACTIVITY_CLASSES = {"person", "vehicle", "bicycle", "animal", "bag", "unknown_mo
 QUIET_ZONE_TYPES = {"street", "sidewalk", "ignore"}  # public or excluded areas: never "on the property"
 DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 ENTRY_CONFIRM_MS = 15_000  # a zone entry may wait this long for `min_observations` before it is dropped
+IDENTITY_WAIT_S = 3.0  # default wait for household-member recognition before a `not_known` zone_entry rule fires
 
 
 @dataclass
@@ -123,6 +124,9 @@ class TemporalEventEngine:
         self.rules_by_id = {rule["id"]: rule for rule in self.rules}
         self.finished_visits: list[dict[str, Any]] = []
         self.finished_trips: list[dict[str, Any]] = []
+        # Optional household-member recognition (identity/monitor.py): site track id -> identity status.
+        # None when recognition is off; then nothing below changes how rules behave.
+        self.identity_lookup: Callable[[str], dict[str, Any]] | None = None
 
     def set_sensitivity(self, sensitivity: str) -> None:
         self.dwell_multiplier, _ = sensitivity_adjustments(sensitivity)
@@ -153,6 +157,7 @@ class TemporalEventEngine:
         for site, track in touched.values():
             events.extend(self._evaluate_entries(site, track, timestamp_ms))
             events.extend(self._evaluate_dwell(site, track, timestamp_ms))
+            events.extend(self._evaluate_approach(site, track, timestamp_ms))
             events.extend(self._evaluate_site_rules(site, track, timestamp_ms))
         events.extend(self._evaluate_combinations(events, touched, timestamp_ms))
 
@@ -329,6 +334,8 @@ class TemporalEventEngine:
                     continue
                 if track.confidence < rule.get("min_confidence", 0.0) or not self._observed_enough(rule, track):
                     continue
+                if self._identity_pending(rule, site, presence.since_ms, now):
+                    continue  # recognition of this person is still running; re-checked on the next frame
                 site.fired.add(key)
                 zone_type = self.zones.zone_type(zone_id)
                 events.append(
@@ -383,6 +390,54 @@ class TemporalEventEngine:
                     )
                 )
         return events
+
+    def _evaluate_approach(self, site: SiteTrack, track: Track, now: int) -> list[SecurityEvent]:
+        """`zone_approach` rules: a subject outside a zone moved clearly closer to it
+        within `window_s` and is now within `within` body heights. Distances are in
+        body heights on the image (no calibration needed); once per track and zone."""
+        events: list[SecurityEvent] = []
+        height = track.bbox[3]
+        if height <= 0:
+            return events
+        for rule in self.rules:
+            if rule["type"] != "zone_approach" or not self._rule_active(rule, site.label, now) or not self._observed_enough(rule, track):
+                continue
+            window_ms = int(float(rule.get("window_s", 4)) * 1000)
+            recent = [(ms, anchor) for ms, anchor in track.history if now - ms <= window_ms]
+            if len(recent) < 3 or now - recent[0][0] < window_ms * 0.6:
+                continue  # not watched long enough to call it movement toward anything
+            for zone_id in rule.get("zones", []):
+                zone = self.zones.zones.get(zone_id)
+                if zone is None or zone["camera_id"] != track.camera_id:
+                    continue
+                key = f"{rule['id']}:{zone_id}:{track.track_id}"
+                if key in site.fired:
+                    continue
+                now_distance = _distance_to_polygon(track.anchor, zone["polygon"]) / height
+                if now_distance == 0:
+                    continue  # already inside: that is zone_entry's business
+                closed = _distance_to_polygon(recent[0][1], zone["polygon"]) / height - now_distance
+                if now_distance > float(rule.get("within", 2.0)) or closed < float(rule.get("min_closing", 1.0)):
+                    continue
+                site.fired.add(key)
+                name = self.zones.zone_name(zone_id)
+                where = f"close to {name}" if now_distance < 0.5 else f"toward {name} (about {now_distance:.1f} body heights away)"
+                events.append(self._event(
+                    "zone_approach", rule["severity"], track, site, now,
+                    summary=f"{_display(track)} moved {where}", zone_id=zone_id, rule=rule,
+                    reason_codes=["approaching_zone"], started_ms=recent[0][0],
+                    details={"distance_body_heights": round(now_distance, 2), "closed_body_heights": round(closed, 2),
+                             "window_s": round((now - recent[0][0]) / 1000, 1)},
+                ))
+        return events
+
+    def _identity_pending(self, rule: dict[str, Any], site: SiteTrack, since_ms: int, now: int) -> bool:
+        """A `not_known` rule may wait briefly (`identity_wait_s`) while a household
+        member's face is still being checked, so their own arrival does not alert."""
+        if self.identity_lookup is None or rule.get("identity_filter", "any") != "not_known":
+            return False
+        wait_ms = float(rule.get("identity_wait_s", IDENTITY_WAIT_S)) * 1000
+        return now - since_ms < wait_ms and bool(self.identity_lookup(site.site_track_id).get("deciding"))
 
     def _evaluate_site_rules(self, site: SiteTrack, track: Track, now: int) -> list[SecurityEvent]:
         events: list[SecurityEvent] = []
@@ -489,9 +544,17 @@ class TemporalEventEngine:
 
     def _apply_rule_settings(self, event: SecurityEvent, rule: dict[str, Any], now: int) -> SecurityEvent:
         """Per-rule notification preference and cooldown. During a cooldown the
-        event is still recorded, as `info`, so it never alerts but stays visible."""
+        event is still recorded, as `info`, so it never alerts but stays visible.
+        `identity_filter: not_known` records a recognized household member's
+        event as `info` the same way (only when recognition already says "known")."""
         if rule.get("notify", "auto") != "auto":
             event.details["notify"] = rule["notify"]
+        if rule.get("identity_filter", "any") == "not_known" and event.severity != "info" \
+                and event.details.get("identity", {}).get("status") == "known":
+            event.details["original_severity"] = event.severity
+            event.severity = "info"
+            event.reason_codes.append("recognized_household_member")
+            return event
         cooldown_ms = int(float(rule.get("cooldown_s", 0)) * 1000)
         if cooldown_ms and event.severity != "info":
             key = f"{rule['id']}:{event.zone_id}"
@@ -533,6 +596,9 @@ class TemporalEventEngine:
             "ambiguous_with": list(site.ambiguous_with), "first_seen_ms": site.first_seen_ms,
         }
         payload["observation"] = {"track_hits": track.hits, "bbox": [round(value, 3) for value in track.bbox], "kind": track.kind}
+        if self.identity_lookup is not None and site.label == "person":
+            identity = self.identity_lookup(site.site_track_id)
+            payload["identity"] = {key: identity.get(key, "") for key in ("status", "member_id", "display_name", "reason")}
         event = SecurityEvent(
             event_id=f"evt_{now}_{self._event_seq}",
             event_type=event_type,
@@ -568,6 +634,20 @@ def _roam(samples: list[tuple[int, float, float, float]], window_start_ms: int) 
         ((a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5 for i, a in enumerate(window) for b in window[i + 1 :]
     )
     return extent / height
+
+
+def _distance_to_polygon(point: tuple[float, float], polygon: list) -> float:
+    """0 inside the polygon, otherwise the distance to its nearest edge (image units)."""
+    if point_in_polygon(point[0], point[1], polygon):
+        return 0.0
+    best = float("inf")
+    for index in range(len(polygon)):
+        (ax, ay), (bx, by) = polygon[index][:2], polygon[(index + 1) % len(polygon)][:2]
+        dx, dy = bx - ax, by - ay
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((point[0] - ax) * dx + (point[1] - ay) * dy) / length2))
+        best = min(best, ((point[0] - ax - t * dx) ** 2 + (point[1] - ay - t * dy) ** 2) ** 0.5)
+    return best
 
 
 def _match_sequence(path: list[tuple[int, str, str]], zones: list[str], within_ms: int) -> tuple[int, int] | None:

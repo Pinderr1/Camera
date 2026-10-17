@@ -168,8 +168,9 @@ class LiteSitlTests(unittest.TestCase):
     def test_2_pilot_flown_lite_inspection_with_video_and_evidence(self):
         from sentinel.drone.mavlink import MavlinkTelemetryAdapter
 
+        # A vehicle: a person under the aircraft would (correctly) stop the inspection (person standoff, drone/standoff.py).
         video = {"source": {"type": "simulated_aerial", "objects": [
-            {"label": "person", "path": [{"t": 0, "map": [34.6, 4.0]}, {"t": 20, "map": [35.4, 4.4]}, {"t": 40, "map": [34.6, 4.0]}]}]}}
+            {"label": "vehicle", "path": [{"t": 0, "map": [34.6, 4.0]}, {"t": 20, "map": [35.4, 4.4]}, {"t": 40, "map": [34.6, 4.0]}]}]}}
         manager = self.manager(MavlinkTelemetryAdapter(f"udpin:127.0.0.1:{HUB_UDP}"), video=video)
         request = self.fly_proposed(manager, incident_id="inc_lite")
         self.assertEqual(request.aircraft, "Sentinel Lite (aircraft, telemetry only)")
@@ -182,7 +183,7 @@ class LiteSitlTests(unittest.TestCase):
             time.sleep(0.2)
         summary = request.observations
         self.assertEqual(summary["model"], "sentinel_lite")
-        self.assertEqual(summary["max_visible"], {"person": 1})
+        self.assertEqual(summary["max_visible"], {"vehicle": 1})
         positioned = [row for row in summary["observations"] if row["position"]["available"]]
         self.assertTrue(positioned)
         self.assertLess(positioned[0]["position"]["distance_from_target_m"], 6.0)

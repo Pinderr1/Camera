@@ -1,0 +1,50 @@
+{
+  "name": "approach_shed",
+  "description": "A person walks across the backyard straight toward the shed (restricted zone), stops just short of it, and walks back to the side gate. Used with a zone_approach rule: one 'moved toward Shed' event, no shed entry.",
+  "duration_s": 34,
+  "loop": false,
+  "actors": [
+    {
+      "id": "visitor",
+      "label": "person",
+      "noise": 0.003,
+      "miss_rate": 0.02,
+      "path": [
+        {
+          "t": 0,
+          "camera": "cam_backyard",
+          "x": 0.25,
+          "y": 0.78
+        },
+        {
+          "t": 4,
+          "camera": "cam_backyard",
+          "x": 0.3,
+          "y": 0.78
+        },
+        {
+          "t": 8,
+          "camera": "cam_backyard",
+          "x": 0.71,
+          "y": 0.78
+        },
+        {
+          "t": 16,
+          "camera": "cam_backyard",
+          "x": 0.71,
+          "y": 0.78
+        },
+        {
+          "t": 26,
+          "camera": "cam_backyard",
+          "x": 0.25,
+          "y": 0.8
+        },
+        {
+          "t": 28,
+          "camera": null
+        }
+      ]
+    }
+  ]
+}

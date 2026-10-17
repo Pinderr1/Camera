@@ -127,6 +127,7 @@ def config_with_rule(config: dict[str, Any], rule: dict[str, Any]) -> dict[str, 
     for channel in trial.get("alerts", {}).get("channels", []):
         channel["enabled"] = False
     trial["drone"] = {"enabled": False}
+    trial.pop("identity", None)  # no face model on simulated walks: everyone is "unverified" in a rule test
     validate_config(trial)
     return trial
 

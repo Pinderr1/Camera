@@ -1114,6 +1114,10 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
 
     add_flame_routes(app, service, require_auth)
 
+    from .identity.routes import add_routes as add_identity_routes  # household-member recognition: /api/v1/identity
+
+    add_identity_routes(app, service, require_auth)
+
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 

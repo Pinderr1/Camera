@@ -61,11 +61,14 @@ def demo_config(storage: Path, model: str = "generic_ardupilot") -> dict[str, An
     drone = config["drone"]
     drone.update({
         "adapter": "mavlink", "connection": f"udpin:127.0.0.1:{HUB_UDP}", "auto_request_min_severity": "high",
-        "safety": drone.get("safety", {}) | {"inspection_altitude_m": 12, "hover_s": 8},
+        # The example lot (40 x 28 m) is too small for the default 30 m person standoff around the shed, so the incident's
+        # inspection would be refused. The demo uses the 10 m floor: a simulator only. A real flight near people follows the
+        # pilot's certificate and Transport Canada's rules (basic operations: more than 30 m from bystanders).
+        "safety": drone.get("safety", {}) | {"inspection_altitude_m": 12, "hover_s": 8, "person_standoff_m": 10},
         "firmware_tested": ["4.6", "4.7"],
         "video": {
             "source": {"type": "simulated_aerial", "objects": [
-                {"label": "person", "path": [{"t": 0, "map": [34.6, 4.0]}, {"t": 20, "map": [35.4, 4.4]}, {"t": 40, "map": [34.6, 4.0]}]}]},
+                {"label": "vehicle", "path": [{"t": 0, "map": [24.0, 3.0]}]}]},  # beside the hover point; people stay 10 m away
             "camera": {"hfov_deg": 80, "vfov_deg": 50, "default_pitch_deg": -90}, "fps": 5,
         },
     })

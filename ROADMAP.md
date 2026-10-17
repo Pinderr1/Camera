@@ -559,14 +559,14 @@ Wildlife and human protection on the same Hub. Full plan, dataset review and lim
 | --- | --- |
 | G1 Wildlife recognition | Generic COCO animal labels through the existing detectors (implemented). **Species classifier implemented (2026-10-16), optional and off by default:** Google SpeciesNet v4.0.3a (Apache-2.0) on Sentinel's YOLOX boxes, with confident-only naming and "species uncertain" otherwise. On 435 real camera-trap images (ENA24, Caltech, NACTI), 160/161 confident calls on Sentinel boxes named the dataset's species. YOLOX found an animal in only 43 % of animal images. **Optional animal detector added (2026-10-16):** MegaDetector V6 Apache (`MDV6-apa-rtdetr-c`, threshold 0.6) next to YOLOX, adding only animal boxes YOLOX missed. Stills: 368/395 animal images found (YOLOX 168), species confirmed right end to end 321/395 (YOLOX 157), empty frames with a box 9/40 (YOLOX 0). 13 trail-camera clips: 91 % of animal-present frames (YOLOX 64 %; night 100 % vs 63 %), expected species confirmed on 8/11 clips (7), wrong confirmations 3 (1; elk called red deer). False boxes on moving water and rocks are set aside by Guardian when SpeciesNet agrees they are blank. About 2× detection time. MegaDetector likely trained on the LILA stills. No grizzly images yet; not run on owner footage ([docs/guardian-datasets.md](docs/guardian-datasets.md#animal-detector-megadetector-v6)). Dataset licences: CCT, NACTI, ENA24, WCS, WSU Lynx are CDLA-Permissive; Idaho forbids selling images; Animal Kingdom publishes no licence; MegaDetector V6 has AGPL, MIT and Apache variants |
 | G2 Movement intelligence | **Implemented, synthetic sequences only**: guardian tracks with unambiguous re-acquisition, approach/retreat/lateral/stationary, relative speed, approach to camera/protected zone/person, turns, sustained approach, calibrated-only distance and time-to-zone, explainable levels, cooldowns, clip evidence, live overlay, `/api/v1/guardian`. Off by default. **Not run on real wildlife footage** |
-| G3 Human protection | **Planned**. Owner facial recognition **blocked** (boundary 2); a mistaken identification must never trigger a physical response |
+| G3 Human protection | **Started (2026-10-16, owner's decision recorded in `CLAUDE.md` boundary 2):** consent-based household-member recognition (off by default), `zone_approach` rule, drone person standoff ([docs/identity.md](docs/identity.md)). A mistaken identification must never trigger a physical response: recognition can only keep a rule from alerting, never request a drone or raise a severity |
 | G4 Emergency Guardian drone/rover | **Research concept**: no spray, smoke, payload-release, weapon or interception code; simulation at most |
 | G5 Multi-platform Sentinel | **Planned**. The G2 monitor is platform-neutral (`moving_camera` caps levels); a ground rover is a candidate first physical Guardian prototype; Thermal/FLAME reused for agriculture |
 
 ### Decisions (2026-10-15)
 1. Wildlife emergency alerts will eventually be able to push while home security is disarmed, through a separate configurable Guardian setting. Today they follow the arm mode and are not pushed when disarmed.
 2. Approaching stays a recorded event without a push; Elevated Concern and Urgent Review notify (`guardian.notify_min_level`).
-3. Owner facial recognition stays blocked until privacy and safety requirements are settled and recorded in `CLAUDE.md`.
+3. Owner facial recognition stays blocked until privacy and safety requirements are settled and recorded in `CLAUDE.md`. (Recorded 2026-10-16: consent-based household-member recognition, see boundary 2 and `docs/identity.md`.)
 4. Next priorities: validate G2 on a real camera (prerecorded wildlife clips, then live footage with labelled tracks via `sentinel.bench`), then species identification (licence-cleared classifier, e.g. an MIT/Apache MegaDetector v6 variant plus a species model, benchmarked before adoption).
 
 ### Next steps
@@ -592,6 +592,22 @@ Machine: i5-1135G7 + Iris Xe (DirectML). Data: 435 camera-trap stills (ENA24, Ca
 **Optimisation (2026-10-16, same clips and laptop):** paired boxes (MegaDetector's box, YOLOX's label) cut wrong species confirmations 3 → 1 and duplicate-track frames 157 → 117 at the same recall; the scan/follow schedule cuts detection time −11 % on these animal-heavy clips and −59 % on an almost empty one (weasel: p50 447 → 184 ms); half rate while following saves about 35 % but follows fewer animals (opt-in). Fixed a crash: two DirectML sessions running at once kill the process (all DirectML calls now share one lock with a 10 s wait limit). YOLOX fp16 on MOT16/CAVIAR: accuracy within 0.3 points, about 30 % faster on DirectML (`detector.precision`, opt-in). Not measured: multi-camera load, fp16 + schedule on clips. Detail: [docs/guardian-datasets.md](docs/guardian-datasets.md#real-time-optimisation-2026-10-16), [docs/benchmarking.md](docs/benchmarking.md#yolox-s-in-fp16-2026-10-16).
 
 Selected: the add-on, for wildlife cameras only (people and vehicles stay on the benchmarked YOLOX; nothing changes unless `detector.animal_detector` is set). MegaDetector's threshold is 0.6, not 0.4: same species results on stills with 9 instead of 32 empty-frame boxes. Generic-only tracks that SpeciesNet agrees are `blank` are set aside by Guardian (river clip: 4 false tracks, all set aside, about 1 s on screen each).
+
+## Household-member recognition and person standoff (2026-10-16)
+
+Owner's decision, recorded in `CLAUDE.md` boundary 2. Off by default; the person standoff always applies. Design, safeguards and limits: [docs/identity.md](docs/identity.md).
+
+Measured (MOT16-09, public, ground-truth pedestrian identities; i5-1135G7 CPU; `scripts/identity_eval.py`, `bench_runs/identity_2026-10-16/`): 146 faces of 8 pedestrians, median 56 px. Single face pairs at or above the 0.45 match threshold: different pedestrians 0.3 % of 8,167; same pedestrian (at least 1 s apart) 86.9 % of 1,444. Pairwise, small faces of strangers from one 17 s street clip: **not a recognition accuracy figure for a home.**
+
+Regression check of the engine change (2026-10-17, `bench_runs/identity_regression_20261017/` vs `bench_runs/people_fp16/fp32/`, YOLOX-s 960 on DirectML, recognition off, no `zone_approach` rule): mot16_09, mot16_02 and caviar_walk1 give identical detection, tracking and event tables (for example mot16_09: precision 94.6 %, recall 74.1 %, alert events 1/1, 1 false alert event, notifications 1/1).
+
+### Next steps
+- [ ] Enroll consenting household members and measure on the owner's cameras, day and night IR: known / unknown / unverified per subject, wrong `known` per week.
+- [ ] Decide on anti-spoofing before offering `not_known` rules for Away or Vacation modes.
+- [ ] Legal review (biometric law where sold, signage, children's data) and a licence decision on SFace's training data, or a commercially licensed recognizer.
+- [ ] Dashboard screens for enrollment and the consent statement (API and CLI only today).
+- [ ] Re-run the Lite SITL test, the fault scenarios and the SITL demo with the person standoff.
+- [ ] Rule-builder fields for `zone_approach` (`within`, `min_closing`, `window_s`) and `identity_filter`; the builder currently uses the defaults.
 
 ## Open risks
 - Real-world detector accuracy at night and in bad weather is unknown until Phase 1.

@@ -66,6 +66,20 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(front[0]["ambiguous_with"])
 
 
+    def test_approach_to_restricted_zone_is_described_before_entry(self):
+        config = copy.deepcopy(CONFIG)
+        config["rules"].append({"id": "shed_approach", "type": "zone_approach", "zones": ["shed"], "classes": ["person"], "severity": "medium",
+                                "within": 2.0, "min_closing": 1.0, "window_s": 4, "min_observations": 3})
+        result = run_scenario(config, Scenario.load("config/scenarios/approach_shed.json"), start=NIGHT, arm_mode="away")
+        approach = [event for event in result["events"] if event["event_type"] == "zone_approach"]
+        self.assertEqual(len(approach), 1, [event["summary"] for event in result["events"]])
+        self.assertIn("Shed", approach[0]["summary"])
+        self.assertEqual([event for event in result["events"] if event["zone_id"] == "shed" and event["event_type"] == "zone_entry"], [])
+        for event in result["events"]:
+            for word in ("intruder", "suspicious", "trespass", "burglar"):
+                self.assertNotIn(word, event["summary"].lower())
+
+
 class ConfigTests(unittest.TestCase):
     def test_example_config_is_valid(self):
         validate_config(CONFIG)

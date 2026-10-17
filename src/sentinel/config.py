@@ -15,7 +15,7 @@ from .streams import BRAND_TEMPLATES
 ZONE_TYPES = {"driveway", "entrance", "yard", "sidewalk", "perimeter", "restricted", "street", "ignore", "general"}
 SOURCE_TYPES = {"rtsp", "http", "usb", "capture", "file", "simulated"}
 CATEGORIES = ("person", "vehicle", "bicycle", "animal", "bag", "unknown_motion")
-RULE_TYPES = {"zone_entry", "dwell", "repeated_presence", "sequence", "multi_camera", "combination"}
+RULE_TYPES = {"zone_entry", "dwell", "repeated_presence", "sequence", "multi_camera", "combination", "zone_approach"}
 ARM_MODES = ("disarmed", "home", "away", "night", "vacation")
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 NOTIFY_PREFERENCES = ("auto", "always", "never")
@@ -184,6 +184,12 @@ def validate_config(config: dict[str, Any]) -> None:
                 errors.append(f"{path}.zones needs at least two zones in order")
             if not _positive(rule.get("within_s")):
                 errors.append(f"{path}.within_s must be positive")
+        if rule_type == "zone_approach":
+            if not rule.get("zones"):
+                errors.append(f"{path}.zones must name the area(s) being approached")
+            for key, (low, high) in (("within", (0.1, 20)), ("min_closing", (0.2, 20)), ("window_s", (1, 60))):
+                if key in rule and not (_is_number(rule[key]) and low <= rule[key] <= high):
+                    errors.append(f"{path}.{key} must be between {low:g} and {high:g}")
         if rule_type == "multi_camera":
             if not isinstance(rule.get("min_cameras"), int) or rule["min_cameras"] < 2:
                 errors.append(f"{path}.min_cameras must be an integer >= 2")
@@ -245,6 +251,9 @@ def validate_config(config: dict[str, Any]) -> None:
     from .guardian.validate import validate_guardian
 
     validate_guardian(config, camera_ids, zone_ids, errors)
+    from .identity.validate import validate_identity
+
+    validate_identity(config, {zone.get("id"): zone.get("type", "general") for camera in raw_cameras for zone in camera.get("zones", [])}, errors)
     _validate_drone_and_channels(config, errors)
 
     defaults = config.get("settings_defaults", {})
@@ -288,6 +297,9 @@ def _validate_rule_extras(rule: dict[str, Any], path: str, rule_type: str, error
             errors.append(f"{path}.active_hours start and end must differ")
     if rule_type == "combination" and rule.get("zones"):
         errors.append(f"{path}: a combination rule takes its zones from the rules it combines")
+    from .identity.validate import validate_identity_rule
+
+    validate_identity_rule(rule, path, errors)
 
 
 def _validate_drone_and_channels(config: dict[str, Any], errors: list[str]) -> None:
@@ -325,7 +337,7 @@ _DRONE_SAFETY = {  # key: (minimum, maximum)
     "min_launch_battery_pct": (10, 100), "rth_battery_pct": (5, 90), "land_battery_pct": (1, 80), "inspection_altitude_m": (2, 120),
     "safe_transit_altitude_m": (0, 120), "hover_s": (1, 600), "request_ttl_s": (10, 86400), "approval_window_s": (30, 7200),
     "arrival_radius_m": (0.5, 30), "link_lost_s": (0.5, 60), "max_hdop": (0.5, 10), "min_satellites": (4, 40), "inspect_every_flights": (1, 1000),
-    "lost_contact_s": (120, 7200), "safe_action_retry_s": (2, 120),
+    "lost_contact_s": (120, 7200), "safe_action_retry_s": (2, 120), "person_standoff_m": (10, 100),
 }
 _DRONE_WEATHER = {"max_wind_mps": (0, 30), "min_temperature_c": (-40, 30), "max_temperature_c": (0, 60), "conditions_ttl_s": (60, 86400)}
 

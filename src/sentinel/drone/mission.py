@@ -41,32 +41,48 @@ class Route:
     distance_m: float = 0.0
     problems: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # Where the aircraft hovers. Same as `target` unless people were reported near the target:
+    # then it is held back toward home by the person standoff (drone/standoff.py).
+    station: tuple[float, float] | None = None
+    person_standoff: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["home"], data["target"] = list(self.home), list(self.target)
+        data["station"] = list(self.station) if self.station else None
         return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Route":
+        known = {key: value for key, value in data.items() if key in cls.__dataclass_fields__}
+        for key in ("home", "target", "station"):
+            if known.get(key) is not None:
+                known[key] = tuple(known[key])
+        return cls(**known)
 
 
 def plan_route(home: tuple[float, float], target: tuple[float, float], geofence: Geofence, *, safe_transit_altitude_m: float,
-               inspection_altitude_m: float, hover_s: float, label: str = "") -> Route:
+               inspection_altitude_m: float, hover_s: float, label: str = "", station: tuple[float, float] | None = None) -> Route:
+    """`station`: the hover point when it differs from the target (person standoff); the
+    aircraft then looks at the target from there and never flies over it."""
     transit = max(safe_transit_altitude_m, inspection_altitude_m)
+    hover_at = station or target
     notes = []
     if inspection_altitude_m < safe_transit_altitude_m:
         notes.append(f"Inspection altitude raised from {inspection_altitude_m:g} m to the safe transit altitude {safe_transit_altitude_m:g} m: "
                      "the aircraft never descends below the surveyed obstacle height away from home.")
-    route = Route(home=home, target=target, target_label=label, transit_alt_m=transit, hover_s=hover_s, notes=notes)
+    route = Route(home=home, target=target, target_label=label, transit_alt_m=transit, hover_s=hover_s, notes=notes, station=hover_at)
     route.waypoints = [
         {"kind": "takeoff", "lat": home[0], "lon": home[1], "alt_m": transit, "hold_s": 0},
-        {"kind": "inspect", "lat": target[0], "lon": target[1], "alt_m": transit, "hold_s": hover_s},
+        {"kind": "inspect", "lat": hover_at[0], "lon": hover_at[1], "alt_m": transit, "hold_s": hover_s},
         {"kind": "return_home", "lat": home[0], "lon": home[1], "alt_m": transit, "hold_s": 0},
     ]
-    east, north = geo_to_offset(home, *target)
+    east, north = geo_to_offset(home, *hover_at)
     route.distance_m = round(2 * math.hypot(east, north) + 2 * transit, 1)
     problems = set(geofence.violations(home[0], home[1]))
     problems = {f"home_{p}" for p in problems}
     problems |= {f"climb_{p}" for p in geofence.violations(home[0], home[1], transit) if "altitude" in p}
-    for point in _sample(home, target, step_m=1.0):
+    for point in _sample(home, hover_at, step_m=1.0):
         problems |= {f"route_{p}" for p in geofence.violations(point[0], point[1], transit)}
     route.problems = sorted(problems)
     return route

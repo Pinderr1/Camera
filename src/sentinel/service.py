@@ -243,6 +243,7 @@ class SentinelService:
 
         manager.companion_status = companion
         manager.on_inspection_finished = lambda request: self.runtime.bus.publish("drone_inspection", request)
+        manager.people_areas = self.runtime.person_map_areas  # person standoff: people the fixed cameras see now
         from .drone import catalog
 
         device = next((d for d in config.get("devices", []) if d.get("id") == drone_id), None)

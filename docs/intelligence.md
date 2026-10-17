@@ -21,6 +21,7 @@ Rules live in `site.json` (`rules[]`) and are evaluated by `engine.TemporalEvent
 | `sequence` | One linked subject visits `zones` in order within `within_s` |
 | `multi_camera` | One linked subject is seen by `min_cameras` cameras within `window_s` |
 | `combination` | At least `min_matches` of the listed `rules` match within `within_s`: for one linked subject (`scope: "subject"`) or anywhere on the property (`scope: "site"`, explicitly noted as possibly different people) |
+| `zone_approach` | A subject outside one of `zones` moves at least `min_closing` body heights closer to it within `window_s` and is within `within` body heights of it (once per track and zone): "moved toward Shed" before anyone enters |
 
 Conditions and options on every rule:
 - **Who:** `classes` (`person`, `vehicle`, `bicycle`, `animal`, `bag`, `unknown_motion`).
@@ -30,6 +31,7 @@ Conditions and options on every rule:
 - **Observations:** `min_observations` (detections of the subject before the rule may fire; entries wait up to 15 s for them) and `min_confidence`.
 - **Alerts:** `severity`, `notify` (`auto` follows the mode's level; `always` notifies in any armed mode; `never` records without notifying), and `cooldown_s`. Matches during a cooldown are still recorded, as `info` with reason `rule_cooldown`, so they stay visible but never alert.
 - **Labels:** `name` and `description` for people.
+- **Household members (optional):** `identity_filter: "not_known"` records the event as `info` (reason `recognized_household_member`) when household-member recognition has already recognized the person; anyone not recognized, including people whose face was not seen, still counts. `identity_wait_s` lets a `zone_entry` wait briefly for recognition. No effect while recognition is off. See [identity.md](identity.md).
 
 Mode notification levels (`alerts.notify_min_severity`): disarmed none, home high, away medium, night medium, vacation low.
 

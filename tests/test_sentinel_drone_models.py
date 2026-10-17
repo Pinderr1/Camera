@@ -289,7 +289,7 @@ class ModelSimulationTests(unittest.TestCase):
         from sentinel.drone.video import DroneVideoWorker
 
         target = DRONE_FIRST["drone"]["inspection_points"][1]["map"]  # driveway
-        site_video = {"source": {"type": "simulated_aerial", "objects": [{"label": "person", "path": [{"t": 0, "map": [target[0] - 0.5, target[1]]}]}]},
+        site_video = {"source": {"type": "simulated_aerial", "objects": [{"label": "vehicle", "path": [{"t": 0, "map": [target[0] - 0.5, target[1]]}]}]},
                       "fps": 10}
         config = model_config(model_id, video=site_video)
         device = config["devices"][0]
@@ -339,7 +339,7 @@ class ModelSimulationTests(unittest.TestCase):
                     time.sleep(0.05)
                 summary = request.observations
                 self.assertEqual(summary.get("model"), model_id)
-                self.assertEqual(summary["max_visible"], {"person": 1})
+                self.assertEqual(summary["max_visible"], {"vehicle": 1})
                 self.assertTrue(request.evidence_paths)
                 self.assertEqual(summary["pose_sources"], ["gimbal_reported"], "the model's gimbal reports its angle")
                 self.assertTrue(summary["text"][-1].startswith("Sentinel reports observed activity"), "disclaimer stays last")
@@ -416,7 +416,7 @@ class LiteServiceTests(unittest.TestCase):
 
     def test_registration_comparison_inspection_and_diagnosis(self):
         target = DRONE_FIRST["drone"]["inspection_points"][0]["map"]  # back fence, near the drone's home
-        video = {"source": {"type": "simulated_aerial", "objects": [{"label": "person", "path": [{"t": 0, "map": [target[0], target[1] + 0.5]}]}]}}
+        video = {"source": {"type": "simulated_aerial", "objects": [{"label": "vehicle", "path": [{"t": 0, "map": [target[0], target[1] + 0.5]}]}]}}
         config = model_config("sentinel_lite", video=video)
         config["drone"]["safety"] |= {"inspection_altitude_m": 6, "hover_s": 3}
         config["drone"]["geofence"]["min_altitude_m"] = 3
@@ -449,7 +449,7 @@ class LiteServiceTests(unittest.TestCase):
             time.sleep(0.5)
         self.assertEqual(final["status"], "completed", final.get("note"))
         self.assertEqual(final["observations"]["model"], "sentinel_lite")
-        self.assertEqual(final["observations"]["max_visible"], {"person": 1})
+        self.assertEqual(final["observations"]["max_visible"], {"vehicle": 1})
 
         # Registering more models: options are checked, stream addresses are write-only.
         pro = client.post("/api/v1/devices", json={"category": "drone", "name": "Pro on the bench", "profile": "mavlink_drone", "drone_model": "sentinel_pro",

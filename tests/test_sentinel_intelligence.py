@@ -146,8 +146,8 @@ class RuleLanguageTests(unittest.TestCase):
     def test_templates_are_valid_once_zones_are_chosen(self):
         for template in templates():
             rule = copy.deepcopy(template["rule"]) | {"id": f"t_{template['key']}"}
-            if rule["type"] == "sequence":
-                rule["zones"] = ["side_gate", "shed"]
+            if rule["type"] in ("sequence", "zone_approach"):
+                rule["zones"] = ["side_gate", "shed"] if rule["type"] == "sequence" else ["shed"]
             if rule["type"] == "combination":
                 rule["rules"] = ["restricted_entry", "porch_dwell"]
             config = copy.deepcopy(CONFIG)

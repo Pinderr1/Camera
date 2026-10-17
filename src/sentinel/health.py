@@ -53,6 +53,7 @@ COMPONENT_LABELS = {
     "process": "Sentinel process",
     "drone_link": "Drone telemetry link",
     "guardian": "Wildlife movement analysis",
+    "identity": "Household-member recognition",
 }
 
 

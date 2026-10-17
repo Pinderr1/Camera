@@ -104,3 +104,12 @@ else:
 
     def _unprotect(data: bytes) -> bytes:
         return data
+
+
+def protect_bytes(data: bytes) -> bytes:
+    """Encrypt for this user account (DPAPI on Windows; unchanged elsewhere, where the file must be 0600)."""
+    return _protect(data)
+
+
+def unprotect_bytes(data: bytes) -> bytes:
+    return _unprotect(data)
