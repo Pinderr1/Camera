@@ -64,7 +64,8 @@ Data flows one way: frames → detections → tracks → events → incidents �
 - `MediaPipeObjectDetector` (EfficientDet-Lite0/2) runs in IMAGE mode.
 
 ### 4. Tracking (`tracker.py`)
-- Matching uses constant-velocity prediction, then greedy assignment by IoU, with a centre-distance fallback for fast movers. Tracks never match across classes.
+- Matching uses constant-velocity prediction (box centre), then greedy assignment by IoU, with a centre-distance fallback for fast movers. Tracks never match across classes.
+- A track that missed detections is extrapolated for at most `tracker.max_predict_ms` (default 500), so a person hidden behind a shelf or another person is looked for near where they vanished. Centre-distance matches also need a box height ratio of at most `tracker.max_size_ratio` (default 1.5): a hidden person's id is never handed to a neighbour of another size. Measurements are in `ROADMAP.md` (tracking fix, 2026-10-17).
 - Optional ByteTrack-style second stage (`tracker.high_score`, set automatically from `detector.low_score_threshold`): boxes below the reporting threshold may extend an existing track by IoU, but never start one. It is measured as mixed: more alert events found, fewer identity switches with YOLOX-m, slightly more false notifications. It is opt-in.
 - A track is confirmed after `min_hits` matches and expires after `max_missed_ms` without one. The tracker records the displacement from a track's first position, which the engine uses to decide whether a vehicle *arrived* or was already parked.
 
@@ -192,7 +193,7 @@ holding those locks. The snapshot is replaced before fleet rebuilds. Damaged
 
 ## Known limitations
 
-- The IoU tracker swaps identities when people cross paths closely. Cross-camera linking without appearance evidence is deliberately conservative, so the same person may appear as two site tracks.
+- The IoU tracker can still swap identities when people cross paths while both are hidden for several frames (it has no appearance evidence). Cross-camera linking without appearance evidence is deliberately conservative, so the same person may appear as two site tracks.
 - One clip writer per camera: overlapping incidents on one camera share a clip.
 - `active_hours` use the server's local time zone.
 - There is a single shared API token, with no per-user accounts or roles yet (Phase 2).

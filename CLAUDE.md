@@ -33,7 +33,7 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Environmental intelligence | Category filters (detect/alerts per category and camera). Scene conditions and unknown-motion via motion analysis. Validated on synthetic sequences only |
 | Real-footage benchmark (`sentinel.bench`) | Built: recorded and live feeds, accuracy against annotations, latency, CPU/memory, multi-camera sessions, playback viewer, reports |
 | Object detection (ONNX Runtime: YOLOX default, RT-DETRv2/D-FINE/RF-DETR options; EfficientDet fallback) | Built and benchmarked. Default YOLOX-s @960 on GPU: about 74% person recall at about 95% precision on MOT16-09. Crowded MOT16-02 is still about 30% (see ROADMAP) |
-| Tracking (IoU + constant velocity) | Built and unit-tested |
+| Tracking (IoU + constant velocity) | Built and unit-tested. Occlusion fix (2026-10-17: capped prediction, size-checked distance matches) replayed on MOT16-09/02 and the retail Lab clip: fewer switches and hand-overs between people (ROADMAP). Crossings while both people are hidden still swap |
 | Temporal event engine (zone entry, dwell, repeated presence, sequence, multi-camera) | Built and tested |
 | Cross-camera correlation (topology + timing + optional appearance; refuses ambiguous merges) | Built and tested |
 | Incidents, corroboration, alert policy (arm modes, rate limit, escalation) | Built and tested |

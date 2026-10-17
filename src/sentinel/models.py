@@ -89,7 +89,7 @@ class Track:
     missed_frames: int = 0
     confirmed: bool = False
     kind: str = ""  # most recent specific label, e.g. "dog" for an "animal" track
-    velocity: tuple[float, float] = (0.0, 0.0)  # bbox x/y change per second
+    velocity: tuple[float, float] = (0.0, 0.0)  # box centre x/y change per second
     first_anchor: tuple[float, float] = (0.0, 0.0)
     max_displacement: float = 0.0
     appearance: list[float] | None = None

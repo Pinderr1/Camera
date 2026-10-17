@@ -21,15 +21,26 @@ def _center(box: BBox) -> tuple[float, float]:
     return (box[0] + box[2] / 2, box[1] + box[3] / 2)
 
 
+def _similar_size(a: BBox, b: BBox, max_ratio: float) -> bool:
+    return max(a[3], b[3]) <= max_ratio * max(min(a[3], b[3]), 1e-6)
+
+
 @dataclass
 class TrackerConfig:
     iou_threshold: float = 0.25
     # Fallback match for fast movers whose boxes stop overlapping between
     # detector runs: centre distance in units of the track's box diagonal.
     max_center_distance: float = 1.2
+    # Centre-distance matches also need a similar box height (ratio at most this),
+    # so a track whose person is hidden does not jump to a neighbour of another size.
+    max_size_ratio: float = 1.5
     min_hits: int = 3
     max_missed_ms: int = 2500
     smoothing: float = 0.6
+    # A missed track is extrapolated for at most this long. People hidden by a shelf
+    # or another person usually stop or turn; projecting the last velocity for
+    # seconds moved the prediction far from where they reappeared.
+    max_predict_ms: int = 500
     # ByteTrack-style second stage: detections below this score may only extend
     # an existing track (IoU match), never start one. 0 disables the split.
     high_score: float = 0.0
@@ -111,7 +122,7 @@ class IoUTracker:
                 if overlap >= self.config.iou_threshold:
                     pairs.append((1.0 + overlap, track_id, index))
                     continue
-                if not allow_distance:
+                if not allow_distance or not _similar_size(box, det.bbox, self.config.max_size_ratio):
                     continue
                 cx, cy = _center(box)
                 dx, dy = _center(det.bbox)
@@ -133,16 +144,19 @@ class IoUTracker:
         return ended
 
     def _predict(self, track: Track, timestamp_ms: int) -> BBox:
-        dt = max(0.0, (timestamp_ms - track.last_seen_ms) / 1000.0)
+        dt = min(max(0, timestamp_ms - track.last_seen_ms), self.config.max_predict_ms) / 1000.0
         x, y, w, h = track.bbox
         return (x + track.velocity[0] * dt, y + track.velocity[1] * dt, w, h)
 
     def _apply(self, track: Track, det: Detection, timestamp_ms: int) -> None:
         dt = (timestamp_ms - track.last_seen_ms) / 1000.0
         if dt > 0:
+            # Velocity of the box centre: with the prediction cap it switched
+            # identities less often than the top-left corner (MOT16-09).
             alpha = self.config.smoothing
-            vx = (det.bbox[0] - track.bbox[0]) / dt
-            vy = (det.bbox[1] - track.bbox[1]) / dt
+            (cx, cy), (tx, ty) = _center(det.bbox), _center(track.bbox)
+            vx = (cx - tx) / dt
+            vy = (cy - ty) / dt
             track.velocity = (
                 alpha * track.velocity[0] + (1 - alpha) * vx,
                 alpha * track.velocity[1] + (1 - alpha) * vy,

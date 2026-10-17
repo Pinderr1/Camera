@@ -52,6 +52,44 @@ An exception to the freeze that the owner asked for. It is evaluation tooling on
 - **Training workflow** (`src/sentinel/training/`, `docs/training.md`): error and correction collection, licence- and split-gated COCO export, opt-in personalization with a consent record, fine-tuning plan (no training), model registry with SHA-256, test-split promotion gate and rollback.
 - **Next:** label the test clips; collect at least 200 reviewed boxes per class before any fine-tuning proposal; evaluate D-FINE and RT-DETRv2 as candidates through `compare`.
 
+## Tracking fix: occlusion and wrong identity hand-overs (2026-10-17, owner's request)
+
+The Test Lab run on `retail_store_cctv` (111 s at 5 fps) showed new track ids where people reappeared, and boxes that seemed to overlap neighbours. What was checked first:
+- **Detection boxes are not the cause.** YOLOX decode and NMS are correct. Every flagged "oversized" box looked at (6 frames) enclosed one real person; the overlap is real occlusion in a high-angle, crowded shop. The Lab "Tracks" count is ids ever seen, not identity switches.
+- **Tracking was.** Two faults, both verified by replaying the Lab log through the tracker:
+  - A hidden track kept moving at its last velocity for up to 2.5 s (up to 0.8 frame heights). The person reappeared on their old box and got a new id.
+  - The centre-distance fallback (1.2 box diagonals) handed a hidden person's id to someone else. 22 such matches had a box height change above 1.5×; 7 of the 8 looked at were a different person.
+
+Change (`tracker.py`):
+- Velocity is measured on the box centre.
+- A missed track is extrapolated for at most `tracker.max_predict_ms` (500).
+- Centre-distance matches need a box height ratio of at most `tracker.max_size_ratio` (1.5).
+
+Replayed on cached YOLOX-s 960 detections (same input before and after; short clips, **not a full bench run**). Ground truth is MOT16 (CC BY-NC-SA 3.0, evaluation only). "Transfers" counts one track id moving from one labelled person to another.
+
+| Clip | IDSW | Transfers | Tracks per person | Recall / precision |
+| --- | --- | --- | --- | --- |
+| MOT16-09, 17.5 s @ 10 fps | 43 → 39 | 58 → 54 | 2.46 → 2.25 | 0.725 / 0.947 → 0.722 / 0.952 |
+| MOT16-09, 17.5 s @ 5 fps | 50 → 27 | 65 → 47 | 2.62 → 2.08 | 0.709 / 0.954 → 0.702 / 0.960 |
+| MOT16-02, 20 s @ 5 fps | 49 → 27 | 59 → 40 | 2.17 → 1.59 | 0.303 / 0.888 → 0.301 / 0.894 |
+
+Retail clip (unlabelled, checked by eye):
+- Real breaks where a person reappears in place fell from 3 to 1.
+- Large-size distance hand-overs fell from 22 to 0.
+- Person ids rose from 39 to 45, because people the old tracker had merged into someone else's id now get their own.
+
+Tried and rejected (worse on at least one clip):
+- matching a missed track on its last seen box;
+- matching cascades (recent or confirmed tracks first);
+- optimal (Hungarian) assignment.
+
+The existing low-score stage (`detector.low_score_threshold` 0.25) still adds switches in crowds (MOT16-02: 49 → 69), so it stays opt-in.
+
+**Remaining:**
+- Crossing people are still swapped when both are hidden for several frames. Fixing that needs appearance evidence (an appearance tie-break or a re-identification model); motion alone did not.
+- Long occlusions (more than 2.5 s) end the track.
+- Measure with `sentinel.bench` on all labelled clips before quoting figures.
+
 ## Phase 0: Pivot foundation (done, October 2026)
 - [x] Audit the CameraAI codebase. Archive the senior-safety docs and keep that code frozen.
 - [x] Rewrite `CLAUDE.md`, `AGENTS.md`, and `README.md`. Add architecture, API, and drone docs.

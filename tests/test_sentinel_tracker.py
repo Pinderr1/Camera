@@ -1,5 +1,7 @@
+import copy
 import unittest
 
+from sentinel.config import ConfigValidationError, load_config, validate_config
 from sentinel.detectors import non_max_suppression
 from sentinel.models import Detection
 from sentinel.tracker import IoUTracker, TrackerConfig, iou
@@ -28,6 +30,45 @@ class TrackerTests(unittest.TestCase):
         first, _ = tracker.update([det(0.10, 0.5)], 0)
         second, _ = tracker.update([det(0.21, 0.5)], 200)  # no box overlap
         self.assertEqual(first[0].track_id, second[0].track_id)
+
+    def test_person_hidden_after_moving_keeps_id_where_they_reappear(self):
+        # Retail Lab regression: walking, hidden for 1.6 s, reappearing close to
+        # where they vanished. Projecting the old velocity for the whole gap put the
+        # prediction 0.4 frame widths away and a new id was started.
+        tracker = IoUTracker("cam", TrackerConfig(min_hits=1))
+        for step in range(4):
+            active, _ = tracker.update([det(0.15 + step * 0.05, 0.5)], step * 200)
+        track_id = active[0].track_id
+        active, _ = tracker.update([det(0.32, 0.5)], 600 + 1600)
+        self.assertEqual([track.track_id for track in active], [track_id])
+
+    def test_hidden_person_never_jumps_to_a_neighbour_of_another_size(self):
+        # Centre-distance matching once handed a hidden person's id to someone
+        # further back (much smaller box). A new id is the honest answer.
+        tracker = IoUTracker("cam", TrackerConfig(min_hits=1))
+        first, _ = tracker.update([det(0.30, 0.40, w=0.12, h=0.40)], 0)
+        tracker.update([], 200)
+        active, _ = tracker.update([det(0.42, 0.45, w=0.05, h=0.15)], 400)
+        self.assertEqual(len(active), 1)
+        self.assertNotEqual(active[0].track_id, first[0].track_id)
+        self.assertIn(first[0].track_id, tracker.tracks, "the hidden person's track waits for them")
+
+    def test_partly_hidden_person_still_matches_by_overlap(self):
+        tracker = IoUTracker("cam", TrackerConfig(min_hits=1))
+        first, _ = tracker.update([det(0.30, 0.30, w=0.10, h=0.50)], 0)
+        active, _ = tracker.update([det(0.30, 0.30, w=0.10, h=0.22)], 200)  # legs behind a counter
+        self.assertEqual([track.track_id for track in active], [first[0].track_id])
+
+    def test_tracker_config_is_validated(self):
+        config = load_config("config/sentinel.example.json", resolve_secrets=False)
+        config.pop("_config_dir", None)
+        config["tracker"] |= {"max_predict_ms": 300, "max_size_ratio": 1.4}
+        validate_config(copy.deepcopy(config))
+        for key, value in (("max_predict_ms", -1), ("max_size_ratio", 0.5), ("max_center_distance", "far")):
+            broken = copy.deepcopy(config)
+            broken["tracker"][key] = value
+            with self.assertRaises(ConfigValidationError):
+                validate_config(broken)
 
     def test_labels_are_canonicalised_and_never_cross_matched(self):
         tracker = IoUTracker("cam", TrackerConfig(min_hits=1))

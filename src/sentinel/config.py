@@ -472,6 +472,13 @@ def _validate_reliability(config: dict[str, Any], raw_cameras: list, errors: lis
         if detector.get("precision", "fp32") not in {"fp32", "fp16"}:
             errors.append(f"{scope}.precision must be fp32 or fp16")
 
+    tracker = config.get("tracker") or {}
+    for key in ("max_center_distance", "max_missed_ms", "max_predict_ms"):
+        if key in tracker and not (_is_number(tracker[key]) and tracker[key] >= 0):
+            errors.append(f"tracker.{key} must be a number >= 0")
+    if "max_size_ratio" in tracker and not (_is_number(tracker["max_size_ratio"]) and tracker["max_size_ratio"] >= 1):
+        errors.append("tracker.max_size_ratio must be a number >= 1")
+
     from .simulation import FAULT_TYPES
 
     for index, camera in enumerate(raw_cameras):
