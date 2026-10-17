@@ -156,11 +156,32 @@
               <label>Rate <select id="lab-fps"><option value="2">2 fps</option><option value="5" selected>5 fps (camera default)</option><option value="10">10 fps</option></select></label>
               <label>Arm mode <select id="lab-arm"><option value="away" selected>Away</option><option value="night">Night</option><option value="home">Home</option><option value="disarmed">Disarmed</option></select></label>
               <label>Length <select id="lab-max"><option value="30">30 s</option><option value="60">1 min</option><option value="120" selected>2 min</option><option value="600">10 min</option></select></label>
+              <label title="Time of day the clip is treated as starting at; rule hours (after hours, night) are judged on it">Clip starts at <input type="time" id="lab-clock"></label>
               <label class="check"><input type="checkbox" id="lab-species" checked> Species</label>
               <button type="button" class="primary" id="lab-run" disabled>Analyse and play</button>
             </div>
+            <div class="lab-scene-row" id="lab-scene-row" hidden>
+              <label>Scene <select id="lab-preset"></select></label>
+              <span class="small muted" id="lab-scene-source"></span>
+              <button type="button" id="lab-scene-edit">Edit zones and rules</button>
+            </div>
             <div class="small muted" id="lab-runs-label">Earlier runs of this clip</div>
             <div class="lab-runs" id="lab-runs"></div>
+          </div>
+          <div class="card" id="lab-scene-card" hidden>
+            <h3>Zones and rules for this video</h3>
+            <p class="muted small">Saved for this video in the Lab only. Live cameras, their zones and their rules are never changed. Public areas, sidewalks and roads are ordinary activity: people there are logged, not alerted, unless a rule says otherwise (for example after hours).</p>
+            <div class="lab-scene-grid">
+              <div class="lab-view"><canvas id="lab-zone-canvas"></canvas></div>
+              <div>
+                <div class="button-row tight"><button type="button" id="lab-zone-add">Draw a zone</button><select id="lab-zone-add-type" aria-label="Type of the new zone"></select></div>
+                <p class="muted small">Drag on the picture to draw. Click a zone to select it, drag it to move, drag its corners to resize.</p>
+                <div id="lab-zone-list"></div>
+                <h4>Rules: <span id="lab-preset-name"></span></h4>
+                <div id="lab-rule-list"></div>
+                <div class="button-row"><button type="button" class="primary" id="lab-scene-save">Save for this video</button><button type="button" id="lab-scene-reset">Back to default</button><button type="button" id="lab-scene-close">Close</button></div>
+              </div>
+            </div>
           </div>
           <div class="card lab-player-card" id="lab-player-card" hidden>
             <div class="lab-progress" id="lab-progress" hidden><div></div><span></span></div>

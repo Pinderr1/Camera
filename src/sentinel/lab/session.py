@@ -25,6 +25,7 @@ import copy
 import json
 import logging
 import queue
+import re
 import shutil
 import threading
 import time
@@ -34,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import scenes
 from .catalog import BENCH_SITE, ROOT, LabClip, all_clips, find_clip
 from .profiles import detector_config, list_profiles
 
@@ -44,23 +46,9 @@ MAX_FPS = 10.0
 MAX_SECONDS = 600.0
 FRAME_WIDTH = 960
 SPECIES_WAIT_S = 8.0
+CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 CORRECTION_KINDS = {"false_positive", "missed", "wrong_label", "correct", "event_correct", "event_false_alarm", "note"}
 TARGET_CLASSES = {"person": {"person"}, "vehicle": {"vehicle"}, "animal": {"animal"}, "none": set()}
-
-DEFAULT_ZONES = [
-    {"id": "lab_property", "name": "Property", "type": "yard", "polygon": [[0, 0], [1, 0], [1, 0.7], [0, 0.7]]},
-    {"id": "lab_near", "name": "Near the camera", "type": "entrance", "polygon": [[0, 0.7], [1, 0.7], [1, 1], [0, 1]]},
-]
-DEFAULT_RULES = [
-    {"id": "lab_person_near", "name": "Person near the camera", "type": "zone_entry", "zone_types": ["entrance"], "classes": ["person"], "severity": "medium"},
-    {"id": "lab_approach", "name": "Person approaching the camera", "type": "zone_approach", "zones": ["lab_near"], "classes": ["person"],
-     "severity": "medium", "within": 2.0, "min_closing": 1.0, "window_s": 4, "min_observations": 3},
-    {"id": "lab_linger", "name": "Person lingering", "type": "dwell", "zone_types": ["yard", "entrance"], "classes": ["person"],
-     "min_dwell_s": 20, "severity": "medium", "max_roam": 3},
-    {"id": "lab_vehicle_stop", "name": "Vehicle stopped", "type": "dwell", "zone_types": ["yard", "entrance"], "classes": ["vehicle"],
-     "min_dwell_s": 30, "require_arrival": True, "severity": "low"},
-]
-
 
 def _round_box(box) -> list[float]:
     return [round(float(v), 4) for v in box]
@@ -77,14 +65,28 @@ def _pct(values: list[float], q: int) -> float | None:
     return round(ordered[min(len(ordered) - 1, int(q / 100 * len(ordered)))], 1)
 
 
-def lab_site_config(clip: LabClip, detector: dict[str, Any], fps: float, species: bool, storage: Path) -> dict[str, Any]:
-    """A one-camera site for the clip: bench zones and rules for the bench
-    footage, otherwise two generic zones (property / near the camera) and the
-    rule types a home would use. Guardian is on; recognition stays off."""
-    camera: dict[str, Any] = {"id": CAMERA, "name": clip.title, "fps": fps, "source": {"type": "file", "path": "unused"}}
-    rules = copy.deepcopy(DEFAULT_RULES)
-    protected = ["lab_near"]
+def resolve_scene(storage_dir: Path, clip: LabClip) -> dict[str, Any] | None:
+    """The clip's saved scene, else its preset's default; None keeps the bench
+    zones and rules for MOT16/CAVIAR clips nobody has drawn zones for."""
+    saved = scenes.load(storage_dir, clip.id)
+    if saved is not None:
+        return saved | {"source": "saved"}
     if clip.bench_camera:
+        return None
+    return scenes.preset_scene(scenes.default_preset(clip)) | {"source": "preset"}
+
+
+def lab_site_config(clip: LabClip, detector: dict[str, Any], fps: float, species: bool, storage: Path,
+                    scene: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A one-camera site for the clip, built only from the Lab scene (or the bench
+    zones and rules for bench footage without one); the site config and live
+    cameras are never read or changed. Guardian is on; recognition stays off."""
+    camera: dict[str, Any] = {"id": CAMERA, "name": clip.title, "fps": fps, "source": {"type": "file", "path": "unused"}}
+    rules: list[dict[str, Any]] = []
+    protected: list[str] = []
+    if scene is not None:
+        camera["zones"], rules, protected = scenes.site_parts(scene)
+    elif clip.bench_camera:
         from ..config import load_config
 
         bench = load_config(str(ROOT / BENCH_SITE), resolve_secrets=False)
@@ -94,7 +96,8 @@ def lab_site_config(clip: LabClip, detector: dict[str, Any], fps: float, species
             camera["privacy_masks"] = copy.deepcopy(source.get("privacy_masks", []))
             rules = copy.deepcopy(bench.get("rules", []))
             protected = [zone["id"] for zone in camera["zones"] if zone.get("type") in {"entrance", "restricted"}]
-    camera.setdefault("zones", copy.deepcopy(DEFAULT_ZONES))
+    if not camera.get("zones"):
+        camera["zones"], rules, protected = scenes.site_parts(scenes.preset_scene(scenes.default_preset(clip)))
     species_dir = ROOT / "models/speciesnet/v4.0.3a"
     return {
         "site": {"id": "test_lab", "name": "Sentinel Test Lab"},
@@ -181,7 +184,7 @@ class LabManager:
         clips = [clip.public() for clip in all_clips(self.storage_dir)]
         return {"clips": clips, "profiles": list_profiles(self.extra_profiles()),
                 "drop_folder": str((self.storage_dir / "lab" / "videos").resolve()),
-                "limits": {"max_fps": MAX_FPS, "max_seconds": MAX_SECONDS}}
+                "limits": {"max_fps": MAX_FPS, "max_seconds": MAX_SECONDS}, "scenes": scenes.catalog()}
 
     # ---- runs ----------------------------------------------------------------
 
@@ -201,7 +204,7 @@ class LabManager:
         return run
 
     def start(self, clip_id: str, profile: str = "current", fps: float = 5.0, arm_mode: str = "away",
-              species: bool = True, max_seconds: float = 120.0, actor: str = "lab") -> dict[str, Any]:
+              species: bool = True, max_seconds: float = 120.0, actor: str = "lab", start_time: str | None = None) -> dict[str, Any]:
         clip = find_clip(self.storage_dir, clip_id)
         if clip is None:
             raise KeyError(clip_id)
@@ -210,6 +213,9 @@ class LabManager:
         detector = detector_config(profile, self.extra_profiles())
         if arm_mode not in {"home", "away", "night", "vacation", "disarmed"}:
             raise ValueError("arm_mode must be home, away, night, vacation or disarmed")
+        if start_time and not CLOCK.match(start_time):
+            raise ValueError("start_time must be HH:MM")
+        start_time = start_time or ("02:00" if clip.light == "night" else "14:00")
         fps = max(1.0, min(MAX_FPS, float(fps)))
         max_seconds = max(2.0, min(MAX_SECONDS, float(max_seconds)))
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
@@ -218,7 +224,9 @@ class LabManager:
         meta = {
             "id": run_id, "created": datetime.now().isoformat(timespec="seconds"), "actor": actor, "state": "queued",
             "clip": clip.public(), "profile": profile, "detector": detector,
-            "options": {"fps": fps, "arm_mode": arm_mode, "species": species, "max_seconds": max_seconds, "motion_gate": False},
+            "options": {"fps": fps, "arm_mode": arm_mode, "species": species, "max_seconds": max_seconds, "motion_gate": False,
+                        "start_time": start_time},
+            "scene": resolve_scene(self.storage_dir, clip),  # copied into the run, so later edits never change it
             "progress": {"frames": 0, "expected": None, "video_s": 0.0, "duration_s": None},
             "events": [], "alerts": [], "incidents": [], "summary": {}, "error": "",
         }
@@ -232,6 +240,59 @@ class LabManager:
                 self._thread = threading.Thread(target=self._work, daemon=True, name="test-lab")
                 self._thread.start()
         return run.view()
+
+    # ---- scenes (zones and rules per video; never the site config) ----------
+
+    def scene(self, clip_id: str) -> dict[str, Any]:
+        clip = find_clip(self.storage_dir, clip_id)
+        if clip is None:
+            raise KeyError(clip_id)
+        scene = resolve_scene(self.storage_dir, clip)
+        if scene is None:  # bench footage keeps config/bench/site.json until zones are drawn for it
+            scene = scenes.preset_scene(scenes.default_preset(clip)) | {"source": "bench"}
+        return scene | {"clip_id": clip.id, "rule_list": _rule_views(scenes.rules(scene), scene["zones"])}
+
+    def save_scene(self, clip_id: str, body: dict[str, Any], actor: str) -> dict[str, Any]:
+        if find_clip(self.storage_dir, clip_id) is None:
+            raise KeyError(clip_id)
+        scenes.save(self.storage_dir, clip_id, body, actor)
+        return self.scene(clip_id)
+
+    def reset_scene(self, clip_id: str) -> dict[str, Any]:
+        if find_clip(self.storage_dir, clip_id) is None:
+            raise KeyError(clip_id)
+        scenes.reset(self.storage_dir, clip_id)
+        return self.scene(clip_id)
+
+    def still(self, clip_id: str, t: float = 1.0) -> bytes:
+        """One JPEG frame of the clip for drawing zones before any run."""
+        import cv2
+
+        clip = find_clip(self.storage_dir, clip_id)
+        if clip is None:
+            raise KeyError(clip_id)
+        capture = cv2.VideoCapture(clip.path)
+        try:
+            if not capture.isOpened():
+                raise FileNotFoundError(f"{clip.id}: video not available")
+            capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, float(t)) * 1000)
+            ok, image = capture.read()
+            if not ok:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, image = capture.read()
+            if not ok:
+                raise FileNotFoundError(f"{clip.id}: no frame could be decoded")
+        finally:
+            capture.release()
+        if clip.bench_camera:  # the same privacy masks as the runs of this clip
+            from ..vision import apply_privacy_masks
+
+            masks = lab_site_config(clip, {}, 5.0, False, self.storage_dir)["cameras"][0].get("privacy_masks", [])
+            image = apply_privacy_masks(image, masks)
+        scale = min(1.0, FRAME_WIDTH / max(1, image.shape[1]))
+        if scale < 1:
+            image = cv2.resize(image, (int(image.shape[1] * scale), int(image.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+        return cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes()
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         run = self.get(run_id)
@@ -324,17 +385,25 @@ def execute(run: LabRun, storage_dir: Path) -> None:
         raise FileNotFoundError(meta["clip"]["id"])
     options = meta["options"]
     fps = float(options["fps"])
-    config = lab_site_config(clip, meta["detector"], fps, options["species"], run.dir / "store")
+    scene = meta.get("scene")
+    config = lab_site_config(clip, meta["detector"], fps, options["species"], run.dir / "store", scene)
     validate_config(config)
     camera = config["cameras"][0]
-    meta["zones"] = [{key: zone.get(key) for key in ("id", "name", "type", "polygon")} for zone in camera.get("zones", [])]
-    meta["rules"] = [{"id": rule["id"], "name": rule.get("name", rule["id"]), "type": rule["type"]} for rule in config["rules"]]
+    if scene is not None:  # Lab zone types (public areas are `general` zones in the engine)
+        meta["zones"] = copy.deepcopy(scene["zones"])
+        lab_rules = scenes.rules(scene)
+    else:
+        meta["zones"] = [{key: zone.get(key) for key in ("id", "name", "type", "polygon")} for zone in camera.get("zones", [])]
+        lab_rules = config["rules"]
+    meta["rules"] = _rule_views(lab_rules, meta["zones"])
+    context = {"zones": {zone["id"]: zone for zone in meta["zones"]}, "rules": {rule["id"]: rule for rule in meta["rules"]}}
     meta["state"] = "running"
     meta["started"] = datetime.now().isoformat(timespec="seconds")
     run.save()
 
     runtime = SentinelRuntime(config, storage_dir=run.dir / "store", notifiers=[])
     runtime.update_settings({"arm_mode": options["arm_mode"]}, "test_lab")
+    context["threshold"] = runtime.policy.config.notify_min_severity.get(options["arm_mode"], "none")
     pending_events: list[dict[str, Any]] = []
     alerts: list[dict[str, Any]] = []
     incidents: dict[str, dict[str, Any]] = {}
@@ -378,7 +447,8 @@ def execute(run: LabRun, storage_dir: Path) -> None:
     meta["video"] = {"fps": round(native_fps, 2), "frames": total, "width": width, "height": height, "duration_s": round(duration, 2) if duration else None}
     meta["progress"] = {"frames": 0, "expected": int(limit_s * native_fps / step) + 1, "video_s": 0.0, "duration_s": round(limit_s, 2)}
     targets = set().union(*(TARGET_CLASSES.get(s, {s}) for s in clip.subjects)) if clip.subjects else set()
-    start = datetime.fromisoformat("2026-10-15T02:00:00" if clip.light == "night" else "2026-10-15T14:00:00")
+    clock = options.get("start_time") or ("02:00" if clip.light == "night" else "14:00")
+    start = datetime.fromisoformat(f"2026-10-15T{clock}:00")  # rule hours are judged on this virtual clock
     start_ms = int(start.timestamp() * 1000)
     scale = min(1.0, FRAME_WIDTH / max(1, width))
 
@@ -430,7 +500,7 @@ def execute(run: LabRun, storage_dir: Path) -> None:
                 event["frame"] = n
                 event["t"] = round((event["timestamp_ms"] - start_ms) / 1000, 2)
                 record.setdefault("events", []).append(event.get("event_id") or event.get("id"))
-                meta["events"].append(_event_view(event))
+                meta["events"].append(_event_view(event, context))
             pending_events.clear()
             counts.update(d["cls"] for d in record["dets"] if not d.get("weak"))
             track_ids.update(tr["id"] for tr in record["tracks"])
@@ -446,6 +516,7 @@ def execute(run: LabRun, storage_dir: Path) -> None:
             meta["progress"].update({"frames": n, "video_s": round(t, 2)})
             meta["alerts"] = [_alert_view(a, start_ms) for a in alerts]
             if n % 10 == 0:
+                _alert_decisions(meta, context)
                 meta["summary"] = _summary(run, counts, track_ids, guardian_seen, detect_ms, frame_ms, incidents)
                 run.save()
         end_ms = start_ms + int(index / native_fps * 1000)
@@ -453,7 +524,7 @@ def execute(run: LabRun, storage_dir: Path) -> None:
         for event in pending_events:
             event["frame"] = max(0, n - 1)
             event["t"] = round((event["timestamp_ms"] - start_ms) / 1000, 2)
-            meta["events"].append(_event_view(event))
+            meta["events"].append(_event_view(event, context))
         meta["species_worker"] = runtime.species.status() if runtime.species else {"enabled": False}
         meta["detector_runtime"] = detector.describe() if hasattr(detector, "describe") else {}
     finally:
@@ -464,6 +535,7 @@ def execute(run: LabRun, storage_dir: Path) -> None:
         runtime.close()
     meta["alerts"] = [_alert_view(a, start_ms) for a in alerts]
     meta["incidents"] = [_incident_view(i) for i in incidents.values()]
+    _alert_decisions(meta, context)
     meta["summary"] = _summary(run, counts, track_ids, guardian_seen, detect_ms, frame_ms, incidents)
     meta["state"] = "cancelled" if run.cancel.is_set() else "done"
     meta["finished"] = datetime.now().isoformat(timespec="seconds")
@@ -539,15 +611,96 @@ def _score(record: dict[str, Any], gt, clip: LabClip, t: float, index: int, targ
             record["presence"] = {"expected": False, "verdict": "false_positive" if (found or other) else "clear"}
 
 
-def _event_view(event: dict[str, Any]) -> dict[str, Any]:
+def _event_view(event: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
     details = event.get("details") or {}
-    return {
+    view = {
         "id": event.get("event_id") or event.get("id"), "type": event.get("event_type"), "severity": event.get("severity"),
         "summary": event.get("summary"), "zone": event.get("zone_id", ""), "rule": event.get("rule_id") or details.get("rule_id", ""),
         "frame": event.get("frame"), "t": event.get("t"), "reasons": event.get("reason_codes", [])[:8],
         "confidence": event.get("confidence"), "guardian": bool(details.get("guardian")), "level": details.get("level_name") or details.get("level"),
         "incident": event.get("incident_id", ""), "health": event.get("event_type", "").startswith("camera_"),
     }
+    if context is not None and not view["health"]:
+        view["explain"] = _explain(event, view, context)
+    return view
+
+
+def _explain(event: dict[str, Any], view: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Why the event exists, from what was observed: zone, rule, how long, how sure."""
+    details = event.get("details") or {}
+    zone = context["zones"].get(view["zone"]) or {}
+    rule = context["rules"].get(view["rule"]) or {}
+    duration = details.get("dwell_s")
+    if duration is None and event.get("started_ms") is not None:
+        duration = round(max(0, event["timestamp_ms"] - event["started_ms"]) / 1000, 1)
+    out: dict[str, Any] = {
+        "zone": zone.get("name", view["zone"]), "zone_type": zone.get("type", ""),
+        "ordinary_area": zone.get("type") in scenes.ORDINARY_TYPES,
+        "rule": rule.get("name", ""), "rule_what": rule.get("what", ""), "rule_when": rule.get("when", ""),
+        "duration_s": duration, "confidence": view["confidence"],
+        "observations": (details.get("observation") or {}).get("track_hits"),
+    }
+    first_seen = (details.get("subject") or {}).get("first_seen_ms")
+    if first_seen is not None:
+        out["tracked_s"] = round(max(0, event["timestamp_ms"] - first_seen) / 1000, 1)
+    if details.get("threshold_s") is not None:
+        out["threshold_s"] = details["threshold_s"]
+    if view["type"] == "activity":
+        out["basis"] = "First sighting of this subject in a zone: ordinary activity, logged as info."
+    elif view["guardian"]:
+        out["basis"] = f"Wilderness Guardian level {view['level'] or ''} from the animal's movement relative to protected zones."
+    return out
+
+
+def _alert_decisions(meta: dict[str, Any], context: dict[str, Any]) -> None:
+    """For each event: did the alert policy push it, and if not, why. The policy
+    itself decided; this only reads its output (alerts per incident) back."""
+    from ..models import SEVERITY_RANK
+
+    threshold = context.get("threshold", "none")
+    mode = meta["options"]["arm_mode"]
+    alerts_by_incident: dict[str, list[float]] = {}
+    for alert in meta["alerts"]:
+        alerts_by_incident.setdefault(alert.get("incident") or "", []).append(alert["t"])
+    for event in meta["events"]:
+        if event.get("health") or "explain" not in event:
+            continue
+        reasons = event.get("reasons") or []
+        t = event.get("t") or 0
+        times = alerts_by_incident.get(event["incident"], []) if event.get("incident") else []
+        if event["severity"] == "info":
+            if "rule_cooldown" in reasons:
+                text = "Logged as info: the rule fired again within its cooldown."
+            elif "category_alerts_off" in reasons:
+                text = "Logged as info: alerts are off for this category."
+            else:
+                text = "Logged as info: ordinary activity is recorded, never pushed."
+            decision = "logged"
+        elif any(abs(at - t) <= 0.5 for at in times):
+            decision, text = "alerted", "A simulated alert was raised for this incident."
+        elif any(at < t for at in times):
+            decision, text = "logged", "Logged: this incident had already alerted (one alert per incident, again only if its severity rises)."
+        elif threshold == "none":
+            decision, text = "logged", f"Logged: nothing is pushed in {mode} mode."
+        elif SEVERITY_RANK.get(event["severity"], 0) < SEVERITY_RANK.get(threshold, 0):
+            decision, text = "logged", f"Logged: {event['severity']} is below the {mode} mode alert level ({threshold})."
+        else:
+            decision, text = "logged", "Logged: held back by the alert rate limit."
+        event["explain"]["alert"] = decision
+        event["explain"]["alert_reason"] = text
+
+
+def _rule_views(rules: list[dict[str, Any]], zones: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from ..rules import describe_rule
+
+    names = {zone["id"]: zone.get("name", zone["id"]) for zone in zones}
+    views = []
+    for rule in rules:
+        described = describe_rule(rule, names) if rule.get("severity") else {"what": "", "when": ""}
+        views.append({key: rule[key] for key in ("id", "type", "severity", "zone_types", "min_dwell_s", "active_hours", "classes") if key in rule}
+                     | {"name": rule.get("name", rule["id"]), "enabled": rule.get("enabled", True),
+                        "what": described["what"], "when": described["when"]})
+    return views
 
 
 def _alert_view(alert: dict[str, Any], start_ms: int) -> dict[str, Any]:

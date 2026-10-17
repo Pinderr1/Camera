@@ -26,7 +26,22 @@ In **This frame**: *Correct*, *Wrong* (false positive) or *Wrong label* on each 
 - Alerts are simulated: the alert policy decides exactly as live, and the notification is recorded, never sent.
 - Household-member recognition is never on in the lab.
 
-Zones and rules: MOT16/CAVIAR clips use their zones and rules from `config/bench/site.json`. Every other clip gets two zones (*Property*, the top 70 % of the picture, and *Near the camera*, the bottom 30 %, which is also Guardian's protected zone) and four rules: person enters near the camera, person moving toward it (`zone_approach`), person lingering 20 s, vehicle stopped 30 s.
+## Scenes: zones and rules per video
+
+Each clip is analysed as one camera of a **scene**: zones drawn on the footage plus the rules of a preset. Choose the preset next to **Scene** and press **Edit zones and rules**: drag on the picture to draw a zone, click it to select, drag it to move, drag its corners to resize, and give it a name and type (entrance, public area, restricted area, driveway/parking, yard, sidewalk, road, fence line, ignore). Rules can be switched off, given another severity, another linger time or other hours. **Save for this video** stores the scene in `<storage>/lab/scenes/<clip>.json`; it is copied into each run, so later edits never change an earlier run. Scenes build only the Lab's own one-camera site: the site config, live cameras and their rules are never read or changed. Code: `src/sentinel/lab/scenes.py`.
+
+| Preset | Default zones | Rules (severity) |
+| --- | --- | --- |
+| Residential | Yard (top 65 %), Entrance (bottom 35 %) | Person at the entrance in daytime 06:00-22:00 (low), at night 22:00-06:00 (medium); lingering at the entrance or fence line 60 s (medium); restricted area entered (high); vehicle stopped in the driveway 60 s (low) |
+| Retail | Shop floor (public area, whole picture) | Staff-only (restricted) area entered (high); anyone in the shop after hours 22:00-07:00 (high); lingering at the entrance 3 min (medium) |
+| Parking lot | Road (top 15 %), Parking area | Restricted area entered (high); person in the parking area 23:00-05:00 (medium); person among parked vehicles 5 min (medium); vehicle stopped 23:00-05:00 (medium) |
+| Wildlife | Yard, Near the house (Guardian's protected zone) | Person near the house 22:00-06:00 (medium); restricted area entered (high); animals are judged by Wilderness Guardian |
+
+Default preset: retail footage gets Retail, parking footage Parking lot, wildlife footage Wildlife, everything else Residential. MOT16/CAVIAR clips keep their zones and rules from `config/bench/site.json` until you save a scene for them. Entrance and restricted zones are Guardian's protected zones.
+
+**Ordinary activity.** Public areas (shop floor, lobby), sidewalks and roads are where people are expected. Detections, tracks and the info event for a first sighting are still logged; no preset rule alerts there except after hours. Severities follow the alert policy: info is never pushed, low only in Vacation, medium in Away/Night, high in every armed mode. **Clip starts at** sets the clip's virtual clock (default 14:00, 02:00 for night clips), so after-hours and night rules can be tested on daytime footage.
+
+**Why each event.** Every event shows the rule (with its plain-language condition), the zone and its type, how long the subject was in the zone and tracked, detection confidence and number of detections, and whether the alert policy raised a simulated alert or only logged it, and why (info, below the mode's alert level, already alerted for this incident, rate limit). Simulated alerts list the rule and zone that caused them. Rule names and event text describe what was observed, never intent.
 
 ## Accuracy shown in the lab
 

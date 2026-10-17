@@ -219,10 +219,14 @@ Recorded clips through Sentinel's real AI (docs/test-lab.md). All endpoints need
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/v1/lab/catalog` | Clips (licence, split, labels, available), detector profiles (built-in + registered candidates), drop folder, limits |
+| GET | `/api/v1/lab/catalog` | Clips (licence, split, labels, available), detector profiles (built-in + registered candidates), drop folder, limits, `scenes` (Lab zone types with `ordinary` flag; presets with zones and rules) |
+| GET | `/api/v1/lab/clips/{clip_id}/scene` | The clip's Lab scene: `preset`, `zones` (Lab types, incl. `public`), `rules` (saved changes), `rule_list` (with plain-language `what`/`when`), `source` (`saved`, `preset`, or `bench` for benchmark clips still using `config/bench/site.json`) |
+| PUT | `/api/v1/lab/clips/{clip_id}/scene` | Save `{preset, zones: [{name, type, polygon}], rules: {rule_id: {enabled, severity, min_dwell_s, active_hours}}}` for this video only (validated, audited). Never changes the site config or live cameras |
+| DELETE | `/api/v1/lab/clips/{clip_id}/scene` | Back to the default scene (audited) |
+| GET | `/api/v1/lab/clips/{clip_id}/still.jpg?t=` | One frame of the clip for drawing zones, at most 960 px wide |
 | GET | `/api/v1/lab/runs` | Runs, newest first |
-| POST | `/api/v1/lab/runs` | Start `{clip_id, profile, fps (1-10), arm_mode, species, max_seconds (2-600)}`; one run at a time, others queue |
-| GET | `/api/v1/lab/runs/{id}` | Settings, progress, zones, rules, events, simulated alerts, incidents, summary |
+| POST | `/api/v1/lab/runs` | Start `{clip_id, profile, fps (1-10), arm_mode, species, max_seconds (2-600), start_time (HH:MM, optional: the clip's virtual clock for rule hours)}`; the clip's scene is copied into the run. One run at a time, others queue |
+| GET | `/api/v1/lab/runs/{id}` | Settings, `scene`, progress, zones, rules, events, simulated alerts, incidents, summary. Each event has `explain`: `zone`, `zone_type`, `ordinary_area`, `rule`, `rule_what`, `rule_when`, `duration_s`, `tracked_s`, `confidence`, `observations`, `alert` (`alerted`/`logged`) and `alert_reason` |
 | GET | `/api/v1/lab/runs/{id}/frames?start=&limit=` | Per-frame records: detections (verdict tp/fp against labels), tracks, Guardian tracks (trail, level, species), labels, presence verdict, timings |
 | GET | `/api/v1/lab/runs/{id}/frame/{n}.jpg` | Analysed frame (privacy masks applied), at most 960 px wide |
 | POST | `/api/v1/lab/runs/{id}/cancel` | Stop a run; frames so far are kept |

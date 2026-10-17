@@ -15,7 +15,9 @@ const lab = {
 const LAB_LAYERS = [["zones", "Zones"], ["dets", "Detections"], ["tracks", "Tracks"], ["guardian", "Guardian + species"], ["gt", "Labels (ground truth)"], ["errors", "Mark errors"]];
 const LAB_COLORS = { person: "#4c8dff", vehicle: "#b36bff", animal: "#ff9f1a", other: "#9aa3ad" };
 const LAB_LEVELS = { observed: "#9aa3ad", approaching: "#f0c43b", elevated: "#ff8a1a", urgent: "#ff3b3b" };
-const LAB_ZONE = { yard: "rgba(76,187,122,.16)", entrance: "rgba(76,141,255,.18)", driveway: "rgba(154,163,173,.18)", restricted: "rgba(255,80,80,.18)", perimeter: "rgba(240,162,59,.16)" };
+const LAB_ZONE = { yard: "rgba(76,187,122,.16)", entrance: "rgba(76,141,255,.18)", driveway: "rgba(154,163,173,.18)", restricted: "rgba(255,80,80,.18)", perimeter: "rgba(240,162,59,.16)",
+  public: "rgba(80,200,220,.12)", general: "rgba(80,200,220,.12)", sidewalk: "rgba(200,200,200,.10)", street: "rgba(200,200,200,.10)", ignore: "rgba(0,0,0,.35)" };
+const LAB_ZONE_LINE = { yard: "#4cbb7a", entrance: "#4c8dff", driveway: "#9aa3ad", restricted: "#ff5050", perimeter: "#f0a23b", public: "#50c8dc", general: "#50c8dc", sidewalk: "#c8c8c8", street: "#c8c8c8", ignore: "#666" };
 const labTab = document.querySelector('[data-tab="lab"]');
 labTab.addEventListener("click", () => { if (!lab.catalog) loadLabCatalog(); });
 
@@ -65,6 +67,10 @@ function selectLabClip(clipId, runId) {
   $("#lab-clip-meta").innerHTML = `${esc(c.notes)}<br>Licence: ${esc(c.licence)}${c.commercial_training ? " (may be used for training)" : " (evaluation only)"} · split <b>${esc(c.split)}</b> · labels: ${esc(c.labels)}${c.attribution ? `<br>${esc(c.attribution)}` : ""}`;
   $("#lab-run").disabled = !c.available;
   $("#lab-species").checked = (c.subjects || []).includes("animal");
+  $("#lab-clock").value = "";
+  $("#lab-clock").placeholder = c.light === "night" ? "02:00" : "14:00";
+  $("#lab-clock").title = `Empty: ${c.light === "night" ? "02:00 (night clip)" : "14:00"}. Rule hours such as "after hours" are judged on this clock.`;
+  loadLabScene(c.id);
   renderLabRuns();
   const runs = lab.runs.filter((r) => r.clip.id === clipId);
   const wanted = runId || runs[0]?.id;
@@ -95,7 +101,7 @@ $("#lab-run").addEventListener("click", async () => {
   try {
     const run = await labApi("/runs", "POST", {
       clip_id: lab.clip.id, profile: $("#lab-profile").value, fps: Number($("#lab-fps").value), arm_mode: $("#lab-arm").value,
-      species: $("#lab-species").checked, max_seconds: Number($("#lab-max").value),
+      species: $("#lab-species").checked, max_seconds: Number($("#lab-max").value), start_time: $("#lab-clock").value || null,
     });
     lab.runs.unshift(run);
     await openLabRun(run.id, true);
@@ -504,12 +510,14 @@ function renderLabSide() {
   const alerts = run.alerts || [];
   const eventMark = (e) => lab.corrections.find((c) => c.event_id === e.id);
   $("#lab-events").innerHTML = `
-    ${alerts.length ? alerts.map((a) => `<div class="lab-alert" data-t="${a.t}"><b>Simulated alert</b> at ${labFmtT(a.t)} (${esc(a.severity)}): ${esc(a.title)}<div class="small muted">${esc(a.body || "")}</div><div class="small muted">Not sent: the lab records what the alert policy would push.</div></div>`).join("") : `<p class="small muted">No alert would have been pushed (arm mode ${esc(run.options.arm_mode)}). Ordinary activity is logged as info, never pushed.</p>`}
+    ${labSceneLine(run)}
+    ${alerts.length ? alerts.map((a) => `<div class="lab-alert" data-t="${a.t}"><b>Simulated alert</b> at ${labFmtT(a.t)} (${esc(a.severity)}): ${esc(a.title)}<div class="small muted">${esc(a.body || "")}</div>${labAlertBecause(a, events)}<div class="small muted">Not sent: the lab records what the alert policy would push.</div></div>`).join("") : `<p class="small muted">No alert would have been pushed (arm mode ${esc(run.options.arm_mode)}). Ordinary activity is logged as info, never pushed.</p>`}
     ${events.length ? events.map((e) => {
       const mark = eventMark(e);
       return `<div class="lab-event" data-frame="${e.frame}">
         <div><span class="pill ${e.severity === "high" ? "bad" : e.severity === "medium" ? "warn" : ""}">${esc(e.severity)}</span> ${labFmtT(e.t)} · ${esc(e.summary)}</div>
         <div class="meta">${esc(e.type)}${e.rule ? " · rule " + esc(e.rule) : ""}${e.guardian ? " · Guardian " + esc(e.level || "") : ""}${e.confidence != null ? ` · confidence ${Math.round(e.confidence * 100)}%` : ""}${e.reasons?.length ? " · " + esc(e.reasons.slice(0, 4).join(", ")) : ""}</div>
+        ${labWhy(e)}
         <div class="button-row tight">${mark ? `<span class="pill warn">you: ${esc(mark.kind.replace("event_", "").replace("_", " "))}</span> <button type="button" data-undo-event="${esc(mark.id)}">Undo</button>` : `<button type="button" data-event-mark="event_correct" data-event="${esc(e.id)}">Right</button><button type="button" data-event-mark="event_false_alarm" data-event="${esc(e.id)}">False alarm</button>`}</div>
       </div>`;
     }).join("") : '<p class="small muted">No events yet.</p>'}`;
@@ -567,4 +575,342 @@ $("#lab-summary").addEventListener("click", (event) => {
   labPause();
   const f = labNearest(lab.frames, t);
   if (f) labSeek(f.n);
+});
+
+// ---- explanations -----------------------------------------------------------
+
+const labZoneTypeName = (type) => lab.catalog?.scenes?.zone_types.find((z) => z.id === type)?.name || type || "";
+
+function labWhy(e) {
+  const x = e.explain;
+  if (!x) return "";
+  if (e.type === "activity") return `<div class="lab-why">First sighting in ${esc(x.zone)} (${esc(labZoneTypeName(x.zone_type))}${x.ordinary_area ? ", ordinary activity" : ""}): logged as info, never pushed.</div>`;
+  const parts = [];
+  if (x.rule) parts.push(`<b>Rule</b> "${esc(x.rule)}": ${esc(x.rule_what)}${x.rule_when ? ` (${esc(x.rule_when)})` : ""}.`);
+  else if (x.basis) parts.push(esc(x.basis));
+  if (x.zone) parts.push(`<b>Zone</b> ${esc(x.zone)}${x.zone_type ? ` (${esc(labZoneTypeName(x.zone_type))}${x.ordinary_area ? ", ordinary activity" : ""})` : ""}.`);
+  const facts = [];
+  if (x.duration_s) facts.push(`in the zone for ${x.duration_s} s${x.threshold_s != null ? ` (rule: ${x.threshold_s} s)` : ""}`);
+  if (x.tracked_s != null) facts.push(`tracked for ${x.tracked_s} s`);
+  if (x.confidence != null) facts.push(`detection confidence ${Math.round(x.confidence * 100)}%`);
+  if (x.observations != null) facts.push(`${x.observations} detections of this subject`);
+  if (facts.length) parts.push(`<b>Observed</b> ${esc(facts.join(", "))}.`);
+  if (x.alert_reason) parts.push(`<b>${x.alert === "alerted" ? "Alert" : "No alert"}</b> ${esc(x.alert_reason)}`);
+  return `<div class="lab-why">${parts.join("<br>")}</div>`;
+}
+
+function labAlertBecause(alert, events) {
+  const causes = events.filter((e) => e.incident && e.incident === alert.incident && e.explain?.rule && Math.abs(e.t - alert.t) <= 0.5);
+  if (!causes.length) return "";
+  return `<div class="lab-why"><b>Because</b> ${causes.map((e) => `rule "${esc(e.explain.rule)}" matched in ${esc(e.explain.zone)}${e.explain.duration_s ? ` after ${e.explain.duration_s} s in the zone` : ""} (confidence ${Math.round((e.explain.confidence || 0) * 100)}%)`).join("; ")}.</div>`;
+}
+
+function labSceneLine(run) {
+  const scene = run.scene;
+  if (!scene && !run.options?.start_time) return ""; // a run from before scenes existed
+  const preset = scene && lab.catalog?.scenes?.presets.find((p) => p.id === scene.preset);
+  const where = scene ? `${esc(preset?.name || scene.preset)} scene${scene.source === "saved" ? " (zones saved for this video)" : " (default zones)"}` : "benchmark zones and rules (config/bench/site.json)";
+  return `<p class="small muted">This run: ${where}, ${(run.zones || []).length} zone(s), clock ${esc(run.options?.start_time || "-")}, arm mode ${esc(run.options?.arm_mode)}.</p>`;
+}
+
+// ---- scene editor: zones drawn on the footage and the preset's rules, per video --
+
+lab.scene = null;
+lab.draft = null;
+lab.zoneSel = null;
+lab.zoneDrag = null;
+lab.zoneAdding = false;
+lab.still = null;
+
+async function loadLabScene(clipId) {
+  $("#lab-scene-row").hidden = true;
+  $("#lab-scene-card").hidden = true;
+  if (!lab.catalog?.scenes) return;
+  try {
+    lab.scene = await labApi(`/clips/${encodeURIComponent(clipId)}/scene`);
+  } catch { lab.scene = null; return; }
+  if (lab.clip?.id !== clipId) return;
+  $("#lab-preset").innerHTML = lab.catalog.scenes.presets.map((p) => `<option value="${esc(p.id)}" title="${esc(p.description)}">${esc(p.name)}</option>`).join("");
+  $("#lab-zone-add-type").innerHTML = lab.catalog.scenes.zone_types.map((z) => `<option value="${esc(z.id)}">${esc(z.name)}</option>`).join("");
+  renderLabSceneRow();
+  $("#lab-scene-row").hidden = false;
+}
+
+function renderLabSceneRow() {
+  const scene = lab.scene;
+  $("#lab-preset").value = scene.preset;
+  const source = { saved: "zones saved for this video", preset: "default zones for this kind of footage", bench: "this benchmark clip uses its own zones and rules until you save zones for it" }[scene.source] || "";
+  $("#lab-scene-source").textContent = `${scene.zones.length} zone(s): ${scene.zones.map((z) => z.name).join(", ")} · ${source}`;
+}
+
+function labPresetDraft(presetId) {
+  const preset = lab.catalog.scenes.presets.find((p) => p.id === presetId);
+  return { preset: presetId, zones: preset.zones.map((z) => ({ ...z, polygon: z.polygon.map((pt) => [...pt]) })),
+           rules: preset.rules.map((r) => ({ ...r, enabled: r.enabled ?? true })) };
+}
+
+function openLabSceneEditor(draft) {
+  lab.draft = draft || { preset: lab.scene.preset, zones: lab.scene.zones.map((z) => ({ ...z, polygon: z.polygon.map((pt) => [...pt]) })),
+                         rules: lab.scene.rule_list.map((r) => ({ ...r })) };
+  lab.zoneSel = null;
+  $("#lab-scene-card").hidden = false;
+  const image = new Image();
+  image.onload = () => {
+    const canvas = $("#lab-zone-canvas");
+    canvas.width = 960;
+    canvas.height = Math.round(960 * (image.naturalHeight / image.naturalWidth || 9 / 16));
+    drawLabZones();
+  };
+  image.onerror = () => toast("No picture", "The clip could not be decoded for drawing.", "high");
+  image.src = `${API}/lab/clips/${encodeURIComponent(lab.clip.id)}/still.jpg?t=1`;
+  lab.still = image;
+  renderLabZoneList();
+  renderLabRuleList();
+  $("#lab-scene-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+$("#lab-scene-edit").addEventListener("click", () => openLabSceneEditor());
+$("#lab-scene-close").addEventListener("click", () => { $("#lab-scene-card").hidden = true; lab.draft = null; });
+$("#lab-preset").addEventListener("change", (event) => {
+  const id = event.target.value;
+  const preset = lab.catalog.scenes.presets.find((p) => p.id === id);
+  if (!confirm(`Use the ${preset.name} scene? Its default zones replace the current ones (nothing is saved until you press Save).\n\n${preset.description}`)) {
+    event.target.value = lab.draft?.preset || lab.scene.preset;
+    return;
+  }
+  openLabSceneEditor(labPresetDraft(id));
+});
+
+function drawLabZones() {
+  const canvas = $("#lab-zone-canvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  if (lab.still?.complete && lab.still.naturalWidth) ctx.drawImage(lab.still, 0, 0, W, H);
+  if (!lab.draft) return;
+  lab.draft.zones.forEach((zone, i) => {
+    const selected = i === lab.zoneSel;
+    ctx.beginPath();
+    zone.polygon.forEach(([x, y], k) => (k ? ctx.lineTo(x * W, y * H) : ctx.moveTo(x * W, y * H)));
+    ctx.closePath();
+    ctx.fillStyle = LAB_ZONE[zone.type] || "rgba(154,163,173,.14)";
+    ctx.fill();
+    ctx.strokeStyle = LAB_ZONE_LINE[zone.type] || "#fff";
+    ctx.lineWidth = selected ? 3 : 1.5;
+    ctx.setLineDash(selected ? [] : [6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const [lx, ly] = zone.polygon.reduce(([ax, ay], [x, y]) => [Math.min(ax, x), Math.min(ay, y)], [1, 1]);
+    ctx.font = "600 13px system-ui, sans-serif";
+    const text = `${zone.name} · ${labZoneTypeName(zone.type).split(" (")[0]}`;
+    const w = ctx.measureText(text).width + 8;
+    ctx.fillStyle = "rgba(0,0,0,.6)";
+    ctx.fillRect(lx * W + 2, ly * H + 2, w, 18);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(text, lx * W + 6, ly * H + 15);
+    if (selected) {
+      for (const [x, y] of zone.polygon) {
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(x * W - 6, y * H - 6, 12, 12);
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x * W - 6, y * H - 6, 12, 12);
+      }
+    }
+  });
+  const drag = lab.zoneDrag;
+  if (drag?.mode === "new" && drag.box) {
+    ctx.strokeStyle = "#fff";
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(drag.box[0] * W, drag.box[1] * H, drag.box[2] * W, drag.box[3] * H);
+    ctx.setLineDash([]);
+  }
+}
+
+function labZonePoint(event) {
+  const rect = $("#lab-zone-canvas").getBoundingClientRect();
+  return [Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)), Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))];
+}
+
+function labInPolygon([x, y], polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i], [xj, yj] = polygon[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+const labIsRect = (p) => p.length === 4 && p[0][1] === p[1][1] && p[1][0] === p[2][0] && p[2][1] === p[3][1] && p[3][0] === p[0][0];
+const labRect = (x0, y0, x1, y1) => [[Math.min(x0, x1), Math.min(y0, y1)], [Math.max(x0, x1), Math.min(y0, y1)], [Math.max(x0, x1), Math.max(y0, y1)], [Math.min(x0, x1), Math.max(y0, y1)]];
+const labRound = (v) => Math.round(v * 10000) / 10000;
+
+$("#lab-zone-add").addEventListener("click", () => {
+  lab.zoneAdding = !lab.zoneAdding;
+  $("#lab-zone-canvas").classList.toggle("drawing", lab.zoneAdding);
+  $("#lab-zone-add").textContent = lab.zoneAdding ? "Drag on the picture... (click to cancel)" : "Draw a zone";
+});
+
+$("#lab-zone-canvas").addEventListener("pointerdown", (event) => {
+  if (!lab.draft) return;
+  const point = labZonePoint(event);
+  const canvas = $("#lab-zone-canvas");
+  canvas.setPointerCapture(event.pointerId);
+  if (lab.zoneAdding) { lab.zoneDrag = { mode: "new", start: point }; return; }
+  const rect = canvas.getBoundingClientRect();
+  const near = 10 / rect.width;
+  const selected = lab.draft.zones[lab.zoneSel];
+  const vertex = selected ? selected.polygon.findIndex(([x, y]) => Math.abs(x - point[0]) <= near && Math.abs(y - point[1]) <= near * (rect.width / rect.height)) : -1;
+  if (vertex >= 0) {
+    lab.zoneDrag = { mode: "vertex", index: vertex, rect: labIsRect(selected.polygon) };
+    return;
+  }
+  for (let i = lab.draft.zones.length - 1; i >= 0; i--) {
+    if (labInPolygon(point, lab.draft.zones[i].polygon)) {
+      lab.zoneSel = i;
+      lab.zoneDrag = { mode: "move", last: point };
+      renderLabZoneList();
+      return drawLabZones();
+    }
+  }
+  lab.zoneSel = null;
+  renderLabZoneList();
+  drawLabZones();
+});
+
+$("#lab-zone-canvas").addEventListener("pointermove", (event) => {
+  const drag = lab.zoneDrag;
+  if (!drag) return;
+  const [x, y] = labZonePoint(event);
+  const zone = lab.draft.zones[lab.zoneSel];
+  if (drag.mode === "new") {
+    const [x0, y0] = drag.start;
+    drag.box = [Math.min(x, x0), Math.min(y, y0), Math.abs(x - x0), Math.abs(y - y0)];
+  } else if (drag.mode === "vertex" && zone) {
+    if (drag.rect) { // a rectangle stays a rectangle: the opposite corner is the anchor
+      const [ox, oy] = zone.polygon[(drag.index + 2) % 4];
+      zone.polygon = labRect(ox, oy, x, y).map((pt) => pt.map(labRound));
+      drag.index = zone.polygon.findIndex(([px, py]) => px === labRound(x) && py === labRound(y));
+      if (drag.index < 0) drag.index = 0;
+    } else {
+      zone.polygon[drag.index] = [labRound(x), labRound(y)];
+    }
+  } else if (drag.mode === "move" && zone) {
+    let dx = x - drag.last[0], dy = y - drag.last[1];
+    const xs = zone.polygon.map((p) => p[0]), ys = zone.polygon.map((p) => p[1]);
+    dx = Math.max(-Math.min(...xs), Math.min(1 - Math.max(...xs), dx));
+    dy = Math.max(-Math.min(...ys), Math.min(1 - Math.max(...ys), dy));
+    zone.polygon = zone.polygon.map(([px, py]) => [labRound(px + dx), labRound(py + dy)]);
+    drag.last = [x, y];
+  }
+  drawLabZones();
+});
+
+$("#lab-zone-canvas").addEventListener("pointerup", () => {
+  const drag = lab.zoneDrag;
+  lab.zoneDrag = null;
+  if (drag?.mode === "new") {
+    lab.zoneAdding = false;
+    $("#lab-zone-canvas").classList.remove("drawing");
+    $("#lab-zone-add").textContent = "Draw a zone";
+    const box = drag.box;
+    if (box && box[2] > 0.02 && box[3] > 0.02) {
+      const type = $("#lab-zone-add-type").value;
+      const count = lab.draft.zones.filter((z) => z.type === type).length + 1;
+      lab.draft.zones.push({ name: `${labZoneTypeName(type).split(" (")[0]} ${count}`, type, polygon: labRect(box[0], box[1], box[0] + box[2], box[1] + box[3]).map((pt) => pt.map(labRound)) });
+      lab.zoneSel = lab.draft.zones.length - 1;
+    }
+  }
+  renderLabZoneList();
+  drawLabZones();
+});
+
+function renderLabZoneList() {
+  if (!lab.draft) return;
+  const types = lab.catalog.scenes.zone_types;
+  $("#lab-zone-list").innerHTML = lab.draft.zones.map((zone, i) => `
+    <div class="lab-zone-item ${i === lab.zoneSel ? "selected" : ""}" data-zone="${i}">
+      <span class="swatch" style="background:${LAB_ZONE_LINE[zone.type] || "#999"}"></span>
+      <input type="text" data-field="name" value="${esc(zone.name)}" maxlength="40" aria-label="Zone name">
+      <select data-field="type" aria-label="Zone type">${types.map((t) => `<option value="${esc(t.id)}" ${t.id === zone.type ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>
+      <button type="button" data-remove="${i}">Delete</button>
+    </div>`).join("") || '<p class="muted small">No zones yet: draw one.</p>';
+}
+
+$("#lab-zone-list").addEventListener("input", (event) => {
+  const item = event.target.closest("[data-zone]");
+  if (!item) return;
+  const zone = lab.draft.zones[Number(item.dataset.zone)];
+  zone[event.target.dataset.field] = event.target.value;
+  if (event.target.dataset.field === "type") renderLabZoneList();
+  drawLabZones();
+});
+$("#lab-zone-list").addEventListener("click", (event) => {
+  const remove = event.target.closest("[data-remove]");
+  if (remove) {
+    lab.draft.zones.splice(Number(remove.dataset.remove), 1);
+    lab.zoneSel = null;
+  } else {
+    const item = event.target.closest("[data-zone]");
+    if (!item) return;
+    lab.zoneSel = Number(item.dataset.zone);
+  }
+  renderLabZoneList();
+  drawLabZones();
+});
+
+function renderLabRuleList() {
+  const preset = lab.catalog.scenes.presets.find((p) => p.id === lab.draft.preset);
+  $("#lab-preset-name").textContent = preset?.name || lab.draft.preset;
+  const types = (list) => (list || []).map((t) => labZoneTypeName(t).split(" (")[0].toLowerCase()).join(" / ");
+  $("#lab-rule-list").innerHTML = lab.draft.rules.map((rule, i) => `
+    <div class="lab-rule-item" data-rule="${i}">
+      <label class="check"><input type="checkbox" data-field="enabled" ${rule.enabled !== false ? "checked" : ""}> <b>${esc(rule.name)}</b></label>
+      <select data-field="severity" aria-label="Severity">${["info", "low", "medium", "high"].map((sv) => `<option ${sv === rule.severity ? "selected" : ""}>${sv}</option>`).join("")}</select>
+      ${rule.type === "dwell" ? `<label class="small">after <input type="number" min="5" max="3600" step="5" data-field="min_dwell_s" value="${esc(rule.min_dwell_s)}"> s</label>` : ""}
+      ${rule.active_hours ? `<label class="small">from <input type="time" data-field="start" value="${esc(rule.active_hours.start)}"></label><label class="small">to <input type="time" data-field="end" value="${esc(rule.active_hours.end)}"></label>` : ""}
+      <span class="grow small muted">${esc(rule.type.replace("_", " "))} in ${esc(types(rule.zone_types)) || "any zone"} areas</span>
+    </div>`).join("");
+}
+
+$("#lab-rule-list").addEventListener("input", (event) => {
+  const item = event.target.closest("[data-rule]");
+  if (!item) return;
+  const rule = lab.draft.rules[Number(item.dataset.rule)];
+  const field = event.target.dataset.field;
+  if (field === "enabled") rule.enabled = event.target.checked;
+  else if (field === "severity") rule.severity = event.target.value;
+  else if (field === "min_dwell_s") rule.min_dwell_s = Number(event.target.value);
+  else if (field === "start" || field === "end") rule.active_hours = { ...rule.active_hours, [field]: event.target.value };
+});
+
+$("#lab-scene-save").addEventListener("click", async () => {
+  const rules = {};
+  for (const rule of lab.draft.rules) {
+    rules[rule.id] = { enabled: rule.enabled !== false, severity: rule.severity };
+    if (rule.type === "dwell") rules[rule.id].min_dwell_s = rule.min_dwell_s;
+    if (rule.active_hours) rules[rule.id].active_hours = rule.active_hours;
+  }
+  try {
+    lab.scene = await labApi(`/clips/${encodeURIComponent(lab.clip.id)}/scene`, "PUT",
+      { preset: lab.draft.preset, zones: lab.draft.zones.map(({ name, type, polygon }) => ({ name, type, polygon })), rules });
+    renderLabSceneRow();
+    openLabSceneEditor();
+    toast("Saved for this video", "Press Analyse and play to test the zones. Live cameras are unchanged.", "info");
+  } catch (error) {
+    toast("Not saved", error.message, "high");
+  }
+});
+
+$("#lab-scene-reset").addEventListener("click", async () => {
+  if (!confirm("Remove the zones saved for this video and go back to the default scene?")) return;
+  try {
+    lab.scene = await labApi(`/clips/${encodeURIComponent(lab.clip.id)}/scene`, "DELETE");
+    renderLabSceneRow();
+    openLabSceneEditor();
+  } catch (error) {
+    toast("Not done", error.message, "high");
+  }
 });

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 
@@ -16,6 +16,13 @@ class RunBody(BaseModel):
     arm_mode: Literal["home", "away", "night", "vacation", "disarmed"] = "away"
     species: bool = True
     max_seconds: float = Field(120.0, ge=2, le=600)
+    start_time: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")  # the clip's virtual clock, for rule hours
+
+
+class SceneBody(BaseModel):
+    preset: str
+    zones: list[dict[str, Any]]
+    rules: dict[str, dict[str, Any]] = {}
 
 
 class CorrectionBody(BaseModel):
@@ -54,13 +61,50 @@ def add_routes(app: FastAPI, service: Any, require_auth: Any) -> None:
     def start(body: RunBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
         try:
             view = lab().start(body.clip_id, profile=body.profile, fps=body.fps, arm_mode=body.arm_mode,
-                               species=body.species, max_seconds=body.max_seconds, actor=actor)
+                               species=body.species, max_seconds=body.max_seconds, actor=actor, start_time=body.start_time)
         except KeyError as error:
             raise HTTPException(status_code=404, detail=f"unknown clip or profile: {error}") from None
         except (FileNotFoundError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
         service.runtime.store.audit(actor, "lab_run_started", {"run": view["id"], "clip": body.clip_id, "profile": body.profile})
         return view
+
+    @app.get("/api/v1/lab/clips/{clip_id}/scene")
+    def scene(clip_id: str, _: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            return lab().scene(clip_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown clip") from None
+
+    @app.put("/api/v1/lab/clips/{clip_id}/scene")
+    def save_scene(clip_id: str, body: SceneBody, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            view = lab().save_scene(clip_id, body.model_dump(), actor)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown clip") from None
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        service.runtime.store.audit(actor, "lab_scene_saved", {"clip": clip_id, "preset": body.preset, "zones": len(body.zones)})
+        return view
+
+    @app.delete("/api/v1/lab/clips/{clip_id}/scene")
+    def reset_scene(clip_id: str, actor: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            view = lab().reset_scene(clip_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown clip") from None
+        service.runtime.store.audit(actor, "lab_scene_reset", {"clip": clip_id})
+        return view
+
+    @app.get("/api/v1/lab/clips/{clip_id}/still.jpg")
+    def still(clip_id: str, t: float = 1.0, _: str = Depends(require_auth)) -> Response:
+        try:
+            data = lab().still(clip_id, t)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown clip") from None
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
     @app.get("/api/v1/lab/runs/{run_id}")
     def run(run_id: str, _: str = Depends(require_auth)) -> dict[str, Any]:
