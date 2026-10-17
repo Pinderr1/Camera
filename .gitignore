@@ -41,6 +41,8 @@ Thumbs.db
 
 # Guardian wildlife dataset downloads (images, metadata cache, manifests)
 data/guardian/
+# Test Lab public clips (config/lab/videos.json; fetched, never committed)
+data/lab/
 
 # Private home-camera recordings (pose keypoints from live cameras): local only, never published
 data/processed/pose/cam01/

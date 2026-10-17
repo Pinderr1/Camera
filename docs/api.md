@@ -213,6 +213,24 @@ simulation labels, persistence and hardware limitations.
 | POST | `/operations/{id}/alert`, `/simulate` | Operator message to configured people; simulated faults only |
 | GET | `/operations/{id}/report?format=json\|html` | Fingerprinted report with observation and simulation limits |
 
+## AI Test Lab
+
+Recorded clips through Sentinel's real AI (docs/test-lab.md). All endpoints need auth. Clip file paths are never returned.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/lab/catalog` | Clips (licence, split, labels, available), detector profiles (built-in + registered candidates), drop folder, limits |
+| GET | `/api/v1/lab/runs` | Runs, newest first |
+| POST | `/api/v1/lab/runs` | Start `{clip_id, profile, fps (1-10), arm_mode, species, max_seconds (2-600)}`; one run at a time, others queue |
+| GET | `/api/v1/lab/runs/{id}` | Settings, progress, zones, rules, events, simulated alerts, incidents, summary |
+| GET | `/api/v1/lab/runs/{id}/frames?start=&limit=` | Per-frame records: detections (verdict tp/fp against labels), tracks, Guardian tracks (trail, level, species), labels, presence verdict, timings |
+| GET | `/api/v1/lab/runs/{id}/frame/{n}.jpg` | Analysed frame (privacy masks applied), at most 960 px wide |
+| POST | `/api/v1/lab/runs/{id}/cancel` | Stop a run; frames so far are kept |
+| DELETE | `/api/v1/lab/runs/{id}` | Delete a finished run (audited) |
+| GET/POST | `/api/v1/lab/runs/{id}/corrections` | Owner's marks: `kind` in false_positive, missed (with `bbox` + `label`), wrong_label, correct, event_correct, event_false_alarm, note |
+| DELETE | `/api/v1/lab/runs/{id}/corrections/{cid}` | Undo a mark |
+| GET | `/api/v1/lab/training` | Training workflow status: corrections, model registry, personalization, commands |
+
 ## Object shapes
 
 `SecurityEvent`: `event_id`, `event_type` (`activity|zone_entry|dwell|repeated_presence|sequence|multi_camera`, plus health events `camera_offline|camera_frozen|camera_ai_failed|camera_stalled|camera_restarting|camera_failed|camera_online|system_health`, which never belong to an incident), `severity`, `camera_id`, `zone_id`, `rule_id`, `timestamp_ms`, `started_ms`, `confidence`, `summary`, `label`, `track_ids`, `site_track_id`, `reason_codes`, `details`, `incident_id`, `snapshot_path`, `clip_path`.

@@ -30,6 +30,12 @@ This project is reuse-first, but code is copied only when the upstream license c
 | MediaMTX | MIT | Local RTSP server for live-stream benchmarking (dev tool), and the planned RTSP server on the drone companion image (`sentinel.companion.provision`; ships on the companion, so include its MIT notice). |
 | ffmpeg | LGPL/GPL builds | Re-encoding benchmark footage and publishing test RTSP streams (dev tool, not shipped). |
 
+### Test Lab public clips (added 2026-10-17)
+
+| Source | Terms | Use |
+| --- | --- | --- |
+| Wikimedia Commons videos listed in `config/lab/videos.json` (14 clips: security, porch, street, traffic, storm, animal) | Public domain, CC BY 3.0 or CC BY 4.0, per clip as Commons states it; licence and SHA-1 re-checked at download; attribution in `data/lab/videos/ATTRIBUTION.md` and the registry | Independent `test` split for the Test Lab and `sentinel.training compare`; never trained on. Seven public-domain claims (vendor demo reels, a broadcaster, unknown authors) are flagged `licence_note` and need verification before any other use. Clips of real incidents with harm to people were excluded. See `docs/datasets.md`. |
+
 ### Detector models (verified 2026-10-13)
 
 The weights' licence is checked separately from the code's, and the training data is recorded, because a permissive code licence does not license the weights.

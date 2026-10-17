@@ -44,6 +44,14 @@ V1 software is frozen at the drone-reliability and accessories/FLAME commits of 
   - planner geometry against a real site;
   - any physical aircraft, aerial footage or accessory.
 
+## AI Test Lab, dataset library and training workflow (2026-10-17, owner's request)
+
+An exception to the freeze that the owner asked for. It is evaluation tooling only: live camera behaviour is unchanged, and no model was trained or changed.
+- **Test Lab** (Lab tab, `src/sentinel/lab/`, `docs/test-lab.md`): any recorded clip through the real detector, tracker, engine, rules, Guardian, SpeciesNet and alert policy, with overlay playback, error navigation, side-by-side model comparison, simulated alerts and owner corrections. Checked in Edge on `wolf_day` (50 frames, about 30 s to analyse with SpeciesNet on the i5-1135G7 / Iris Xe). MOT16-09, first 6 s at 5 fps, `model: auto` (YOLOX-s 960, DirectML): 185/241 labelled person boxes found, 10 boxes without a label (77 % recall, 95 % precision): consistent with the bench run above. That is a lab check, not a benchmark.
+- **Dataset library** (`docs/datasets.md`, `config/lab/videos.json`): 14 commercially usable Commons clips registered as the independent `test` split. 9 are downloaded (139 MB); Commons rate-limited the other 5. They are **unlabelled**: label them before any test-split model decision.
+- **Training workflow** (`src/sentinel/training/`, `docs/training.md`): error and correction collection, licence- and split-gated COCO export, opt-in personalization with a consent record, fine-tuning plan (no training), model registry with SHA-256, test-split promotion gate and rollback.
+- **Next:** label the test clips; collect at least 200 reviewed boxes per class before any fine-tuning proposal; evaluate D-FINE and RT-DETRv2 as candidates through `compare`.
+
 ## Phase 0: Pivot foundation (done, October 2026)
 - [x] Audit the CameraAI codebase. Archive the senior-safety docs and keep that code frozen.
 - [x] Rewrite `CLAUDE.md`, `AGENTS.md`, and `README.md`. Add architecture, API, and drone docs.

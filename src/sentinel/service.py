@@ -107,6 +107,10 @@ class SentinelService:
         from .flame import FlameService
 
         self.flame = FlameService(self)  # agricultural configuration of the drone (Flame Mode)
+        from .lab.session import LabManager
+        from .training.registry import lab_profiles
+
+        self.lab = LabManager(self.storage_dir, extra_profiles=lambda: lab_profiles(self.storage_dir))  # AI Test Lab (recorded clips only)
         self.on_fatal: Callable[[str], None] | None = None  # set by `serve --exit-on-fatal`
         self.supervisor = WorkerSupervisor(
             SupervisorSettings.from_dict(config.get("health", {}).get("supervisor")),
@@ -163,6 +167,7 @@ class SentinelService:
         flush the database, and mark the run as cleanly stopped."""
         self._stop.set()
         self.flame.stop()
+        self.lab.stop()
         self.supervisor.stop()
         for thread in self._threads:
             thread.join(timeout=5)

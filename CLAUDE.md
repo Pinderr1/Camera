@@ -72,6 +72,9 @@ History: the repo started as CameraAI, a senior night-safety monitor (`src/senio
 | Household-member recognition (optional, off by default; owner's decision 2026-10-16, boundary 2): consent records (who agreed, for whom, how, statement version) before any template; DPAPI-encrypted gallery of face templates, no photos kept; YuNet (MIT) + SFace (Apache-2.0) through OpenCV on the CPU; recognition zones only (never street/sidewalk/ignore), fixed cameras only; cautious `known`/`unknown`/`unverified` per cross-camera subject from several agreeing frames; unmatched faces never kept; withdrawal deletes templates and scrubs stored events; `identity_filter: not_known` rule field with a bounded wait; `identity` info events; `/api/v1/identity`; `python -m sentinel.identity` (`docs/identity.md`) | Built; unit, runtime and API tests with a fake face model; real-model check on MOT16-09 labelled pedestrians (different people at or above the match threshold in 0.3 % of 8,167 single face pairs; same person in 86.9 % of 1,444). **Not run on owner cameras or with enrolled household members; no liveness check; legal review and SFace training-data licence decision required before sale** |
 | `zone_approach` rule (person moving clearly toward an area, in body heights, before entering it) | Built; unit tests and scenario `config/scenarios/approach_shed.json` |
 | Drone person standoff (`drone/standoff.py`): `drone.safety.person_standoff_m` default 30 m (Canadian basic operations), floor 10 m; hover point held back from people reported by the incident, the fixed cameras and the drone's own video; routes past people and goto near people refused; in flight a person inside the standoff stops the inspection (simulator holds; real aircraft: pilot advisory) | Built and unit-tested in the built-in simulator. SITL test, fault scenarios and demo updated for it (no person under the aircraft; demo uses the 10 m floor) but **not yet re-run against SITL** |
+| AI Test Lab (Lab tab): recorded clips through the real detector, tracker, engine, rules, Guardian, SpeciesNet and alert policy; overlay playback, error navigation against labels, side-by-side model comparison, simulated alerts, owner corrections (`docs/test-lab.md`) | Built; unit tests (`tests/test_sentinel_lab.py`) and an Edge check on real models (wolf clip, MOT16-09). **Lab figures cover one clip each and are not benchmarks** |
+| Dataset library (`docs/datasets.md`): splits (validation = tuned on, test = independent, private), 14 Commons clips in `config/lab/videos.json` | 9 of 14 downloaded (Commons rate limit); **test clips unlabelled** |
+| Training workflow (`python -m sentinel.training`): error/correction collection, licence- and split-gated COCO export, consented local personalization, fine-tuning plan, model registry with hash, test-split promotion gate and rollback (`docs/training.md`) | Built and unit-tested. **No model trained; training needs owner approval** |
 | Accounts/multi-user, mobile app, cloud relay, HTTPS deployment | Not started (see `ROADMAP.md`) |
 
 ## Repository map
@@ -149,7 +152,11 @@ src/sentinel/            the Sentinel brain (current product)
                          per-track aggregation), species_onnx (SpeciesNet on ONNX Runtime + background worker; edge), species_service (glue)
 scripts/guardian/              export_speciesnet_onnx.py / export_megadetector_onnx.py (one-time ONNX exports, separate torch env), speciesnet_eval.py (real-image species report),
                                animal_detector_eval.py (detectors + SpeciesNet on the wildlife stills), fetch_wildlife_videos.py + video_eval.py (scored day/night clip test; registry config/guardian/videos.json), multicam_load.py (several clips as live cameras)
-  web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors; install.js = Install tab + planner
+  lab/                   AI Test Lab: catalog (clips from bench/guardian/lab registries + <storage>/lab/videos), profiles (detector choices),
+                         session (LabManager + runner through the real stack; edge), routes (/api/v1/lab)
+  training/              training workflow (stdlib): examples (collect + COCO export, personalization consent), registry (models, promote,
+                         rollback), evaluate (candidate vs baseline through the lab), finetune (check + plan; never trains)
+  web/                   dashboard (static HTML/CSS/JS, no build step); setup.js = wizard + editors; install.js = Install tab + planner; lab.js = Test Lab
   bench/                 real-footage benchmark: labels (MOT/CAVIAR/Sentinel), runner (offline), live,
                          metrics, degrade (synthetic stress), report, render + viewer (playback/debug UI)
 config/sentinel.example.json   demo site: 3 simulated cameras, zones, topology, rules, drone
@@ -231,6 +238,8 @@ python -m unittest tests.test_sentinel_ui                  # browser tests (pip 
 python scripts/fetch_bench_footage.py                      # public annotated footage (~600 MB)
 python -m sentinel.bench run --all --out bench_runs/NAME   # real-footage benchmark -> report.md/html
 python -m sentinel.bench view --runs bench_runs            # playback/debug viewer on :8090
+python scripts/guardian/fetch_wildlife_videos.py --registry config/lab/videos.json --out data/lab/videos   # Test Lab public clips
+python -m sentinel.training status|collect|check|plan|register|compare|promote|rollback|personalization   # docs/training.md
 bash scripts/bench_detectors.sh bench_runs/detectors       # detector comparison (same clips, same settings)
 python -m sentinel.bench compare bench_runs/detectors/*    # comparison table across runs
 ```
@@ -292,6 +301,7 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 - Drone models live in `drone/catalog.py`. Every figure there says where it came from (`source`) and estimates are labelled as such; prices go only in `docs/drone-models.md`. A new model or capability needs its readiness consequences tested per model (`tests/test_sentinel_drone_models.py`) and, if it changes MAVLink or failsafe expectations, a SITL test.
 - Installation progress and plans live in `installation.json`, not the site config, so planning never restarts cameras. Readiness is computed from live data on every request; never store it as a claim.
 - The assistant only reads through tools and changes things through `propose_*` tools that a person confirms; `Toolbox.apply` calls the same validated backend paths as the dashboard. Never add tools that run commands, read files, return secrets, change network or device settings, or command a drone. Passwords stay in the secure sign-in form, and addresses are aliased before anything reaches an external provider.
+- The Test Lab runs the real stack only: never draw results from labels or scripts, and keep labels a comparison. Lab and training never change the live config or detector; a model reaches live cameras only through `promote` (test-split comparison, licence) and the Setup editor. Never export the `test` split or non-commercial clips for training, never use owner footage for training without the personalization consent record, and never start model training without the owner's approval.
 - Run the full test suite before committing.
 
 ## Roadmap pointer
@@ -299,6 +309,8 @@ Each camera runs a `CameraWorker` thread. The worker applies privacy masks, skip
 **V1 software is feature-frozen (2026-10-15).** Until physical hardware testing is under way, change only what safety, hardware integration or a critical bug requires; no new features. Sentinel Lite is the first physical prototype. Known issues are listed in `ROADMAP.md` (V1 software feature freeze).
 
 **Household-member recognition and the drone person standoff are on `main` (2026-10-16, owner's decision).** Recognition is off by default (`identity.enabled`) and V1 behaviour is unchanged while it is off; the person standoff is a safety change and always applies.
+
+**AI Test Lab, dataset library and training workflow are on `main` (2026-10-17, owner's request):** evaluation tooling only; live behaviour unchanged.
 
 **Wilderness Guardian is on `main` (2026-10-16, owner's decision)** as an optional track. All of it is off by default (`guardian.enabled`, `guardian.species_classifier.enabled`). Guardian work may continue on `main` only if V1 behaviour stays unchanged while those switches are off.
 

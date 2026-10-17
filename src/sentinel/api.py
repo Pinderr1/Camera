@@ -1118,6 +1118,10 @@ def create_app(service: SentinelService, *, api_token: str | None) -> FastAPI:
 
     add_identity_routes(app, service, require_auth)
 
+    from .lab.routes import add_routes as add_lab_routes  # AI Test Lab: /api/v1/lab
+
+    add_lab_routes(app, service, require_auth)
+
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 

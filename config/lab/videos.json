@@ -1,0 +1,338 @@
+{
+ "description": "Commercially usable public test clips for the AI Test Lab (Wikimedia Commons; Public domain / CC BY / CC BY-SA only). Split 'test': never tune thresholds or train on these. Downloaded by `python scripts/guardian/fetch_wildlife_videos.py --registry config/lab/videos.json --out data/lab/videos` (licence and SHA-1 re-checked against Commons). Unlabelled unless present_s/absent_s are given; label in the Test Lab. Clips showing real incidents involving harm to people were deliberately excluded. Selected 2026-10-17.",
+ "source": "https://commons.wikimedia.org",
+ "clips": [
+  {
+   "id": "parking_lot_ptz",
+   "name": "Parking lot (PTZ camera)",
+   "title": "BLK-HDPTZ12 Security Camera Parking Lot Surveillance Video.webm",
+   "sha1": "d1115753bffc8967898779dfedfa5fe609bdb530",
+   "licence": "Public domain",
+   "author": "Supercircuits",
+   "light": "day",
+   "category": "vehicles",
+   "subjects": [
+    "vehicle",
+    "person"
+   ],
+   "split": "test",
+   "conditions": [
+    "parking",
+    "elevated",
+    "ptz"
+   ],
+   "notes": "PTZ security camera over a parking lot: cars and people at distance; the camera moves (PTZ), which a fixed camera would not.",
+   "page": "https://commons.wikimedia.org/wiki/File:BLK-HDPTZ12_Security_Camera_Parking_Lot_Surveillance_Video.webm",
+   "bytes": 67736771,
+   "commercial_training": false,
+   "licence_note": "Public-domain status as asserted on Commons for a vendor, broadcaster or unknown uploader: verify with the source before any training use."
+  },
+  {
+   "id": "cctv_night_sample",
+   "name": "Night yard, person by a car (IR)",
+   "title": "8MP 4K Dahua CCTV System Sample Video - Night Time.webm",
+   "sha1": "c4b518fa612ee5bc97f5e6e4e86aa14d123b0005",
+   "licence": "Public domain",
+   "author": "Serious Security Sydney",
+   "light": "night",
+   "category": "night_security",
+   "subjects": [
+    "person",
+    "vehicle"
+   ],
+   "split": "test",
+   "conditions": [
+    "night",
+    "ir",
+    "residential",
+    "elevated"
+   ],
+   "notes": "Manufacturer 4K sample at night (infrared, black and white): a person walks beside a parked car near a house.",
+   "page": "https://commons.wikimedia.org/wiki/File:8MP_4K_Dahua_CCTV_System_Sample_Video_-_Night_Time.webm",
+   "bytes": 3527937,
+   "commercial_training": false,
+   "licence_note": "Public-domain status as asserted on Commons for a vendor, broadcaster or unknown uploader: verify with the source before any training use."
+  },
+  {
+   "id": "retail_store_cctv",
+   "name": "Retail store (indoor CCTV)",
+   "title": "HD CCTV Camera video 3MP 4MP iProx CCTV HDCCTVCameras.net retail store.webm",
+   "sha1": "dda78a65160df530ff3483f1885eadd569759bbd",
+   "licence": "Public domain",
+   "author": "HDCCTV Cameras",
+   "light": "day",
+   "category": "security_people",
+   "subjects": [
+    "person"
+   ],
+   "split": "test",
+   "conditions": [
+    "indoor",
+    "elevated",
+    "retail"
+   ],
+   "notes": "Indoor retail store CCTV sample: people walking and browsing.",
+   "page": "https://commons.wikimedia.org/wiki/File:HD_CCTV_Camera_video_3MP_4MP_iProx_CCTV_HDCCTVCameras.net_retail_store.webm",
+   "bytes": 16045214,
+   "commercial_training": false,
+   "licence_note": "Public-domain status as asserted on Commons for a vendor, broadcaster or unknown uploader: verify with the source before any training use."
+  },
+  {
+   "id": "side_driveway_cam",
+   "name": "Sidewalk and road, mostly empty",
+   "title": "026 c WHR-Side Driveway (10.90.30.113) - Camera 13.webm",
+   "sha1": "ad5c656b951bf78c8a6644a900a762a8ab4e5595",
+   "licence": "Public domain",
+   "author": "Upload:  Dan Baumann",
+   "light": "day",
+   "category": "empty_scene",
+   "subjects": [
+    "vehicle",
+    "person"
+   ],
+   "split": "test",
+   "conditions": [
+    "driveway",
+    "sidewalk",
+    "fisheye",
+    "elevated",
+    "long"
+   ],
+   "notes": "Fixed camera over a sidewalk and road, mostly empty for 7 minutes: a false-positive check with occasional passing vehicles.",
+   "page": "https://commons.wikimedia.org/wiki/File:026_c_WHR-Side_Driveway_(10.90.30.113)_-_Camera_13.webm",
+   "bytes": 33715554,
+   "commercial_training": false,
+   "licence_note": "Public-domain status as asserted on Commons for a vendor, broadcaster or unknown uploader: verify with the source before any training use."
+  },
+  {
+   "id": "porch_parcel_1",
+   "name": "Porch: person takes a parcel",
+   "title": "Front Porch Theft 2012 11 17 101117.ogv",
+   "sha1": "b85b5116b1213aa1afe9a0306548111505d6af9a",
+   "licence": "CC BY 3.0",
+   "author": "Trevor Fiatal",
+   "light": "day",
+   "category": "security_people",
+   "subjects": [
+    "person"
+   ],
+   "split": "test",
+   "conditions": [
+    "porch",
+    "doorbell_height"
+   ],
+   "notes": "Porch camera: a person walks up, takes a parcel and leaves. Evaluate behaviour (approach, dwell at the door), never identity.",
+   "page": "https://commons.wikimedia.org/wiki/File:Front_Porch_Theft_2012_11_17_101117.ogv",
+   "bytes": 681835
+  },
+  {
+   "id": "porch_parcel_2",
+   "name": "Dark porch, lens blocked",
+   "title": "Box thief - pink hoodie.ogv",
+   "sha1": "d0c58e8169496c465419a32349ff0c873a6bbd56",
+   "licence": "CC BY 3.0",
+   "author": "Mark Riedesel",
+   "light": "night",
+   "category": "difficult_conditions",
+   "subjects": [
+    "person"
+   ],
+   "split": "test",
+   "conditions": [
+    "porch",
+    "night",
+    "obstructed",
+    "close_up"
+   ],
+   "notes": "Dark porch camera; a person passes very close and blocks most of the lens.",
+   "page": "https://commons.wikimedia.org/wiki/File:Box_thief_-_pink_hoodie.ogv",
+   "bytes": 1734808
+  },
+  {
+   "id": "mailbox_porch",
+   "name": "Street and mailbox (fisheye)",
+   "title": "Mail Theft Caught on Camera - Las Vegas.ogv",
+   "sha1": "ee87050e789547c955cb22fbea5b377316364b35",
+   "licence": "CC BY 3.0",
+   "author": "Brandon Ennis",
+   "light": "day",
+   "category": "security_people",
+   "subjects": [
+    "person"
+   ],
+   "split": "test",
+   "conditions": [
+    "porch",
+    "street",
+    "fisheye",
+    "residential"
+   ],
+   "notes": "Fisheye doorbell-style camera over a residential street: parked cars, a vehicle stops and a person walks to the mailbox area.",
+   "page": "https://commons.wikimedia.org/wiki/File:Mail_Theft_Caught_on_Camera_-_Las_Vegas.ogv",
+   "bytes": 5315648
+  },
+  {
+   "id": "street_manhole",
+   "name": "Night street, people at a manhole (IR)",
+   "title": "Traffic cameras capture the entire process of manhole cover theft.webm",
+   "sha1": "484e69c3404da42ef5887aecf84a4bf4969aee14",
+   "licence": "Public domain",
+   "author": "CCTV footage does not create a copyright",
+   "light": "night",
+   "category": "security_people",
+   "subjects": [
+    "person",
+    "vehicle"
+   ],
+   "split": "test",
+   "conditions": [
+    "street",
+    "night",
+    "ir",
+    "elevated"
+   ],
+   "notes": "Night infrared street camera: a parked car, people work at a manhole cover, vehicles pass.",
+   "page": "https://commons.wikimedia.org/wiki/File:Traffic_cameras_capture_the_entire_process_of_manhole_cover_theft.webm",
+   "bytes": 9007785,
+   "commercial_training": false,
+   "licence_note": "Public-domain status as asserted on Commons for a vendor, broadcaster or unknown uploader: verify with the source before any training use."
+  },
+  {
+   "id": "cyclist_lights",
+   "name": "Cyclist traffic light (handheld)",
+   "title": "Cyclist-controlled traffic light phases.webm",
+   "sha1": "9ec34d9d8a339a1c91211950fe719f4288d5eb8d",
+   "licence": "CC BY 4.0",
+   "author": "Marnanel",
+   "light": "day",
+   "category": "vehicles",
+   "subjects": [
+    "vehicle",
+    "person"
+   ],
+   "split": "test",
+   "conditions": [
+    "street",
+    "handheld",
+    "close_up",
+    "bicycle"
+   ],
+   "notes": "Handheld close-up of a cyclist traffic light; people and vehicles are small in the background. Not a fixed camera: a hard case for tracking.",
+   "page": "https://commons.wikimedia.org/wiki/File:Cyclist-controlled_traffic_light_phases.webm",
+   "bytes": 1485512
+  },
+  {
+   "id": "motorway_bridge",
+   "name": "Motorway from a bridge",
+   "title": "Motorway A40 - on bridge above the traffic.webm",
+   "sha1": "432abafd6c1e599826ffc8fc668b2bf500dec072",
+   "licence": "CC BY 3.0",
+   "author": "Photographer: Kathinka Engels, Video Recordist: Kathinka Engels, Sound Recordist: Kathinka Engels",
+   "light": "day",
+   "category": "vehicles",
+   "subjects": [
+    "vehicle"
+   ],
+   "split": "test",
+   "conditions": [
+    "highway",
+    "elevated",
+    "dense_traffic"
+   ],
+   "notes": "Motorway traffic seen from a bridge: many small vehicles.",
+   "page": "https://commons.wikimedia.org/wiki/File:Motorway_A40_-_on_bridge_above_the_traffic.webm",
+   "bytes": 9365279
+  },
+  {
+   "id": "doorbell_tornado",
+   "name": "Doorbell camera in a storm",
+   "title": "Ring camera video of an EF1 tornado in Newburgh, Indiana.webm",
+   "sha1": "8be9bcb74d54b5b53d608c9d6808b28a2c7f2a11",
+   "licence": "Public domain",
+   "author": "Unknown authorUnknown author",
+   "light": "day",
+   "category": "difficult_conditions",
+   "subjects": [
+    "none"
+   ],
+   "split": "test",
+   "conditions": [
+    "storm",
+    "wind",
+    "rain",
+    "doorbell_height"
+   ],
+   "notes": "Doorbell camera during a storm: violent wind and debris, no people expected (false-positive check).",
+   "page": "https://commons.wikimedia.org/wiki/File:Ring_camera_video_of_an_EF1_tornado_in_Newburgh,_Indiana.webm",
+   "bytes": 2338102,
+   "commercial_training": false,
+   "licence_note": "Public-domain status as asserted on Commons for a vendor, broadcaster or unknown uploader: verify with the source before any training use."
+  },
+  {
+   "id": "apartments_tornado",
+   "name": "Apartment parking lot in a storm",
+   "title": "Branson Park Apartments Security Camera Tornado Footage.webm",
+   "sha1": "532a4a58d84d5df5acaf01f43e3ad6c0ccae696d",
+   "licence": "Public domain",
+   "author": "Jerry Whitworth",
+   "light": "night",
+   "category": "difficult_conditions",
+   "subjects": [
+    "vehicle"
+   ],
+   "split": "test",
+   "conditions": [
+    "storm",
+    "wind",
+    "rain",
+    "parking"
+   ],
+   "notes": "Apartment parking lot camera during a tornado: parked cars, flying debris, flicker.",
+   "page": "https://commons.wikimedia.org/wiki/File:Branson_Park_Apartments_Security_Camera_Tornado_Footage.webm",
+   "bytes": 5382146
+  },
+  {
+   "id": "bear_near_home",
+   "name": "Bear near a home (night)",
+   "title": "Surveillance camera captures bear in Franklin County for first time in nearly 20 years.webm",
+   "sha1": "e967ae2274aef2bb5a9abd196dfcf6a3a83fa1fa",
+   "licence": "Public domain",
+   "author": "WBNS 10TV",
+   "light": "night",
+   "category": "people_and_wildlife",
+   "subjects": [
+    "animal"
+   ],
+   "split": "test",
+   "conditions": [
+    "residential",
+    "ir"
+   ],
+   "notes": "Home surveillance camera: a black bear near a house.",
+   "page": "https://commons.wikimedia.org/wiki/File:Surveillance_camera_captures_bear_in_Franklin_County_for_first_time_in_nearly_20_years.webm",
+   "bytes": 4356445,
+   "commercial_training": false,
+   "licence_note": "Public-domain status as asserted on Commons for a vendor, broadcaster or unknown uploader: verify with the source before any training use."
+  },
+  {
+   "id": "cat_at_camera",
+   "name": "Cat close to the camera",
+   "title": "Cat meowing into camera.webm",
+   "sha1": "a2ec9325103ef1ac5f5e658ce956e0b5980b0486",
+   "licence": "Public domain",
+   "author": "Legendaryreel.pull1",
+   "light": "day",
+   "category": "domestic_animals",
+   "subjects": [
+    "animal"
+   ],
+   "split": "test",
+   "conditions": [
+    "close_up"
+   ],
+   "notes": "A cat very close to the camera.",
+   "page": "https://commons.wikimedia.org/wiki/File:Cat_meowing_into_camera.webm",
+   "bytes": 576034
+  }
+ ]
+}

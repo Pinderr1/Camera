@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/assistant.css">
   <link rel="stylesheet" href="/static/flame.css">
+  <link rel="stylesheet" href="/static/lab.css">
 </head>
 <body>
   <header class="topbar">
@@ -35,6 +36,7 @@
     <button role="tab" data-tab="map">Map</button>
     <button role="tab" data-tab="timeline">Timeline <span class="badge" id="open-count" hidden></span></button>
     <button role="tab" data-tab="insights">Insights</button>
+    <button role="tab" data-tab="lab" title="Play recorded footage through Sentinel's AI">Lab</button>
     <button role="tab" data-tab="drone">Drone</button>
     <button role="tab" data-tab="flame" hidden title="Agricultural burn monitoring with the drone">Flame</button>
     <button role="tab" data-tab="system">System <span class="badge" id="system-badge" hidden>!</span></button>
@@ -130,6 +132,64 @@
         <div class="row-between"><p class="muted small" id="performance-note"></p>
           <label class="inline small">Period <select id="performance-days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label></div>
         <div id="performance-body"></div>
+      </div>
+    </section>
+
+    <section id="tab-lab" class="tab">
+      <div class="lab-layout">
+        <aside class="card lab-library">
+          <h3>Footage</h3>
+          <div class="lab-filters">
+            <select id="lab-filter-split" aria-label="Split"><option value="">All footage</option><option value="test">Independent test</option><option value="validation">Validation (tuned on)</option><option value="private">Your footage</option></select>
+            <select id="lab-filter-subject" aria-label="Subject"><option value="">Any subject</option><option value="person">People</option><option value="vehicle">Vehicles</option><option value="animal">Animals</option><option value="none">Empty scenes</option></select>
+          </div>
+          <ul class="list lab-clips" id="lab-clips"></ul>
+          <p class="muted small" id="lab-drop"></p>
+        </aside>
+        <div class="lab-main">
+          <div class="card">
+            <div class="lab-head">
+              <div><h3 id="lab-clip-title">Choose a clip</h3><div class="small muted" id="lab-clip-meta"></div></div>
+            </div>
+            <div class="lab-controls">
+              <label>Model <select id="lab-profile"></select></label>
+              <label>Rate <select id="lab-fps"><option value="2">2 fps</option><option value="5" selected>5 fps (camera default)</option><option value="10">10 fps</option></select></label>
+              <label>Arm mode <select id="lab-arm"><option value="away" selected>Away</option><option value="night">Night</option><option value="home">Home</option><option value="disarmed">Disarmed</option></select></label>
+              <label>Length <select id="lab-max"><option value="30">30 s</option><option value="60">1 min</option><option value="120" selected>2 min</option><option value="600">10 min</option></select></label>
+              <label class="check"><input type="checkbox" id="lab-species" checked> Species</label>
+              <button type="button" class="primary" id="lab-run" disabled>Analyse and play</button>
+            </div>
+            <div class="small muted" id="lab-runs-label">Earlier runs of this clip</div>
+            <div class="lab-runs" id="lab-runs"></div>
+          </div>
+          <div class="card lab-player-card" id="lab-player-card" hidden>
+            <div class="lab-progress" id="lab-progress" hidden><div></div><span></span></div>
+            <div class="lab-stage" id="lab-stage">
+              <div class="lab-view"><div class="lab-view-label" id="lab-label-a"></div><canvas id="lab-canvas-a"></canvas></div>
+              <div class="lab-view" id="lab-view-b" hidden><div class="lab-view-label" id="lab-label-b"></div><canvas id="lab-canvas-b"></canvas></div>
+            </div>
+            <input type="range" id="lab-seek" min="0" max="0" value="0" aria-label="Position">
+            <div class="lab-transport">
+              <button type="button" id="lab-prev-error" title="Previous frame with an error">&#9198; error</button>
+              <button type="button" id="lab-back" title="Previous frame (left arrow)">&#9664;&#9664;</button>
+              <button type="button" class="primary" id="lab-play" title="Play / pause (space)">Play</button>
+              <button type="button" id="lab-fwd" title="Next frame (right arrow)">&#9654;&#9654;</button>
+              <button type="button" id="lab-next-error" title="Next frame with an error">error &#9197;</button>
+              <select id="lab-speed" aria-label="Speed"><option value="0.25">0.25x</option><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+              <span class="small" id="lab-time"></span>
+              <label class="small">Compare with <select id="lab-compare"><option value="">-</option></select></label>
+            </div>
+            <div class="lab-layers" id="lab-layers"></div>
+          </div>
+          <div class="lab-panels" id="lab-panels" hidden>
+            <div class="card"><h3>This frame</h3><div id="lab-frame"></div>
+              <div class="button-row"><button type="button" id="lab-draw">Draw a missed object</button><select id="lab-draw-label" aria-label="Missed object label"><option>person</option><option>car</option><option>truck</option><option>bicycle</option><option>motorcycle</option><option>dog</option><option>cat</option><option>bear</option><option>deer</option><option>animal</option></select></div>
+              <p class="muted small">Your marks are saved with this run and feed the training workflow (docs/training.md). They never change Sentinel by themselves.</p>
+            </div>
+            <div class="card"><h3>Events and simulated alerts</h3><div id="lab-events"></div></div>
+            <div class="card"><h3>Run summary</h3><div id="lab-summary"></div></div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -447,5 +507,6 @@
   <script src="/static/install.js"></script>
   <script src="/static/assistant.js"></script>
   <script src="/static/flame.js"></script>
+  <script src="/static/lab.js"></script>
 </body>
 </html>
