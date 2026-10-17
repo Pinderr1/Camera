@@ -4,6 +4,12 @@ This folder is for non-private schemas, manifests, and derived labels.
 
 Raw media and identifiable outputs should stay out of git. The `.gitignore` excludes `data/raw/`, thumbnails, videos, logs, and common media files by default.
 
+Private `cam01` pose originals are preserved in place and ignored. Run
+`scripts/audit_pose_recordings.py` with `PYTHONPATH=src` to build a local dataset
+manifest, review labels and offline legacy/Sentinel replay reports under
+`detector_runs/`. See [the pose audit](../docs/cam01-pose-audit.md) for provenance,
+privacy restrictions and limits on training, fall detection and Guardian use.
+
 Recommended workflow:
 
 1. Put raw local clips outside git or under `data/raw/`.
